@@ -1374,3 +1374,63 @@ docker compose -f infra/docker-compose.yml up -d
 - 百炼在 Spring AI tool calling 上有兼容性问题（collectContext 不可用），暂时用 inlineContext 替代
 - embedding 仍需验证百炼 text-embedding-v3 是否与 document_chunks 维度（1536）匹配
 
+
+---
+
+## 35. 本轮迭代记录：AI 对话式交互
+
+### 35.1 新增纯聊天接口
+
+- 后端 `ChatService`：纯文本对话，不生成 JSON 动作、不落库
+- 后端 `ChatController`：`POST /api/boards/{boardId}/chat`，接收 `{ prompt }`，返回 `{ reply }`，注入画布标题+卡片数让 AI 感知上下文
+- 前端 `api.chat(boardId, prompt)`
+
+### 35.2 前端智能路由
+
+- `TASK_PATTERNS` 关键词表：明确任务意图（生成思维导图/流程图/总结/学习计划/产品需求/整理）→ 走任务流程
+- 无明确匹配 → 走聊天（纯文本回复，不落卡）
+- 闲聊回复展示为左对齐 Bot 对话气泡
+
+### 35.3 TaskCard 流水线优化
+
+- 横向流水线步骤条：✓完成 / …执行中(脉冲) / 序号待执行
+- 当前步骤实时 message 展示（animate-pulse）
+- 进度条 transition-all
+
+### 35.4 验证
+
+- 闲聊"你是谁" → 文本回复（271 字，介绍能力），画布无新卡
+- "帮我生成思维导图" → 文本引导（148 字），不落卡
+- 明确"生成人工智能学习路线思维导图" → 走任务（matchTaskType 命中）
+
+### 35.5 已知限制
+
+- 聊天无历史上下文（单轮），后续可传 history
+- 聊天回复一次性返回（非流式），后续可 SSE
+- 刷新后对话历史清空（不做持久化）
+
+
+### 35.6 修复：聊天读不到文档 + 任务重复 + 会话丢失
+
+- **聊天读不到文档**：ChatService 原只传画布标题+卡片数。改为 ChatController 用 `fileService.parsedSources(boardId, ownerId)` 注入已解析文档内容到 system prompt。
+- **任务出现两次**：原 useEffect 用 `messages.some` 检查（异步 state 可能重复）。改为 `shownTaskIdsRef`（ref 同步去重）。
+- **会话刷新丢失**：messages 纯组件 state。改为 localStorage 按画布隔离持久化（`dc_chat_{boardId}`），只存 user/assistant 文本（任务卡不持久化）。
+- **快捷按钮被删**：恢复任务类型快捷按钮（总结/思维导图/流程图等），点击预填 prompt。
+
+验证：上传 doc-test.txt 后问"文档核心功能"，AI 准确列出五项。
+
+
+### 35.7 修复：任务状态不更新 + 资料面板无法隐藏
+
+- **任务状态不更新**：TaskCard 展示的是任务 push 进 messages 时的快照，之后 tasks 更新但 message.task 没同步。改为渲染时 `tasks.find(t => t.id === message.task.id)` 取最新任务对象，进度/状态/步骤实时同步。
+- **资料面板无法隐藏**：SourcePanel 弹出后点击面板外空白不关闭（section 的 onClick 被工具栏 stopPropagation 挡住，面板 z-30 盖在画布上）。加一个 inset-0 遮罩层 z-20，点击面板外任意处关闭。
+
+
+### 35.8 修复：上传图片前端显示失败
+
+- **根因**：接入 JWT 后 `GET /api/boards/{boardId}/files/{fileId}/content` 被 SecurityConfig `anyRequest().authenticated()` 拦截，但 `<img src>` 无法带 `Authorization` 头 → 图片加载 401 → 前端显示失败。
+- **修复**：
+  1. 后端 `JwtAuthenticationFilter` 支持从 query param `token` 解析认证（图片直链场景）
+  2. 前端 `api.fileContentUrl` 在带 token 时拼接 `?token=<jwt>` query 参数
+- **验证**：上传 PNG，无 token 访问 content → 401；带 `?token=` 访问 → 200
+

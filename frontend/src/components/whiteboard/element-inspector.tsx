@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { RotateCw } from "lucide-react";
 import type { Editor as TldrawEditor } from "@tldraw/editor";
 import { GhostButton } from "@/components/ui";
 
@@ -124,6 +125,52 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
     [editor]
   );
 
+  // 拖拽旋转：按住旋钮，角度跟随鼠标相对 shape 中心的变化
+  const dragRef = useRef<{ lastAngle: number } | null>(null);
+  const startRotateDrag = useCallback(
+    (event: React.PointerEvent) => {
+      if (!editor) {
+        return;
+      }
+      const ids = editor.getSelectedShapeIds();
+      if (ids.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      const center = editor.getShapePageTransform(ids[0]).point();
+      const startPoint = editor.screenToPage({ x: event.clientX, y: event.clientY });
+      dragRef.current = {
+        lastAngle: Math.atan2(startPoint.y - center.y, startPoint.x - center.x)
+      };
+    },
+    [editor]
+  );
+
+  const moveRotateDrag = useCallback(
+    (event: React.PointerEvent) => {
+      if (!editor || !dragRef.current) {
+        return;
+      }
+      const ids = editor.getSelectedShapeIds();
+      if (ids.length === 0) {
+        return;
+      }
+      const center = editor.getShapePageTransform(ids[0]).point();
+      const pagePoint = editor.screenToPage({ x: event.clientX, y: event.clientY });
+      const angle = Math.atan2(pagePoint.y - center.y, pagePoint.x - center.x);
+      const delta = angle - dragRef.current.lastAngle;
+      dragRef.current.lastAngle = angle;
+      editor.rotateShapesBy(ids, delta);
+    },
+    [editor]
+  );
+
+  const endRotateDrag = useCallback((event: React.PointerEvent) => {
+    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    dragRef.current = null;
+  }, []);
+
   if (!selected || selected.count === 0) {
     return null;
   }
@@ -213,6 +260,28 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
         ) : null}
 
         <div className="flex items-center gap-2">
+          <span className="w-8 text-ink/55">旋转</span>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ink/15 bg-white text-ink/60 transition hover:border-spruce/50 hover:text-spruce active:bg-spruce/10"
+            title="按住并拖动旋转，跟随鼠标角度"
+            onPointerDown={startRotateDrag}
+            onPointerMove={moveRotateDrag}
+            onPointerUp={endRotateDrag}
+            onPointerCancel={endRotateDrag}
+          >
+            <RotateCw className="h-4 w-4" />
+          </button>
+          <span className="text-[11px] text-ink/45">按住拖动</span>
+          <GhostButton type="button" onClick={() => setRotate(Math.PI / 4)} className="ml-auto">
+            45°
+          </GhostButton>
+          <GhostButton type="button" onClick={() => setRotate(-Math.PI / 4)}>
+            -45°
+          </GhostButton>
+        </div>
+
+        <div className="flex items-center gap-2">
           <span className="w-8 text-ink/55">尺寸</span>
           <label className="flex items-center gap-1">
             宽
@@ -234,12 +303,6 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
               onChange={(event) => setSize("h", Number(event.target.value))}
             />
           </label>
-          <GhostButton type="button" onClick={() => setRotate(Math.PI / 4)} className="ml-auto">
-            旋转 45°
-          </GhostButton>
-          <GhostButton type="button" onClick={() => setRotate(-Math.PI / 4)}>
-            旋转 -45°
-          </GhostButton>
         </div>
       </div>
     </div>

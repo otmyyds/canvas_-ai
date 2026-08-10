@@ -26,8 +26,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String authHeader = request.getHeader("Authorization");
+        String token = null;
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            String token = authHeader.substring(7);
+            token = authHeader.substring(7);
+        } else if (request.getParameter("token") != null && !request.getParameter("token").isBlank()) {
+            // 图片/资源直链：<img src> 无法带 header，用 query param 传 token
+            token = request.getParameter("token");
+        }
+        if (token != null) {
             Claims claims = JwtUtils.parseToken(token);
             UUID userId = JwtUtils.getUserId(claims);
             if (userId != null) {

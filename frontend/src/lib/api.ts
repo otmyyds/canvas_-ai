@@ -135,7 +135,18 @@ export const api = {
         body: JSON.stringify({ snapshotJson })
       }
     ),
-  fileContentUrl: (boardId: string, fileId: string) => `${API_BASE}/api/boards/${boardId}/files/${fileId}/content`,
+  /** 图片直链：<img src> 无法带 Authorization 头，用 query param 传 token */
+  fileContentUrl: (boardId: string, fileId: string) => {
+    const token = authToken.get();
+    const base = `${API_BASE}/api/boards/${boardId}/files/${fileId}/content`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
+  /** 纯文本聊天（不生成卡片动作），用于询问/闲聊 */
+  chat: (boardId: string, prompt: string) =>
+    request<{ reply: string }>(`/api/boards/${boardId}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ prompt })
+    }),
   register: (email: string, displayName: string, password: string) =>
     request<AuthResponse>("/api/auth/register", {
       method: "POST",

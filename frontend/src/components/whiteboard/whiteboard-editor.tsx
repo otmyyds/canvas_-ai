@@ -629,9 +629,17 @@ export function WhiteboardEditor({
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       {sourceOpen ? (
-        <div className="absolute left-2 top-16 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg">
-          <SourcePanel files={files} onUpload={onUploadFile} onDelete={onDeleteFile} />
-        </div>
+        <>
+          {/* 遮罩：点击面板外任意处关闭 */}
+          <div
+            className="absolute inset-0 z-20"
+            onClick={() => setSourceOpen(false)}
+            aria-label="关闭资料面板"
+          />
+          <div className="absolute left-2 top-16 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg">
+            <SourcePanel files={files} onUpload={onUploadFile} onDelete={onDeleteFile} />
+          </div>
+        </>
       ) : null}
 
       <section
@@ -802,6 +810,7 @@ export function WhiteboardEditor({
       </section>
 
       <TaskPanel
+        boardId={boardId}
         tasks={tasks}
         connection={connection}
         onCreateTask={onCreateTask}
