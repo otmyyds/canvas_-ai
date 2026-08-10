@@ -1,4 +1,4 @@
-import type { AiTask, AiTaskType, Board, BoardCard, BoardEdge, SourceFile } from "@/lib/types";
+import type { AiTask, AiTaskType, Board, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
@@ -98,6 +98,7 @@ export const api = {
     })
   }),
   listEdges: (boardId: string) => request<BoardEdge[]>(`/api/boards/${boardId}/edges`),
+  listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
   createEdge: (boardId: string, fromCardId: string, toCardId: string, label?: string) =>
     request<BoardEdge>(`/api/boards/${boardId}/edges`, {
       method: "POST",

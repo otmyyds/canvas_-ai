@@ -28,30 +28,75 @@ public final class GraphLayoutService {
     }
 
     public static Map<String, double[]> layoutMindmap(List<String> nodeIds, List<String[]> edges) {
+        // 兼容旧调用：所有节点 level=0
+        Map<String, Integer> levels = new HashMap<>();
+        for (String id : nodeIds) {
+            levels.put(id, 0);
+        }
+        return layoutMindmap3(nodeIds, edges, levels);
+    }
+
+    /**
+     * 3 层辐射布局：
+     * - level 0 中心主题 → 居中
+     * - level 1 一级分支 → 沿大圆分布
+     * - level 2 二级叶子 → 沿所属一级分支的径向方向向外延伸
+     */
+    public static Map<String, double[]> layoutMindmap3(List<String> nodeIds, List<String[]> edges,
+            Map<String, Integer> nodeLevels) {
         Map<String, double[]> positions = new LinkedHashMap<>();
         if (nodeIds.isEmpty()) {
             return positions;
         }
-        String root = nodeIds.get(0);
-        // 邻居：root 的直接分支
-        List<String> children = neighbors(nodeIds, edges, root);
-        children.removeIf(id -> id.equals(root));
-        if (children.isEmpty()) {
-            positions.put(root, new double[] { MARGIN, MARGIN });
+        // 根：第一个 level 0 节点，或第一个节点
+        String root = nodeIds.stream().filter(id -> nodeLevels.getOrDefault(id, 0) == 0).findFirst()
+                .orElse(nodeIds.get(0));
+        positions.put(root, new double[] { MARGIN, MARGIN });
+
+        // 一级分支：root 的直接子节点
+        List<String> level1 = neighbors(nodeIds, edges, root);
+        level1.remove(root);
+        if (level1.isEmpty()) {
             return positions;
         }
-        // 根居中
-        positions.put(root, new double[] { MARGIN + CARD_W / 2, MARGIN + CARD_H / 2 });
-        // 分支沿圆分布
-        int n = children.size();
         double radiusX = CARD_W + GAP;
         double radiusY = CARD_H + GAP;
+        int n1 = level1.size();
         double startAngle = -Math.PI / 2;
-        for (int i = 0; i < n; i++) {
-            double angle = startAngle + (2 * Math.PI * i) / Math.max(1, n);
-            double x = positions.get(root)[0] + radiusX * Math.cos(angle);
-            double y = positions.get(root)[1] + radiusY * Math.sin(angle);
-            positions.put(children.get(i), new double[] { x - CARD_W / 2, y - CARD_H / 2 });
+        Map<String, Double> branchAngles = new HashMap<>();
+        for (int i = 0; i < n1; i++) {
+            double angle = startAngle + (2 * Math.PI * i) / Math.max(1, n1);
+            String id = level1.get(i);
+            positions.put(id, new double[] {
+                    positions.get(root)[0] + radiusX * Math.cos(angle) - CARD_W / 2,
+                    positions.get(root)[1] + radiusY * Math.sin(angle) - CARD_H / 2
+            });
+            branchAngles.put(id, angle);
+        }
+
+        // 二级叶子：沿所属一级分支的径向延伸
+        Map<String, Set<String>> adj = buildAdj(nodeIds, edges);
+        double leafRadiusX = radiusX + CARD_W;
+        double leafRadiusY = radiusY + CARD_H;
+        for (String branch : level1) {
+            Double angle = branchAngles.get(branch);
+            if (angle == null) {
+                continue;
+            }
+            List<String> leaves = adj.getOrDefault(branch, Set.of()).stream()
+                    .filter(id -> !id.equals(root) && !level1.contains(id))
+                    .toList();
+            int nLeaves = leaves.size();
+            for (int i = 0; i < nLeaves; i++) {
+                // 在分支角度的邻域内散开（避免叶子重叠）
+                double spread = nLeaves <= 1 ? 0 : ((double) i / (nLeaves - 1) - 0.5) * 0.6;
+                double leafAngle = angle + spread;
+                String leaf = leaves.get(i);
+                positions.put(leaf, new double[] {
+                        positions.get(branch)[0] + CARD_W / 2 + leafRadiusX * Math.cos(leafAngle) - CARD_W / 2,
+                        positions.get(branch)[1] + CARD_H / 2 + leafRadiusY * Math.sin(leafAngle) - CARD_H / 2
+                });
+            }
         }
         return positions;
     }

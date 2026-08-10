@@ -136,12 +136,22 @@ public class SpringAiGenerationService implements AiGenerationService {
                             dbl(map.get("x"), 120), dbl(map.get("y"), 120),
                             dbl(map.get("width"), 340), dbl(map.get("height"), 220),
                             List.of()));
+                    case "create_shape" -> actions.add(new BoardAction.CreateShape(
+                            str(map.get("id")),
+                            str(map.get("title")),
+                            str(map.get("shape"), "ellipse"),
+                            intValue(map.get("level"), 0),
+                            dbl(map.get("x"), 0), dbl(map.get("y"), 0),
+                            dbl(map.get("width"), 140), dbl(map.get("height"), 60)));
                     case "update_card" -> actions.add(new BoardAction.UpdateCard(
                             str(map.get("cardId")),
                             str(map.get("title")), str(map.get("markdown"))));
                     case "connect" -> actions.add(new BoardAction.Connect(
                             str(map.get("fromCardId")), str(map.get("toCardId")),
-                            str(map.get("label"))));
+                            str(map.get("label")),
+                            str(map.get("style")),
+                            str(map.get("color")),
+                            intValue(map.get("weight"), 2)));
                     case "delete_card" -> actions.add(new BoardAction.DeleteCard(
                             str(map.get("cardId"))));
                     default -> {
@@ -157,6 +167,58 @@ public class SpringAiGenerationService implements AiGenerationService {
         }
     }
 
+    /**
+     * 从 AI1 文章的标题层级（# ## ###）直接解析思维导图节点。
+     * AI2 输出失败时的兜底方案。
+     */
+    @SuppressWarnings("unchecked")
+    private List<BoardAction> parseMindmapFromArticle(String article) {
+        if (article == null || article.isBlank()) {
+            return List.of();
+        }
+        List<BoardAction> actions = new java.util.ArrayList<>();
+        List<String> branchIds = new java.util.ArrayList<>();
+        String rootId = "root1";
+        String currentBranch = null;
+        int branchCount = 0;
+        int leafCount = 0;
+
+        for (String line : article.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("# ") && !trimmed.startsWith("## ")) {
+                // 中心主题（# 单井号）
+                String title = trimmed.substring(2).trim();
+                if (title.isEmpty()) {
+                    continue;
+                }
+                actions.add(new BoardAction.CreateShape(rootId, title, "ellipse", 0, 0, 0, 180, 90));
+            } else if (trimmed.startsWith("## ") && !trimmed.startsWith("### ")) {
+                // 一级分支
+                String title = trimmed.substring(3).trim();
+                if (title.isEmpty()) {
+                    continue;
+                }
+                branchCount += 1;
+                String id = "branch" + branchCount;
+                actions.add(new BoardAction.CreateShape(id, title, "rectangle", 1, 0, 0, 140, 70));
+                actions.add(new BoardAction.Connect(rootId, id, "", "curve", null, 2));
+                currentBranch = id;
+                branchIds.add(id);
+            } else if (trimmed.startsWith("### ") && currentBranch != null) {
+                // 二级叶子
+                String title = trimmed.substring(4).trim();
+                if (title.isEmpty()) {
+                    continue;
+                }
+                leafCount += 1;
+                String id = "leaf" + leafCount;
+                actions.add(new BoardAction.CreateShape(id, title, "oval", 2, 0, 0, 120, 60));
+                actions.add(new BoardAction.Connect(currentBranch, id, "", "curve", null, 1));
+            }
+        }
+        return actions;
+    }
+
     private String str(Object value, String fallback) {
         return value == null ? fallback : value.toString();
     }
@@ -168,6 +230,13 @@ public class SpringAiGenerationService implements AiGenerationService {
     private double dbl(Object value, double fallback) {
         if (value instanceof Number n) {
             return n.doubleValue();
+        }
+        return fallback;
+    }
+
+    private int intValue(Object value, int fallback) {
+        if (value instanceof Number n) {
+            return n.intValue();
         }
         return fallback;
     }
@@ -218,14 +287,21 @@ public class SpringAiGenerationService implements AiGenerationService {
                 log.info("[AI2 attempt {}] 输入文章:\n{}", attempts, article);
                 String raw = chatClient.prompt()
                         .system("""
-                                你是思维导图结构化专家。请阅读下面用户提供的 Markdown 文章，把它抽取成思维导图的节点和连线。
+                                你是思维导图结构化专家。请阅读下面用户提供的 Markdown 文章，把它抽取成思维导图的图形节点和连线。
                                 规则：
-                                1. # 标题 → 中心主题 create_card（id=root1）
-                                2. ## 标题 → 一级分支 create_card（id=branch1, branch2, ...），connect 连到 root1
-                                3. ### 标题 → 二级分支 create_card（id=leaf1, leaf2, ...），connect 连到对应的一级分支 id
-                                4. 每个 create_card 的 markdown 写该分支的要点（用 - 列表），不超过 150 字
-                                5. 只输出 JSON！格式：{"actions":[{"type":"create_card","id":"root1","title":"...","markdown":"...","cardType":"SUMMARY","x":0,"y":0}, {"type":"connect","fromCardId":"root1","toCardId":"branch1","label":""}]}
-                                6. x/y 都填 0（后端会自动布局），不要自己排坐标
+                                1. # 标题 → 中心主题 create_shape（id=root1，level=0，shape=ellipse）
+                                2. ## 标题 → 一级分支 create_shape（id=branch1...，level=1，shape=rectangle），connect 连到 root1
+                                3. ### 标题 → 二级叶子 create_shape（id=leaf1...，level=2，shape=oval），connect 连到对应的一级分支 id
+                                4. 每个 create_shape 的 title 用该节点标题，x/y 都填 0（后端自动布局）
+                                5. connect 带 style="curve"（曲线）
+                                6. 只输出 JSON！格式：
+                                {"actions":[
+                                  {"type":"create_shape","id":"root1","title":"中心","shape":"ellipse","level":0,"x":0,"y":0,"width":180,"height":90},
+                                  {"type":"create_shape","id":"branch1","title":"分支","shape":"rectangle","level":1,"x":0,"y":0,"width":140,"height":70},
+                                  {"type":"create_shape","id":"leaf1","title":"叶子","shape":"oval","level":2,"x":0,"y":0,"width":120,"height":60},
+                                  {"type":"connect","fromCardId":"root1","toCardId":"branch1","style":"curve"},
+                                  {"type":"connect","fromCardId":"branch1","toCardId":"leaf1","style":"curve"}
+                                ]}
                                 """)
                         .user(article)
                         .toolContext(Map.of(
@@ -244,8 +320,19 @@ public class SpringAiGenerationService implements AiGenerationService {
                             "{\"mode\":\"spring-ai-mindmap\",\"actionCount\":%d,\"attempts\":%d,\"message\":\"思维导图生成完成\"}"
                                     .formatted(actions.size(), attempts), attempts);
                 }
+                // AI2 输出非 JSON 或校验失败 → 降级：直接从 AI1 文章的标题层级解析节点
+                log.warn("[AI2 attempt {}] 校验失败: {}，降级为从文章标题解析", attempts, error);
+                List<BoardAction> fallback = parseMindmapFromArticle(article);
+                if (!fallback.isEmpty()) {
+                    String fallbackError = BoardActionValidator.validate(fallback);
+                    if (fallbackError.isEmpty()) {
+                        log.info("降级解析成功，从文章提取 {} 个动作", fallback.size());
+                        return new BoardActionResult(fallback,
+                                "{\"mode\":\"spring-ai-mindmap-fallback\",\"actionCount\":%d,\"attempts\":%d,\"message\":\"思维导图生成完成（文章解析）\"}"
+                                        .formatted(fallback.size(), attempts), attempts);
+                    }
+                }
                 lastError = error;
-                log.warn("[AI2 attempt {}] 校验失败: {}", attempts, error);
                 if (attempts > MAX_SCHEMA_RETRIES) {
                     throw new IllegalStateException("思维导图动作校验失败：" + error);
                 }

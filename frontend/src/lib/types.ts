@@ -28,7 +28,23 @@ export type BoardEdge = {
   fromCardId: string;
   toCardId: string;
   label?: string;
+  style?: string;
+  color?: string;
+  weight?: number;
   createdAt: string;
+};
+
+/** 图形节点（思维导图/流程图节点，存 shapes 表） */
+export type BoardShape = {
+  id: string;
+  boardId: string;
+  title: string;
+  shape: string;
+  level: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export type AiTaskType =

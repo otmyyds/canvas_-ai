@@ -34,7 +34,7 @@ export default function BoardPage({ params }: BoardPageProps) {
 }
 
 function BoardEditor({ boardId }: { boardId: string }) {
-  const { board, cards, edges, tasks, files, setBoard, setCards, setEdges, setTasks, setFiles } = useBoardStore();
+  const { board, cards, edges, shapes, tasks, files, setBoard, setCards, setEdges, setShapes, setTasks, setFiles } = useBoardStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [canvasRevision, setCanvasRevision] = useState(0);
@@ -52,19 +52,21 @@ function BoardEditor({ boardId }: { boardId: string }) {
 
   const loadAll = useCallback(async () => {
     setError(undefined);
-    const [boardResult, cardResult, edgeResult, taskResult, fileResult] = await Promise.all([
+    const [boardResult, cardResult, edgeResult, shapeResult, taskResult, fileResult] = await Promise.all([
       api.getBoard(boardId),
       api.listCards(boardId),
       api.listEdges(boardId),
+      api.listShapes(boardId),
       api.listTasks(boardId),
       api.listFiles(boardId)
     ]);
     setBoard(boardResult);
     setCards(cardResult);
     setEdges(edgeResult);
+    setShapes(shapeResult);
     setTasks(taskResult);
     setFiles(fileResult);
-  }, [boardId, setBoard, setCards, setEdges, setFiles, setTasks]);
+  }, [boardId, setBoard, setCards, setEdges, setShapes, setFiles, setTasks]);
 
   useEffect(() => {
     setLoading(true);
@@ -80,12 +82,14 @@ function BoardEditor({ boardId }: { boardId: string }) {
       }
       setTasks(await api.listTasks(boardId));
       if (event.type === "task.actions" || event.type === "task.done") {
-        const [cardResult, edgeResult] = await Promise.all([
+        const [cardResult, edgeResult, shapeResult] = await Promise.all([
           api.listCards(boardId),
-          api.listEdges(boardId)
+          api.listEdges(boardId),
+          api.listShapes(boardId)
         ]);
         setCards(cardResult);
         setEdges(edgeResult);
+        setShapes(shapeResult);
         setCanvasRevision((value) => value + 1);
       }
     },
@@ -207,6 +211,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           boardTitle={board?.title}
           cards={cards}
           edges={edges}
+          shapes={shapes}
           files={files}
           tasks={tasks}
           connection={connection}

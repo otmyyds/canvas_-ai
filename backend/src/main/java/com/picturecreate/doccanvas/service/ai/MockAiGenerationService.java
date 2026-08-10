@@ -41,7 +41,7 @@ public class MockAiGenerationService implements AiGenerationService {
         // 画布已有卡片时，追加一条连线动作，便于演示多动作链路
         if (context.cards() != null && !context.cards().isEmpty()) {
             String fromId = context.cards().get(0).cardId();
-            actions.add(new BoardAction.Connect(fromId, "00000000-0000-0000-0000-000000000000", "参考"));
+            actions.add(new BoardAction.Connect(fromId, "00000000-0000-0000-0000-000000000000", "参考", null, null, 2));
         }
         return new BoardActionResult(actions,
                 "{\"mode\":\"mock\",\"actionCount\":%d,\"message\":\"模拟生成完成\"}".formatted(actions.size()));

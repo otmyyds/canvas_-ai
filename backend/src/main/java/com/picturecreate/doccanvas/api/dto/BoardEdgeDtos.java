@@ -24,11 +24,14 @@ public final class BoardEdgeDtos {
             UUID fromCardId,
             UUID toCardId,
             String label,
+            String style,
+            String color,
+            Integer weight,
             Instant createdAt) {
 
         public static BoardEdgeResponse from(BoardEdge edge) {
             return new BoardEdgeResponse(edge.getId(), edge.getBoardId(), edge.getFromCardId(), edge.getToCardId(),
-                    edge.getLabel(), edge.getCreatedAt());
+                    edge.getLabel(), edge.getStyle(), edge.getColor(), edge.getWeight(), edge.getCreatedAt());
         }
     }
 }

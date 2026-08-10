@@ -32,7 +32,7 @@ import {
   Text,
   Trash2
 } from "lucide-react";
-import type { AiTask, BoardCard, BoardEdge, SourceFile } from "@/lib/types";
+import type { AiTask, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 import { api } from "@/lib/api";
 import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
@@ -48,6 +48,7 @@ type WhiteboardEditorProps = {
   boardTitle?: string;
   cards: BoardCard[];
   edges: BoardEdge[];
+  shapes: BoardShape[];
   files: SourceFile[];
   tasks: AiTask[];
   connection: string;
@@ -82,6 +83,7 @@ export function WhiteboardEditor({
   boardTitle,
   cards,
   edges,
+  shapes,
   files,
   tasks,
   connection,
@@ -129,6 +131,7 @@ export function WhiteboardEditor({
   >([]);
   const cardsRef = useRef(cards);
   const edgesRef = useRef(edges);
+  const shapesRef = useRef(shapes);
   const filesRef = useRef(files);
   const [editorReady, setEditorReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -136,6 +139,7 @@ export function WhiteboardEditor({
 
   cardsRef.current = cards;
   edgesRef.current = edges;
+  shapesRef.current = shapes;
   filesRef.current = files;
 
   const saveSnapshot = useCallback(async () => {
@@ -192,6 +196,7 @@ export function WhiteboardEditor({
 
       const currentCards = cardsRef.current;
       const currentEdges = edgesRef.current;
+      const currentShapes = shapesRef.current;
       const currentFiles = filesRef.current;
 
       if (snapshot?.snapshotJson) {
@@ -208,13 +213,14 @@ export function WhiteboardEditor({
             edges: currentEdges,
             files: currentFiles
           });
+          const shapeAdded = mergeMissingShapes(editor, currentShapes);
           knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
           editor.clearHistory();
           editor.selectNone();
           hydratedBoardRef.current = boardId;
           mountedRef.current = true;
-          if (migrated > 0 || added > 0) {
-            setMessage(`已载入画布快照，迁移 ${migrated} 张旧卡片，同步 ${added} 张新卡片`);
+          if (migrated > 0 || added > 0 || shapeAdded > 0) {
+            setMessage(`已载入画布快照，迁移 ${migrated} 张旧卡片，同步 ${added} 张新卡片、${shapeAdded} 个节点`);
             queueSave();
           } else {
             setMessage("已载入画布快照");
@@ -230,6 +236,7 @@ export function WhiteboardEditor({
         files: currentFiles,
         boardTitle
       });
+      mergeMissingShapes(editor, currentShapes);
       knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
       editor.clearHistory();
       editor.selectNone();
@@ -256,25 +263,32 @@ export function WhiteboardEditor({
       return;
     }
 
+    // 增量同步卡片
     const known = knownCardIdsRef.current;
     const missing = cards.filter((card) => !known.has(card.id));
-    if (missing.length === 0) {
-      knownCardIdsRef.current = new Set(cards.map((card) => card.id));
-      return;
+    if (missing.length > 0) {
+      const added = mergeMissingCards(editor, {
+        boardId,
+        cards: missing,
+        edges,
+        files
+      });
+      if (added > 0) {
+        setMessage(`已同步 ${added} 张 AI 生成卡片到画布`);
+        queueSave();
+      }
     }
-
-    const added = mergeMissingCards(editor, {
-      boardId,
-      cards: missing,
-      edges,
-      files
-    });
     knownCardIdsRef.current = new Set(cards.map((card) => card.id));
-    if (added > 0) {
-      setMessage(`已同步 ${added} 张 AI 生成卡片到画布`);
+
+    // 增量同步图形节点（思维导图/流程图节点）
+    const shapeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
+    const newShapes = shapes.filter((s) => !shapeIds.has(createShapeId(s.id)));
+    if (newShapes.length > 0) {
+      mergeMissingShapes(editor, newShapes);
+      setMessage(`已同步 ${newShapes.length} 个图形节点到画布`);
       queueSave();
     }
-  }, [boardId, canvasRevision, cards, edges, editorReady, files, queueSave]);
+  }, [boardId, canvasRevision, cards, edges, editorReady, files, queueSave, shapes]);
 
   useEffect(() => {
     const unlisten = store.listen((entry) => {
@@ -842,6 +856,52 @@ async function loadLegacyContent(
 }
 
 /**
+ * 把后端图形节点（思维导图/流程图节点）渲染为 tldraw geo shape。
+ * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊。
+ * 返回新增数量。
+ */
+function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[]): number {
+  let added = 0;
+  for (const node of shapes) {
+    const shapeId = createShapeId(node.id);
+    if (editor.getShape(shapeId)) {
+      continue;
+    }
+    createGraphShape(editor, node, shapeId);
+    added += 1;
+  }
+  return added;
+}
+
+function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
+  const geoType = node.shape === "ellipse" ? "ellipse" : node.shape === "oval" ? "oval" : "rectangle";
+  const isCenter = node.level === 0;
+  editor.createShape({
+    id: shapeId,
+    type: "geo",
+    x: node.x,
+    y: node.y,
+    props: {
+      geo: geoType,
+      dash: "solid",
+      url: "",
+      w: node.width,
+      h: node.height,
+      growY: 0,
+      scale: 1,
+      labelColor: "black",
+      color: isCenter ? "green" : "blue",
+      fill: isCenter ? "solid" : "semi",
+      size: "m",
+      font: "draw",
+      align: "middle",
+      verticalAlign: "middle",
+      richText: toRichText(node.title)
+    }
+  });
+}
+
+/**
  * 把旧快照中的 note/geo 卡片迁移为自定义 card shape。
  * 旧卡片 shape 的 id 等于 createShapeId(card.id)，据此识别并保留坐标。
  * 返回迁移数量。
@@ -917,8 +977,7 @@ function mergeMissingCards(
   const existingCount = editor.getCurrentPageShapes().length;
 
   for (const [index, card] of input.cards.entries()) {
-    const shapeId = createShapeId(card.id);
-    if (editor.getShape(shapeId)) {
+    const shapeId = createShapeId(card.id);    if (editor.getShape(shapeId)) {
       shapeIdsByCardId.set(card.id, shapeId);
       continue;
     }
@@ -1042,6 +1101,10 @@ function createEdgeBinding(
   if (editor.getShape(arrowId)) {
     return;
   }
+  // 连线样式：curve→arc 曲线（加大 bend），straight→直线（bend=0）；颜色/粗细按 edge 配置
+  const isCurve = edge.style === "curve";
+  const color = edge.color ?? "green";
+  const weight = edge.weight ?? 2;
 
   editor.createShape({
     id: arrowId,
@@ -1049,16 +1112,16 @@ function createEdgeBinding(
     props: {
       kind: "arc",
       labelColor: "black",
-      color: "green",
+      color,
       fill: "none",
-      dash: "dashed",
-      size: "m",
+      dash: "solid",
+      size: weight >= 3 ? "l" : weight === 1 ? "s" : "m",
       arrowheadStart: "none",
       arrowheadEnd: "arrow",
       font: "draw",
       start: { x: 0, y: 0 },
       end: { x: 160, y: 0 },
-      bend: 0,
+      bend: isCurve ? 0.3 : 0,
       text: edge.label ?? "",
       labelPosition: 0.5,
       scale: 1,
