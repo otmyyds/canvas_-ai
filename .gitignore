@@ -1,0 +1,29 @@
+# build
+backend/target/
+frontend/.next/
+frontend/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# logs / tmp
+logs/
+tmp/
+*.log
+
+# env secrets
+.env
+backend/.env
+
+# maven local repo
+.m2/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# backup files
+*.bak
+*.bak2

@@ -1,0 +1,96 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: doc-canvas
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:doc_canvas}
+    username: ${POSTGRES_USER:doc_canvas}
+    password: ${POSTGRES_PASSWORD:doc_canvas}
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      repositories:
+        enabled: false
+  ai:
+    openai:
+      # 密钥：优先百炼 BAILIAN_API_TOKEN，其次 GPT_API_KEY
+      api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:sk-placeholder}}}
+      # Spring AI 会拼接 /v1/chat/completions，base-url 不要带 /v1
+      base-url: ${GPT_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
+      chat:
+        options:
+          model: ${AI_MODEL_PLANNER:qwen-plus}
+      embedding:
+        options:
+          model: ${EMBEDDING_MODEL:text-embedding-v3}
+    # 独立 embedding 配置（走百炼 / OpenAI 兼容 / 阿里 DashScope）
+    embedding:
+      api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:}}}
+      base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      model: ${EMBEDDING_MODEL:text-embedding-v3}
+      dimensions: ${EMBEDDING_DIMENSIONS:1024}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+app:
+  cors:
+    allowed-origins:
+      - ${FRONTEND_ORIGIN:http://localhost:3000}
+    allowed-origin-patterns:
+      - http://localhost:*
+      - http://127.0.0.1:*
+      - http://192.168.*:*
+      - http://10.*:*
+      - http://172.16.*:*
+      - http://172.17.*:*
+      - http://172.18.*:*
+      - http://172.19.*:*
+      - http://172.20.*:*
+      - http://172.21.*:*
+      - http://172.22.*:*
+      - http://172.23.*:*
+      - http://172.24.*:*
+      - http://172.25.*:*
+      - http://172.26.*:*
+      - http://172.27.*:*
+      - http://172.28.*:*
+      - http://172.29.*:*
+      - http://172.30.*:*
+      - http://172.31.*:*
+  ai:
+    # mock | spring-ai；真实调用请设 AI_PROVIDER=spring-ai 并配置 GPT_API_KEY
+    provider: ${AI_PROVIDER:spring-ai}
+    task:
+      max-steps: ${AI_TASK_MAX_STEPS:8}
+      max-model-calls: ${AI_TASK_MAX_MODEL_CALLS:3}
+      max-tool-calls: ${AI_TASK_MAX_TOOL_CALLS:8}
+      max-duration-seconds: ${AI_TASK_MAX_DURATION_SECONDS:900}
+      per-user-concurrency: ${AI_TASK_PER_USER_CONCURRENCY:2}
+      per-board-write-concurrency: ${AI_TASK_PER_BOARD_WRITE_CONCURRENCY:1}
+  rustfs:
+    endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
+    access-key: ${RUSTFS_ACCESS_KEY:rustfsadmin}
+    secret-key: ${RUSTFS_SECRET_KEY:rustfsadmin}
+    bucket: ${RUSTFS_BUCKET:doc-canvas}
+    region: ${RUSTFS_REGION:us-east-1}
+  # 向量 embedding 提供方（阿里百炼 text-embedding-v3，输出 1024 维）
+  embedding:
+    api-key: ${BAILIAN_API_TOKEN:}
+    base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    model: ${EMBEDDING_MODEL:text-embedding-v3}

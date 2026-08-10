@@ -1,0 +1,14 @@
+package com.picturecreate.doccanvas.domain;
+
+public enum AiTaskType {
+    DOCUMENT_SUMMARY,
+    CANVAS_STRUCTURE,
+    GENERATE_IMAGE,
+    EDIT_IMAGE,
+    GENERATE_COVER,
+    GENERATE_DIAGRAM_ASSET,
+    STUDY_PLAN,
+    PRODUCT_REQUIREMENT,
+    GENERATE_MINDMAP,
+    GENERATE_FLOWCHART
+}
