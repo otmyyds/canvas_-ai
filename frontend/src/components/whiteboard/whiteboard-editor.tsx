@@ -32,7 +32,7 @@ import {
   Text,
   Trash2
 } from "lucide-react";
-import type { AiTask, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 import { api } from "@/lib/api";
 import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
@@ -54,7 +54,7 @@ type WhiteboardEditorProps = {
   connection: string;
   canvasRevision?: number;
   onRefresh: () => Promise<void>;
-  onCreateTask: (type: AiTask["type"], prompt: string) => Promise<void>;
+  onAssist: (prompt: string) => Promise<AssistResult>;
   onAbortTask: (taskId: string) => Promise<void>;
   onUploadFile: (file: File) => Promise<void>;
   onDeleteFile: (fileId: string) => Promise<void>;
@@ -110,7 +110,7 @@ export function WhiteboardEditor({
   connection,
   canvasRevision = 0,
   onRefresh,
-  onCreateTask,
+  onAssist,
   onAbortTask,
   onUploadFile,
   onDeleteFile,
@@ -871,7 +871,7 @@ export function WhiteboardEditor({
         boardId={boardId}
         tasks={tasks}
         connection={connection}
-        onCreateTask={onCreateTask}
+        onAssist={onAssist}
         onAbortTask={onAbortTask}
       />
     </div>

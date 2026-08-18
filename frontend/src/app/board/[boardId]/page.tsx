@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AiTaskType, TaskEvent } from "@/lib/types";
+import type { TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
 import { WhiteboardEditor } from "@/components/whiteboard/whiteboard-editor";
@@ -98,9 +98,12 @@ function BoardEditor({ boardId }: { boardId: string }) {
 
   const connection = useTaskStream(boardId, onTaskEvent);
 
-  async function createTask(type: AiTaskType, prompt: string) {
-    await api.createTask(boardId, type, prompt);
-    setTasks(await api.listTasks(boardId));
+  async function assist(prompt: string) {
+    const result = await api.assist(boardId, prompt);
+    if (result.kind === "task") {
+      setTasks(await api.listTasks(boardId));
+    }
+    return result;
   }
 
   async function abortTask(taskId: string) {
@@ -217,7 +220,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           connection={connection}
           canvasRevision={canvasRevision}
           onRefresh={loadAll}
-          onCreateTask={createTask}
+          onAssist={assist}
           onAbortTask={abortTask}
           onUploadFile={uploadFile}
           onDeleteFile={deleteFile}

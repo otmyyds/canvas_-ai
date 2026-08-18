@@ -71,7 +71,7 @@ public class AiTaskService {
     private final CardRepository cardRepository;
     private final BoardEdgeRepository edgeRepository;
     private final ShapeRepository shapeRepository;
-    private final FileService fileService;
+    private final RagContextService ragContextService;
     private final SkillLoader skillLoader;
     private final TaskEventPublisher eventPublisher;
     private final AiGenerationService aiGenerationService;
@@ -81,7 +81,7 @@ public class AiTaskService {
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             CardRepository cardRepository, BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
-            FileService fileService, SkillLoader skillLoader, TaskEventPublisher eventPublisher,
+            RagContextService ragContextService, SkillLoader skillLoader, TaskEventPublisher eventPublisher,
             AiGenerationService aiGenerationService, @Qualifier("aiTaskExecutor") Executor aiTaskExecutor,
             StringRedisTemplate redisTemplate, AppProperties properties) {
         this.boardService = boardService;
@@ -90,7 +90,7 @@ public class AiTaskService {
         this.cardRepository = cardRepository;
         this.edgeRepository = edgeRepository;
         this.shapeRepository = shapeRepository;
-        this.fileService = fileService;
+        this.ragContextService = ragContextService;
         this.skillLoader = skillLoader;
         this.eventPublisher = eventPublisher;
         this.aiGenerationService = aiGenerationService;
@@ -201,7 +201,7 @@ public class AiTaskService {
 
     /**
      * 构建任务上下文并调用大模型生成画布动作。
-     * 注入：已解析资料（上限）、画布现有卡片（前 20 张）、匹配到的 Skill。
+     * 注入：RAG 检索的相关资料片段、画布现有卡片（前 20 张）、匹配到的 Skill。
      *
      * @param taskId 任务 id
      * @param skill 匹配到的 Skill（可为 null）
@@ -211,18 +211,25 @@ public class AiTaskService {
     protected BoardActionResult generate(UUID taskId, SkillDefinition skill) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
-        // 已解析的上传资料（RAG 上下文）
-        List<AiTaskContext.SourceContext> sources = fileService.parsedSources(task.getBoardId(), task.getOwnerId());
+        // RAG 检索的相关资料片段（替代全量注入）
+        List<AiTaskContext.SourceContext> sources = ragContextService.retrieve(task.getBoardId(), task.getOwnerId(),
+                task.getPrompt());
         // 画布现有卡片（供 AI 参考已有内容，避免重复）
         List<AiTaskContext.CardContext> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).stream()
                 .map(card -> new AiTaskContext.CardContext(card.getId().toString(), card.getTitle(),
                         card.getCardType().name(), card.getContentMarkdown()))
                 .limit(20)
                 .toList();
-        log.info("构建上下文：taskId={} 资料数={} 卡片数={} skill={}", taskId, sources.size(), cards.size(),
-                skill == null ? "无" : skill.slug());
+        // 画布现有图形节点（思维导图/流程图节点，供 AI 参考与删除）
+        List<AiTaskContext.ShapeContext> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId())
+                .stream()
+                .map(shape -> new AiTaskContext.ShapeContext(shape.getId().toString(), shape.getTitle(),
+                        shape.getShape(), shape.getLevel()))
+                .toList();
+        log.info("构建上下文：taskId={} 资料数={} 卡片数={} 图形数={} skill={}", taskId, sources.size(), cards.size(),
+                shapes.size(), skill == null ? "无" : skill.slug());
         return aiGenerationService.generateBoardActions(new AiTaskContext(task.getId(), task.getBoardId(),
-                task.getOwnerId(), task.getType(), task.getPrompt(), sources, cards, skill));
+                task.getOwnerId(), task.getType(), task.getPrompt(), sources, cards, shapes, skill));
     }
 
     /**
@@ -359,6 +366,7 @@ public class AiTaskService {
                     // 分组当前 MVP 无落库表，识别但不写入，避免阻塞任务
                 }
                 case BoardAction.DeleteCard deleteCard -> applyDeleteCard(task, deleteCard);
+                case BoardAction.DeleteShape deleteShape -> applyDeleteShape(task, deleteShape);
                 case BoardAction.CreateCard ignored -> {
                     // 第一遍已创建
                 }
@@ -539,16 +547,34 @@ public class AiTaskService {
     private void applyDeleteCard(AiTask task, BoardAction.DeleteCard action) {
         UUID cardId = uuid(action.cardId());
         if (cardId == null) {
+            log.warn("applyDeleteCard: 忽略非法 cardId={}", action.cardId());
             return;
         }
-        log.info("applyDeleteCard: cardId={}", cardId);
         cardRepository.findById(cardId)
                 .filter(card -> card.getBoardId().equals(task.getBoardId()))
-                .ifPresent(card -> {
+                .ifPresentOrElse(card -> {
                     List<BoardEdge> edges = edgeRepository.findByFromCardIdOrToCardId(cardId, cardId);
                     edgeRepository.deleteAll(edges);
                     cardRepository.delete(card);
-                });
+                    log.info("applyDeleteCard: cardId={} title={} 已删除", cardId, card.getTitle());
+                }, () -> log.warn("applyDeleteCard: 卡片不存在 cardId={}", cardId));
+    }
+
+    /** 删除图形节点（连带其引用的连线） */
+    private void applyDeleteShape(AiTask task, BoardAction.DeleteShape action) {
+        UUID shapeId = uuid(action.shapeId());
+        if (shapeId == null) {
+            log.warn("applyDeleteShape: 忽略非法 shapeId={}", action.shapeId());
+            return;
+        }
+        shapeRepository.findById(shapeId)
+                .filter(shape -> shape.getBoardId().equals(task.getBoardId()))
+                .ifPresentOrElse(shape -> {
+                    List<BoardEdge> edges = edgeRepository.findByFromCardIdOrToCardId(shapeId, shapeId);
+                    edgeRepository.deleteAll(edges);
+                    shapeRepository.delete(shape);
+                    log.info("applyDeleteShape: shapeId={} title={} 已删除", shapeId, shape.getTitle());
+                }, () -> log.warn("applyDeleteShape: 图形节点不存在 shapeId={}", shapeId));
     }
 
     /** 字符串转 UUID；非法返回 null */

@@ -73,7 +73,8 @@ public class SpringAiGenerationService implements AiGenerationService {
         log.info("========== AI 任务开始 ==========");
         log.info("任务类型: {}", context.type());
         log.info("用户输入: {}", context.prompt());
-        log.info("画布卡片数: {}, 资料数: {}", context.cards().size(), context.sources().size());
+        log.info("画布卡片数: {}, 图形数: {}, 资料数: {}", context.cards().size(), context.shapes().size(),
+                context.sources().size());
         if (!context.cards().isEmpty()) {
             log.info("现有卡片: {}", context.cards().stream()
                     .map(c -> c.title() + "[" + c.cardId() + "]").toList());
@@ -84,7 +85,7 @@ public class SpringAiGenerationService implements AiGenerationService {
             return generateMindmapTwoStage(context);
         }
         // 内联上下文：不用工具收集（百炼兼容性），直接用 prompt 传入卡片和资料
-        String toolContext = inlineContext(context.cards(), context.sources());
+        String toolContext = inlineContext(context.cards(), context.shapes(), context.sources());
 
         // 结构化输出（用 content() 取文本，手动解析 JSON）
         int attempts = 0;
@@ -199,6 +200,8 @@ public class SpringAiGenerationService implements AiGenerationService {
                             intValue(map.get("weight"), 2)));
                     case "delete_card" -> actions.add(new BoardAction.DeleteCard(
                             str(map.get("cardId"))));
+                    case "delete_shape" -> actions.add(new BoardAction.DeleteShape(
+                            str(map.get("shapeId"))));
                     default -> {
                         // 忽略未知动作
                     }
@@ -444,6 +447,7 @@ public class SpringAiGenerationService implements AiGenerationService {
         prompt.append("id 是可选的临时 id（string），供本计划内 connect 引用新卡。\n");
         prompt.append(contentDepthConstraint(context.type().name()));
         prompt.append("connect 的 fromCardId/toCardId 用已有卡片的 id 或本次 create_card 的 id。\n");
+        prompt.append("删除画布元素时输出 delete_card（cardId 为已有卡片 id）或 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
         prompt.append("一次任务输出 3-10 个动作（结构图多输出一些），动作之间有意义。\n");
         prompt.append(structurePrompt(context.type().name()));
         prompt.append(chatGuard(context.type().name()));
@@ -531,6 +535,15 @@ public class SpringAiGenerationService implements AiGenerationService {
             }
             prompt.append('\n');
         }
+        if (context.shapes() != null && !context.shapes().isEmpty()) {
+            prompt.append("画布中现有图形节点（shapeId 以此为准）：\n");
+            for (AiTaskContext.ShapeContext shape : context.shapes()) {
+                prompt.append("- [").append(shape.shapeId()).append("] ")
+                        .append(shape.title()).append(" (").append(shape.shape()).append(", level=")
+                        .append(shape.level()).append(")\n");
+            }
+            prompt.append('\n');
+        }
         if (context.sources() != null && !context.sources().isEmpty()) {
             prompt.append("资料库中已解析的文本如下，请优先依据这些内容回答：\n");
             for (AiTaskContext.SourceContext source : context.sources()) {
@@ -563,7 +576,8 @@ public class SpringAiGenerationService implements AiGenerationService {
      * @param sources 已解析的上传资料
      * @return 拼接后的上下文文本
      */
-    private String inlineContext(List<AiTaskContext.CardContext> cards, List<AiTaskContext.SourceContext> sources) {
+    private String inlineContext(List<AiTaskContext.CardContext> cards, List<AiTaskContext.ShapeContext> shapes,
+            List<AiTaskContext.SourceContext> sources) {
         StringBuilder sb = new StringBuilder();
         if (cards != null && !cards.isEmpty()) {
             sb.append("画布现有卡片：\n");
@@ -571,6 +585,13 @@ public class SpringAiGenerationService implements AiGenerationService {
                 sb.append("- [").append(card.cardId()).append("] ").append(card.title())
                         .append("：").append(card.content() == null ? "" : card.content().replace('\n', ' '))
                         .append('\n');
+            }
+        }
+        if (shapes != null && !shapes.isEmpty()) {
+            sb.append("画布现有图形节点：\n");
+            for (var shape : shapes) {
+                sb.append("- [").append(shape.shapeId()).append("] ").append(shape.title())
+                        .append("（").append(shape.shape()).append(", level=").append(shape.level()).append("）\n");
             }
         }
         if (sources != null && !sources.isEmpty()) {

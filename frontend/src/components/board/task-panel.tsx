@@ -2,15 +2,14 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Ban, Bot, Loader2, Send, User } from "lucide-react";
-import type { AiTask, AiTaskType } from "@/lib/types";
-import { api } from "@/lib/api";
+import type { AiTask, AiTaskType, AssistResult } from "@/lib/types";
 import { Button, GhostButton, Textarea } from "@/components/ui";
 
 type TaskPanelProps = {
   boardId: string;
   tasks: AiTask[];
   connection: string;
-  onCreateTask: (type: AiTaskType, prompt: string) => Promise<void>;
+  onAssist: (prompt: string) => Promise<AssistResult>;
   onAbortTask: (taskId: string) => Promise<void>;
 };
 
@@ -22,30 +21,17 @@ type ChatMessage = {
 };
 
 /**
- * 明确的任务意图关键词 → 对应任务类型。
- * 用户输入命中这些关键词 → 走任务流程（落卡 + 步骤展示）；
- * 否则 → 走聊天接口（纯文本回复）。
+ * 快捷任务入口类型。点击按钮只填充提示词前缀，真正的意图判断交给后端分类器。
  */
-const TASK_PATTERNS: Array<{ type: AiTaskType; patterns: string[] }> = [
-  { type: "GENERATE_MINDMAP", patterns: ["思维导图", "导图", "脑图", "mindmap"] },
-  { type: "GENERATE_FLOWCHART", patterns: ["流程", "flowchart", "flow"] },
-  { type: "STUDY_PLAN", patterns: ["学习计划", "学习路径", "学习路线"] },
-  { type: "PRODUCT_REQUIREMENT", patterns: ["产品需求", "prd", "需求文档"] },
-  { type: "GENERATE_IMAGE", patterns: ["生成图", "画图", "图片"] },
-  { type: "DOCUMENT_SUMMARY", patterns: ["总结", "摘要", "概括", "归纳"] },
-  { type: "CANVAS_STRUCTURE", patterns: ["整理", "结构", "梳理", "布局"] }
+const QUICK_TASK_TYPES: AiTaskType[] = [
+  "GENERATE_MINDMAP",
+  "GENERATE_FLOWCHART",
+  "STUDY_PLAN",
+  "PRODUCT_REQUIREMENT",
+  "GENERATE_IMAGE",
+  "DOCUMENT_SUMMARY",
+  "CANVAS_STRUCTURE"
 ];
-
-/** 判断输入是否为明确的生成类任务意图 */
-function matchTaskType(prompt: string): AiTaskType | null {
-  const text = prompt.toLowerCase();
-  for (const entry of TASK_PATTERNS) {
-    if (entry.patterns.some((p) => text.includes(p))) {
-      return entry.type;
-    }
-  }
-  return null;
-}
 
 const taskStatusText: Record<string, string> = {
   CREATED: "已创建",
@@ -114,27 +100,27 @@ function loadSession(boardId: string): ChatMessage[] {
  * 右侧 AI 助手面板（对话式交互）。
  *
  * 交互模型：
- * - 用户输入 → 智能路由：
- *   a) 命中任务关键词（思维导图/流程图/总结等）→ onCreateTask 走任务流程
- *   b) 未命中 → api.chat 纯文本对话（不落卡）
+ * - 用户输入 → onAssist 统一提交后端，由后端意图分类器路由：
+ *   a) 分类为任务 → 返回 kind=task，父组件刷新 tasks，TaskCard 自动追加
+ *   b) 分类为聊天 → 返回 kind=chat，追加 assistant 文本气泡
  * - 对话流中嵌入 TaskCard（任务进度/步骤/中断），与聊天消息混合展示
  *
  * 数据流：
- * 1. 用户输入 → submit() 判断任务 or 聊天
- * 2. 任务：onCreateTask(type, prompt) → 后端创建 → WebSocket 推事件 → tasks 更新
- * 3. 聊天：api.chat(boardId, prompt) → 返回文本 → 追加 assistant 气泡
+ * 1. 用户输入 → submit() 调 onAssist(prompt)
+ * 2. onAssist 调后端 /assist：意图分类 + 分流（聊天/任务）
+ * 3. kind=chat → 追加文本气泡；kind=task → 父组件刷新 tasks
  * 4. 新任务出现（tasks[0] 变化）→ 追加一条含 TaskCard 的 assistant 消息
  *
  * 持久化：对话文本按画布隔离存 localStorage（dc_chat_{boardId}），刷新不丢；
  * 任务卡不持久化（任务本身在后端有记录）。
  *
- * @param boardId 画布 id（聊天接口用）
+ * @param boardId 画布 id（会话持久化 key 用）
  * @param tasks 任务列表（驱动 TaskCard 进度）
  * @param connection WebSocket 连接状态
- * @param onCreateTask 创建任务回调（父组件封装）
+ * @param onAssist 统一提交回调（父组件封装，调后端 /assist）
  * @param onAbortTask 中断任务回调
  */
-export function TaskPanel({ boardId, tasks, connection, onCreateTask, onAbortTask }: TaskPanelProps) {
+export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask }: TaskPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSession(boardId));
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -188,16 +174,12 @@ export function TaskPanel({ boardId, tasks, connection, onCreateTask, onAbortTas
     setSubmitting(true);
     setError(undefined);
     try {
-      const taskType = matchTaskType(text);
-      if (taskType) {
-        // 明确的任务意图 → 发起 AI 任务（落卡 + 步骤展示）
-        await onCreateTask(taskType, text);
-      } else {
-        // 无明确任务意图 → 纯文本聊天
-        const res = await api.chat(boardId, text);
-        const reply = res.reply ?? "（AI 没有返回内容）";
-        setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+      // 统一交给后端意图分类：chat 纯文本 / task 落卡任务
+      const result = await onAssist(text);
+      if (result.kind === "chat") {
+        setMessages((prev) => [...prev, { role: "assistant", content: result.reply }]);
       }
+      // kind=task 时父组件刷新 tasks，TaskCard 经 useEffect 自动追加，无需手动处理
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败，请稍后重试");
     } finally {
@@ -258,18 +240,17 @@ export function TaskPanel({ boardId, tasks, connection, onCreateTask, onAbortTas
       <div className="border-t border-ink/10 p-3">
         {/* 任务快捷入口 */}
         <div className="mb-2 flex flex-wrap gap-1">
-          {TASK_PATTERNS.map((entry) => (
+          {QUICK_TASK_TYPES.map((type) => (
             <button
-              key={entry.type}
+              key={type}
               type="button"
               disabled={submitting || Boolean(activeTask)}
               onClick={() => {
-                const label = taskLabel[entry.type] ?? entry.type;
-                setPrompt(`${label}：`);
+                setPrompt(`${taskLabel[type] ?? type}：`);
               }}
               className="rounded border border-ink/10 bg-mist px-2 py-1 text-[11px] text-ink/70 transition hover:border-spruce/40 hover:text-spruce disabled:opacity-50"
             >
-              {taskLabel[entry.type] ?? entry.type}
+              {taskLabel[type] ?? type}
             </button>
           ))}
         </div>

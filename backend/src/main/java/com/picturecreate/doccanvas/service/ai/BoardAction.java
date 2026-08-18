@@ -18,10 +18,12 @@ import jakarta.validation.constraints.NotBlank;
         @JsonSubTypes.Type(value = BoardAction.UpdateCard.class, name = "update_card"),
         @JsonSubTypes.Type(value = BoardAction.Connect.class, name = "connect"),
         @JsonSubTypes.Type(value = BoardAction.CreateGroup.class, name = "create_group"),
-        @JsonSubTypes.Type(value = BoardAction.DeleteCard.class, name = "delete_card")
+        @JsonSubTypes.Type(value = BoardAction.DeleteCard.class, name = "delete_card"),
+        @JsonSubTypes.Type(value = BoardAction.DeleteShape.class, name = "delete_shape")
 })
 public sealed interface BoardAction permits BoardAction.CreateCard, BoardAction.CreateShape,
-        BoardAction.UpdateCard, BoardAction.Connect, BoardAction.CreateGroup, BoardAction.DeleteCard {
+        BoardAction.UpdateCard, BoardAction.Connect, BoardAction.CreateGroup, BoardAction.DeleteCard,
+        BoardAction.DeleteShape {
 
     /** 新建一张卡片；id 可选，供本计划内其他动作（connect）引用新卡 */
     record CreateCard(
@@ -81,6 +83,11 @@ public sealed interface BoardAction permits BoardAction.CreateCard, BoardAction.
     /** 删除一张卡片（连带其连线） */
     record DeleteCard(
             @NotBlank(message = "卡片 id 不能为空") String cardId) implements BoardAction {
+    }
+
+    /** 删除一个图形节点（思维导图/流程图节点，连带其连线） */
+    record DeleteShape(
+            @NotBlank(message = "节点 id 不能为空") String shapeId) implements BoardAction {
     }
 
     /** 模型返回的整体计划，便于 Spring AI 结构化反序列化 */

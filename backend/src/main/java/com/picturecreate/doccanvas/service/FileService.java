@@ -2,7 +2,6 @@ package com.picturecreate.doccanvas.service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -17,10 +16,8 @@ import org.springframework.web.multipart.MultipartFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.picturecreate.doccanvas.domain.FileParseStatus;
 import com.picturecreate.doccanvas.domain.SourceFile;
 import com.picturecreate.doccanvas.repository.SourceFileRepository;
-import com.picturecreate.doccanvas.service.ai.AiTaskContext.SourceContext;
 import com.picturecreate.doccanvas.storage.ObjectStorageService;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObjectContent;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObject;
@@ -29,11 +26,6 @@ import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObject;
 public class FileService {
 
     private static final Logger log = LoggerFactory.getLogger(FileService.class);
-
-    /** 单个文件注入 AI 的上限字符数 */
-    private static final int MAX_FILE_CHARS = 6000;
-    /** 单次 AI 任务注入全部资料的上限字符数 */
-    private static final int MAX_TOTAL_CHARS = 20000;
 
     private final BoardService boardService;
     private final SourceFileRepository sourceFileRepository;
@@ -144,29 +136,6 @@ public class FileService {
             sourceFile.markParseFailed();
             return false;
         }
-    }
-
-    @Transactional(readOnly = true)
-    public List<SourceContext> parsedSources(UUID boardId, UUID ownerId) {
-        List<SourceContext> sources = new ArrayList<>();
-        int total = 0;
-        for (SourceFile file : sourceFileRepository.findByBoardIdAndOwnerIdAndParseStatus(boardId, ownerId,
-                FileParseStatus.READY)) {
-            String text = file.getTextExcerpt();
-            if (text == null || text.isBlank()) {
-                continue;
-            }
-            if (text.length() > MAX_FILE_CHARS) {
-                text = text.substring(0, MAX_FILE_CHARS) + "\n…（内容过长已截断）";
-            }
-            sources.add(new SourceContext(file.getFilename(), text));
-            total += text.length();
-            if (total >= MAX_TOTAL_CHARS) {
-                sources.add(new SourceContext("", "…（资料总量过大，其余内容未注入）"));
-                break;
-            }
-        }
-        return sources;
     }
 
     @Transactional(readOnly = true)

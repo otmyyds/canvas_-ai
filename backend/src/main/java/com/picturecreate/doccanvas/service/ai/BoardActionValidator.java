@@ -52,6 +52,14 @@ public final class BoardActionValidator {
                 if (updateCard.cardId() == null || updateCard.cardId().isBlank()) {
                     problems.add("存在 cardId 缺失的 update_card 动作");
                 }
+            } else if (action instanceof BoardAction.DeleteCard deleteCard) {
+                if (deleteCard.cardId() == null || deleteCard.cardId().isBlank()) {
+                    problems.add("存在 cardId 缺失的 delete_card 动作");
+                }
+            } else if (action instanceof BoardAction.DeleteShape deleteShape) {
+                if (deleteShape.shapeId() == null || deleteShape.shapeId().isBlank()) {
+                    problems.add("存在 shapeId 缺失的 delete_shape 动作");
+                }
             } else if (action instanceof BoardAction.CreateGroup group) {
                 if (group.title() == null || group.title().isBlank()) {
                     problems.add("存在标题为空的分组动作");

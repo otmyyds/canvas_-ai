@@ -104,6 +104,11 @@ export type AiTask = {
   steps: AiTaskStep[];
 };
 
+/** AI 助手统一响应：kind=chat 返回纯文本，kind=task 返回落卡任务 */
+export type AssistResult =
+  | { kind: "chat"; reply: string }
+  | { kind: "task"; task: AiTask };
+
 /** 上传资料文件（TXT/MD 等自动解析为可检索文本） */
 export type SourceFile = {
   id: string;

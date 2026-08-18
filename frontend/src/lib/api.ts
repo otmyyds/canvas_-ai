@@ -1,4 +1,4 @@
-import type { AiTask, AiTaskType, Board, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, Board, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 
 /**
  * 后端 API 基地址（来自 .env 的 NEXT_PUBLIC_API_BASE，默认 localhost:8080）。
@@ -142,10 +142,6 @@ export const api = {
 
   // ===== AI 任务 =====
   listTasks: (boardId: string) => request<AiTask[]>(`/api/boards/${boardId}/ai-tasks`),
-  createTask: (boardId: string, type: AiTaskType, prompt: string) => request<AiTask>(`/api/boards/${boardId}/ai-tasks`, {
-    method: "POST",
-    body: JSON.stringify({ type, prompt })
-  }),
   abortTask: (taskId: string) => request<AiTask>(`/api/ai-tasks/${taskId}/abort`, { method: "POST" }),
 
   // ===== 文件 =====
@@ -185,10 +181,10 @@ export const api = {
     return token ? `${base}?token=${encodeURIComponent(token)}` : base;
   },
 
-  // ===== 聊天 =====
-  /** 纯文本聊天（不生成卡片动作），用于询问/闲聊 */
-  chat: (boardId: string, prompt: string) =>
-    request<{ reply: string }>(`/api/boards/${boardId}/chat`, {
+  // ===== AI 助手统一入口 =====
+  /** 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落卡任务 */
+  assist: (boardId: string, prompt: string) =>
+    request<AssistResult>(`/api/boards/${boardId}/assist`, {
       method: "POST",
       body: JSON.stringify({ prompt })
     }),

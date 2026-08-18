@@ -10,17 +10,9 @@ import com.picturecreate.doccanvas.domain.AiTaskStep;
 import com.picturecreate.doccanvas.domain.AiTaskStepStatus;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-
 public final class AiTaskDtos {
 
     private AiTaskDtos() {
-    }
-
-    public record CreateAiTaskRequest(
-            @NotNull(message = "任务类型不能为空") AiTaskType type,
-            @NotBlank(message = "任务提示词不能为空") String prompt) {
     }
 
     public record AiTaskResponse(
