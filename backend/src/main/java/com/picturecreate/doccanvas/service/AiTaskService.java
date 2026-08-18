@@ -40,11 +40,28 @@ import com.picturecreate.doccanvas.service.ai.GraphLayoutService;
 import com.picturecreate.doccanvas.service.ai.SkillDefinition;
 import com.picturecreate.doccanvas.service.ai.SkillLoader;
 
+/**
+ * AI 任务编排服务：负责 AI 任务的完整生命周期。
+ *
+ * 任务状态机：CREATED → QUEUED → RUNNING → SUCCEEDED / FAILED / ABORTED
+ *
+ * 核心流程（create 被调用后）：
+ * 1. create() 在事务内保存任务记录，注册 afterCommit 回调，异步触发 runTask()
+ * 2. runTask() 按固定步骤执行：加载技能 → 收集上下文 → 规划操作 → 应用操作
+ * 3. 规划操作阶段调用 aiGenerationService.generateBoardActions()（真正调用大模型）
+ * 4. 应用操作阶段 applyActions() 把模型产出的 BoardAction 落库（建卡/建图形/连线）
+ *
+ * 安全与约束：
+ * - 每用户/每画布有并发限制（enforceConcurrency）
+ * - 每步开始前检查是否被中断（assertNotCancelled：DB abort 标记 + Redis cancel key）
+ * - AI 只提案（BoardAction），真正落库由本服务统一校验后执行
+ */
 @Service
 public class AiTaskService {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AiTaskService.class);
 
+    /** 活跃状态集合（占用并发配额的任务状态） */
     private static final List<AiTaskStatus> ACTIVE_STATUSES = List.of(AiTaskStatus.QUEUED, AiTaskStatus.RUNNING,
             AiTaskStatus.ABORTING);
 
@@ -82,12 +99,24 @@ public class AiTaskService {
         this.properties = properties;
     }
 
+    /**
+     * 创建 AI 任务（POST /api/boards/{boardId}/ai-tasks 入口）。
+     * 事务提交后（afterCommit）异步执行 runTask，避免长任务阻塞 HTTP 请求。
+     *
+     * @param boardId 画布 id
+     * @param user 当前用户
+     * @param type 任务类型（思维导图/流程图/总结等）
+     * @param prompt 用户输入
+     * @return 创建后的任务详情（含步骤）
+     */
     @Transactional
     public AiTaskResponse create(UUID boardId, CurrentUser user, AiTaskType type, String prompt) {
         boardService.getOwned(boardId, user);
         enforceConcurrency(boardId, user);
         AiTask task = taskRepository.save(new AiTask(boardId, user.id(), type, prompt));
+        log.info("AI 任务已创建：taskId={} boardId={} type={} prompt={}", task.getId(), boardId, type, prompt);
         eventPublisher.publish(boardId, task.getId(), TaskEvent.created(task.getId(), boardId, type.name()));
+        // 事务提交后再异步执行，保证任务记录已落库
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -97,6 +126,7 @@ public class AiTaskService {
         return get(task.getId(), user);
     }
 
+    /** 查询画布下所有任务（含步骤），按创建时间倒序 */
     @Transactional(readOnly = true)
     public List<AiTaskResponse> list(UUID boardId, CurrentUser user) {
         boardService.getOwned(boardId, user);
@@ -105,6 +135,7 @@ public class AiTaskService {
                 .toList();
     }
 
+    /** 查询单个任务详情（含步骤） */
     @Transactional(readOnly = true)
     public AiTaskResponse get(UUID taskId, CurrentUser user) {
         AiTask task = taskRepository.findByIdAndOwnerId(taskId, user.id())
@@ -112,6 +143,10 @@ public class AiTaskService {
         return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderByCreatedAtAsc(taskId));
     }
 
+    /**
+     * 中断任务：设置 DB abort_requested 标记 + Redis cancel key。
+     * 任务在执行中的每个安全检查点（assertNotCancelled）会感知并停止。
+     */
     @Transactional
     public AiTaskResponse abort(UUID taskId, CurrentUser user) {
         AiTask task = taskRepository.findByIdAndOwnerId(taskId, user.id())
@@ -123,10 +158,17 @@ public class AiTaskService {
         return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderByCreatedAtAsc(taskId));
     }
 
+    /**
+     * 异步执行任务的完整流程（固定 4 步）：
+     * 加载技能 → 收集上下文 → 规划操作 → 应用操作。
+     * 任一步抛 AbortTaskException → 标记中断；其他异常 → 标记失败。
+     */
     private void runTask(UUID taskId) {
         try {
             begin(taskId);
             AiTask task = taskRepository.findById(taskId).orElseThrow();
+            log.info("任务开始执行：taskId={} type={} boardId={}", taskId, task.getType(), task.getBoardId());
+            // 按任务类型匹配 Skill（SKILL.md），决定该任务可用哪些工具
             SkillDefinition skill = skillLoader.findForTask(task.getType().name()).orElse(null);
             String skillStep = skill == null
                     ? "未找到匹配技能，按通用流程执行"
@@ -134,6 +176,7 @@ public class AiTaskService {
             runStep(taskId, "加载技能", 15, skillStep);
             runStep(taskId, "收集上下文", 35, "已收集画布卡片、资料文件和用户提示");
             runStep(taskId, "规划操作", 65, "已生成结构化画布操作方案");
+            // 真正调用大模型生成动作
             BoardActionResult result = generate(taskId, skill);
             runStep(taskId, "应用操作", 90, "已应用后端校验通过的画布操作");
             finish(taskId, result);
@@ -144,58 +187,81 @@ public class AiTaskService {
         }
     }
 
+    /** 任务启动：标记 RUNNING，进度 3% */
     @Transactional
     protected void begin(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markRunning("本地执行器");
         task.updateProgress(3, "启动任务");
         taskRepository.save(task);
+        log.info("任务标记 RUNNING：taskId={}", taskId);
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.progress(taskId, task.getBoardId(), 3,
                 "任务已启动，正在准备执行"));
     }
 
+    /**
+     * 构建任务上下文并调用大模型生成画布动作。
+     * 注入：已解析资料（上限）、画布现有卡片（前 20 张）、匹配到的 Skill。
+     *
+     * @param taskId 任务 id
+     * @param skill 匹配到的 Skill（可为 null）
+     * @return 模型产出的动作列表
+     */
     @Transactional
     protected BoardActionResult generate(UUID taskId, SkillDefinition skill) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
+        // 已解析的上传资料（RAG 上下文）
         List<AiTaskContext.SourceContext> sources = fileService.parsedSources(task.getBoardId(), task.getOwnerId());
+        // 画布现有卡片（供 AI 参考已有内容，避免重复）
         List<AiTaskContext.CardContext> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).stream()
                 .map(card -> new AiTaskContext.CardContext(card.getId().toString(), card.getTitle(),
                         card.getCardType().name(), card.getContentMarkdown()))
                 .limit(20)
                 .toList();
+        log.info("构建上下文：taskId={} 资料数={} 卡片数={} skill={}", taskId, sources.size(), cards.size(),
+                skill == null ? "无" : skill.slug());
         return aiGenerationService.generateBoardActions(new AiTaskContext(task.getId(), task.getBoardId(),
                 task.getOwnerId(), task.getType(), task.getPrompt(), sources, cards, skill));
     }
 
+    /**
+     * 任务成功收尾：应用动作 → 标记 SUCCEEDED → 推送 actions/done 事件。
+     */
     @Transactional
     protected void finish(UUID taskId, BoardActionResult result) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         applyActions(task, result.actions());
+        log.info("任务成功：taskId={} 动作数={}", taskId, result.actions() == null ? 0 : result.actions().size());
         task.markSucceeded(result.resultJson());
         taskRepository.save(task);
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.actions(taskId, task.getBoardId(), result.actions()));
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.done(taskId, task.getBoardId()));
     }
 
+    /** 任务中断收尾：标记 ABORTED，推送 aborted 事件 */
     @Transactional
     protected void markAborted(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markAborted();
         taskRepository.save(task);
+        log.info("任务已中断：taskId={}", taskId);
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.aborted(taskId, task.getBoardId()));
     }
 
+    /** 任务失败收尾：标记 FAILED（记录错误信息），推送 failed 事件 */
     @Transactional
     protected void markFailed(UUID taskId, Exception exception) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markFailed(exception.getMessage());
         taskRepository.save(task);
+        log.error("任务失败：taskId={} error={}", taskId, exception.getMessage(), exception);
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.failed(taskId, task.getBoardId(),
                 exception.getMessage() == null ? "任务失败" : exception.getMessage()));
     }
 
+    /** 执行一个步骤：开始 → 短暂停留 → 更新进度 → 完成（含中断检查） */
     private void runStep(UUID taskId, String title, int taskProgress, String message) {
         AiTaskStep step = startStep(taskId, title, message);
         sleepAndCheck(taskId, 600);
@@ -204,6 +270,7 @@ public class AiTaskService {
         completeStep(taskId, step.getId(), taskProgress, message);
     }
 
+    /** 步骤开始：落库 + 推送 step(running) 事件 */
     @Transactional
     protected AiTaskStep startStep(UUID taskId, String title, String message) {
         assertNotCancelled(taskId);
@@ -213,11 +280,13 @@ public class AiTaskService {
         step = stepRepository.save(step);
         task.updateProgress(task.getProgress(), title);
         taskRepository.save(task);
+        log.info("步骤开始：taskId={} step={} message={}", taskId, title, message);
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.step(taskId, task.getBoardId(), step.getId(), title, "running", 0, message));
         return step;
     }
 
+    /** 步骤进行中更新进度：落库 + 推送 step(running) 事件 */
     @Transactional
     protected void updateStep(UUID taskId, UUID stepId, int progress, String message) {
         assertNotCancelled(taskId);
@@ -229,6 +298,7 @@ public class AiTaskService {
                 TaskEvent.step(taskId, task.getBoardId(), stepId, step.getTitle(), "running", progress, message));
     }
 
+    /** 步骤完成：标记 DONE + 更新任务进度 + 推送 done 事件 */
     @Transactional
     protected void completeStep(UUID taskId, UUID stepId, int taskProgress, String message) {
         assertNotCancelled(taskId);
@@ -238,20 +308,31 @@ public class AiTaskService {
         task.updateProgress(taskProgress, step.getTitle());
         stepRepository.save(step);
         taskRepository.save(task);
+        log.info("步骤完成：taskId={} step={} progress={}", taskId, step.getTitle(), taskProgress);
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.step(taskId, task.getBoardId(), stepId, step.getTitle(), "done", 100, message));
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.progress(taskId, task.getBoardId(), taskProgress, message));
     }
 
+    /**
+     * 应用模型产出的所有动作到数据库。
+     *
+     * 为什么分两遍？
+     * 结构图（思维导图/流程图）里 connect 会引用"本计划内新建的节点"（临时 id 如 root1/branch1）。
+     * 若先建卡建图形（第一遍），记录 临时id→真实UUID 映射；再连/改/删（第二遍），
+     * 就能让 connect 通过映射找到真实节点 id。
+     *
+     * 前置：maybeLayoutGraph 已为结构图节点重算坐标（避免重叠）。
+     */
     private void applyActions(AiTask task, List<BoardAction> actions) {
         if (actions == null) {
             return;
         }
+        log.info("应用动作：taskId={} 动作数={}", task.getId(), actions.size());
         // 结构图任务：先用布局算法为节点计算坐标，再统一落库
         List<BoardAction> placed = maybeLayoutGraph(task, actions);
-        // 结构图场景下 connect 会引用本计划内新创建的节点，故分两遍：
-        // 第一遍先创建所有卡片/图形并记录 临时id->真实id 映射，第二遍处理连线/更新/删除。
+        // 第一遍：创建所有卡片/图形，记录 临时id->真实id 映射
         Map<String, UUID> cardIdMap = new HashMap<>();
         for (BoardAction action : placed) {
             if (action instanceof BoardAction.CreateCard createCard) {
@@ -266,6 +347,7 @@ public class AiTaskService {
                 }
             }
         }
+        // 第二遍：处理连线/更新/删除（connect 通过 cardIdMap 解析临时 id）
         for (BoardAction action : placed) {
             if (action == null) {
                 continue;
@@ -287,7 +369,11 @@ public class AiTaskService {
         }
     }
 
-    /** 创建图形节点（思维导图/流程图节点） */
+    /**
+     * 创建图形节点（思维导图/流程图节点）并落库到 shapes 表。
+     *
+     * @return 新节点的真实 UUID（供 connect 映射）
+     */
     private UUID applyCreateShape(AiTask task, BoardAction.CreateShape action) {
         log.info("applyCreateShape: id={} title={} level={} pos=({},{})", action.id(), action.title(), action.level(),
                 action.x(), action.y());
@@ -303,8 +389,9 @@ public class AiTaskService {
     }
 
     /**
-     * 对思维导图/流程图任务，把模型输出的 create_card 用布局算法重算坐标。
+     * 对思维导图/流程图任务，把模型输出的节点用布局算法重算坐标。
      * 模型只管结构（节点 + 连线），坐标交给后端算法，避免重叠。
+     * 思维导图 → layoutMindmap3（3 层辐射布局）；流程图 → layoutFlowchart（分层布局）。
      */
     private List<BoardAction> maybeLayoutGraph(AiTask task, List<BoardAction> actions) {
         boolean isGraph = task.getType() == AiTaskType.GENERATE_MINDMAP
@@ -333,9 +420,11 @@ public class AiTaskService {
         if (nodeIds.isEmpty()) {
             return actions;
         }
+        // 按任务类型选择布局算法
         Map<String, double[]> positions = task.getType() == AiTaskType.GENERATE_MINDMAP
                 ? GraphLayoutService.layoutMindmap3(nodeIds, edges, nodeLevel)
                 : GraphLayoutService.layoutFlowchart(nodeIds, edges);
+        // 用重算后的坐标重建每个节点动作
         return actions.stream().map(action -> {
             if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
                 double[] pos = positions.get(shape.id());
@@ -360,8 +449,11 @@ public class AiTaskService {
         }).toList();
     }
 
+    /** 创建普通卡片并落库到 cards 表，返回真实 UUID */
     private UUID applyCreateCard(AiTask task, BoardAction.CreateCard action) {
         CardType cardType = parseCardType(action.cardType());
+        log.info("applyCreateCard: id={} title={} type={} pos=({},{})", action.id(), action.title(), cardType,
+                action.x(), action.y());
         Card card = new Card(task.getBoardId(),
                 action.title() == null || action.title().isBlank() ? "AI 卡片" : action.title(),
                 action.markdown() == null ? "" : action.markdown(),
@@ -373,6 +465,7 @@ public class AiTaskService {
         return cardRepository.save(card).getId();
     }
 
+    /** 更新已有卡片（只改标题/正文，保留位置尺寸） */
     private void applyUpdateCard(AiTask task, BoardAction.UpdateCard action) {
         if (action.cardId() == null || action.cardId().isBlank()) {
             return;
@@ -383,6 +476,7 @@ public class AiTaskService {
         } catch (IllegalArgumentException exception) {
             return;
         }
+        log.info("applyUpdateCard: cardId={} title={}", cardId, action.title());
         cardRepository.findById(cardId)
                 .filter(card -> card.getBoardId().equals(task.getBoardId()))
                 .ifPresent(card -> {
@@ -391,6 +485,11 @@ public class AiTaskService {
                 });
     }
 
+    /**
+     * 在两点之间创建连线（board_edges）。
+     * fromCardId/toCardId 可能是本计划新建节点的临时 id（如 root1），
+     * 也可能是已有节点的真实 UUID——统一通过 cardIdMap 解析。
+     */
     private void applyConnect(AiTask task, BoardAction.Connect action, Map<String, UUID> cardIdMap) {
         UUID fromCardId = resolveCardId(action.fromCardId(), cardIdMap);
         UUID toCardId = resolveCardId(action.toCardId(), cardIdMap);
@@ -403,6 +502,7 @@ public class AiTaskService {
         if (!fromExists || !toExists) {
             return;
         }
+        log.info("applyConnect: {} -> {} label={}", fromCardId, toCardId, action.label());
         edgeRepository.save(new BoardEdge(task.getBoardId(), fromCardId, toCardId, action.label(),
                 action.style(), action.color(), action.weight() == null ? 2 : action.weight()));
     }
@@ -420,7 +520,10 @@ public class AiTaskService {
                 .orElse(false);
     }
 
-    /** 先按本计划新建卡片的临时 id 解析，再按真实 UUID 解析 */
+    /**
+     * 把连线端点解析为真实 UUID。
+     * 优先查本计划新建节点的临时 id 映射（cardIdMap），否则尝试把字符串当 UUID 解析。
+     */
     private UUID resolveCardId(String cardId, Map<String, UUID> cardIdMap) {
         if (cardId == null || cardId.isBlank()) {
             return null;
@@ -432,11 +535,13 @@ public class AiTaskService {
         return uuid(cardId);
     }
 
+    /** 删除卡片（连带其引用的连线） */
     private void applyDeleteCard(AiTask task, BoardAction.DeleteCard action) {
         UUID cardId = uuid(action.cardId());
         if (cardId == null) {
             return;
         }
+        log.info("applyDeleteCard: cardId={}", cardId);
         cardRepository.findById(cardId)
                 .filter(card -> card.getBoardId().equals(task.getBoardId()))
                 .ifPresent(card -> {
@@ -446,6 +551,7 @@ public class AiTaskService {
                 });
     }
 
+    /** 字符串转 UUID；非法返回 null */
     private UUID uuid(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -457,6 +563,7 @@ public class AiTaskService {
         }
     }
 
+    /** 并发控制：每用户最多 N 个活跃任务、每画布最多 M 个写入型任务 */
     private void enforceConcurrency(UUID boardId, CurrentUser user) {
         AppProperties.Task taskConfig = properties.ai().task();
         long runningForUser = taskRepository.countByOwnerIdAndStatusIn(user.id(), ACTIVE_STATUSES);
@@ -469,6 +576,10 @@ public class AiTaskService {
         }
     }
 
+    /**
+     * 睡眠并周期性检查是否被中断。
+     * 用于模拟任务步骤的耗时，同时让中断尽快生效。
+     */
     private void sleepAndCheck(UUID taskId, long millis) {
         Instant deadline = Instant.now().plusMillis(millis);
         while (Instant.now().isBefore(deadline)) {
@@ -482,6 +593,10 @@ public class AiTaskService {
         }
     }
 
+    /**
+     * 检查任务是否被中断。
+     * 双重标记：DB abort_requested 字段 + Redis cancel key（abort 接口设置）。
+     */
     private void assertNotCancelled(UUID taskId) {
         String redisFlag = redisTemplate.opsForValue().get(cancelKey(taskId));
         AiTask task = taskRepository.findById(taskId).orElseThrow();
@@ -490,10 +605,12 @@ public class AiTaskService {
         }
     }
 
+    /** Redis 取消标记的 key */
     private String cancelKey(UUID taskId) {
         return "ai-task:cancel:%s".formatted(taskId);
     }
 
+    /** 解析卡片类型字符串，非法回退 SUMMARY */
     private CardType parseCardType(String value) {
         if (value == null) {
             return CardType.SUMMARY;
@@ -505,6 +622,7 @@ public class AiTaskService {
         }
     }
 
+    /** 中断异常：捕获后标记任务为 ABORTED（区别于普通失败） */
     private static class AbortTaskException extends RuntimeException {
     }
 }

@@ -6,11 +6,16 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.domain.Board;
 import com.picturecreate.doccanvas.repository.BoardRepository;
 
 @Service
 public class BoardService {
+
+    private static final Logger log = LoggerFactory.getLogger(BoardService.class);
 
     private final BoardRepository boardRepository;
 
@@ -26,7 +31,9 @@ public class BoardService {
     @Transactional
     public Board create(CurrentUser user, String title) {
         String safeTitle = title == null || title.isBlank() ? "未命名画布" : title.trim();
-        return boardRepository.save(new Board(user.id(), safeTitle));
+        Board board = boardRepository.save(new Board(user.id(), safeTitle));
+        log.info("画布已创建：boardId={} title={} ownerId={}", board.getId(), safeTitle, user.id());
+        return board;
     }
 
     @Transactional(readOnly = true)
@@ -46,5 +53,6 @@ public class BoardService {
     public void delete(UUID boardId, CurrentUser user) {
         Board board = getOwned(boardId, user);
         boardRepository.delete(board);
+        log.info("画布已删除：boardId={} title={}", boardId, board.getTitle());
     }
 }

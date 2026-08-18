@@ -6,6 +6,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.api.dto.CardRequest;
 import com.picturecreate.doccanvas.domain.Card;
 import com.picturecreate.doccanvas.domain.CardType;
@@ -15,6 +18,8 @@ import com.picturecreate.doccanvas.repository.CardRepository;
 
 @Service
 public class CardService {
+
+    private static final Logger log = LoggerFactory.getLogger(CardService.class);
 
     private final BoardService boardService;
     private final CardRepository cardRepository;
@@ -44,7 +49,10 @@ public class CardService {
                 request.y() == null ? 0 : request.y(),
                 request.width() == null ? 320 : request.width(),
                 request.height() == null ? 180 : request.height());
-        return cardRepository.save(card);
+        Card saved = cardRepository.save(card);
+        log.info("卡片已创建：cardId={} boardId={} title={} type={}", saved.getId(), boardId, saved.getTitle(),
+                saved.getCardType());
+        return saved;
     }
 
     @Transactional
@@ -54,6 +62,7 @@ public class CardService {
         boardService.getOwned(card.getBoardId(), user);
         card.update(request.title(), request.contentMarkdown(), request.cardType(), request.x(), request.y(),
                 request.width(), request.height());
+        log.info("卡片已更新：cardId={} title={}", cardId, card.getTitle());
         return card;
     }
 
@@ -64,5 +73,6 @@ public class CardService {
         boardService.getOwned(card.getBoardId(), user);
         edgeRepository.deleteAll(edgeRepository.findByFromCardIdOrToCardId(cardId, cardId));
         cardRepository.delete(card);
+        log.info("卡片已删除：cardId={} title={}", cardId, card.getTitle());
     }
 }

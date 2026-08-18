@@ -6,6 +6,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.domain.BoardEdge;
 import com.picturecreate.doccanvas.domain.Card;
 import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
@@ -13,6 +16,8 @@ import com.picturecreate.doccanvas.repository.CardRepository;
 
 @Service
 public class BoardEdgeService {
+
+    private static final Logger log = LoggerFactory.getLogger(BoardEdgeService.class);
 
     private final BoardService boardService;
     private final CardRepository cardRepository;
@@ -42,6 +47,9 @@ public class BoardEdgeService {
             throw new IllegalStateException("只能连接当前画布内的卡片");
         }
         String safeLabel = label == null || label.isBlank() ? null : label.trim();
-        return edgeRepository.save(new BoardEdge(boardId, fromCardId, toCardId, safeLabel));
+        BoardEdge edge = edgeRepository.save(new BoardEdge(boardId, fromCardId, toCardId, safeLabel));
+        log.info("连线已创建：edgeId={} boardId={} from={} to={} label={}", edge.getId(), boardId, fromCardId,
+                toCardId, safeLabel);
+        return edge;
     }
 }

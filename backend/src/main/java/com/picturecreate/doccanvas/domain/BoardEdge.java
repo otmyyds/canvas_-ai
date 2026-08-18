@@ -6,19 +6,28 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
+/**
+ * 连线（edge）实体，对应 board_edges 表。
+ * 连接两个节点（卡片或图形节点），表达关系/流程/层级。
+ * 连线两端不强制引用 cards（V7 迁移删了外键），可连图形节点。
+ */
 @Entity
 @Table(name = "board_edges")
 public class BoardEdge extends BaseEntity {
 
+    /** 所属画布 id */
     @Column(name = "board_id", nullable = false)
     private UUID boardId;
 
+    /** 连线起点节点 id（卡片或图形节点） */
     @Column(name = "from_card_id", nullable = false)
     private UUID fromCardId;
 
+    /** 连线终点节点 id（卡片或图形节点） */
     @Column(name = "to_card_id", nullable = false)
     private UUID toCardId;
 
+    /** 连线标签（如"是"/"否"/"参考"） */
     @Column
     private String label;
 

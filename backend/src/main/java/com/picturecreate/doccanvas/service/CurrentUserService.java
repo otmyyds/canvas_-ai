@@ -9,6 +9,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.domain.UserAccount;
 import com.picturecreate.doccanvas.repository.UserAccountRepository;
 
@@ -16,6 +19,8 @@ import jakarta.servlet.http.HttpServletRequest;
 
 @Service
 public class CurrentUserService {
+
+    private static final Logger log = LoggerFactory.getLogger(CurrentUserService.class);
 
     private final UserAccountRepository userAccountRepository;
 
@@ -28,6 +33,7 @@ public class CurrentUserService {
         // 优先：JWT 认证用户
         CurrentUser authenticated = authenticatedUser();
         if (authenticated != null) {
+            log.debug("通过 JWT 解析用户：userId={}", authenticated.id());
             return authenticated;
         }
         // 兼容：请求头（本地开发 / 旧客户端）
@@ -35,6 +41,7 @@ public class CurrentUserService {
         String displayName = headerOrDefault(request, "X-User-Name", "演示用户");
         UserAccount user = userAccountRepository.findByEmail(email)
                 .orElseGet(() -> userAccountRepository.save(new UserAccount(email, displayName)));
+        log.debug("通过请求头解析用户：userId={} email={}", user.getId(), email);
         return new CurrentUser(user.getId(), user.getEmail(), user.getDisplayName());
     }
 

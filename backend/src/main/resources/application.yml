@@ -94,3 +94,12 @@ app:
     api-key: ${BAILIAN_API_TOKEN:}
     base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
     model: ${EMBEDDING_MODEL:text-embedding-v3}
+
+logging:
+  level:
+    root: INFO
+    # 业务代码默认 INFO，调试时可临时改为 DEBUG 打开更细的日志
+    com.picturecreate.doccanvas: ${LOG_LEVEL:INFO}
+    # 压低框架噪音，让业务日志更显眼
+    org.springframework: WARN
+    org.hibernate: WARN

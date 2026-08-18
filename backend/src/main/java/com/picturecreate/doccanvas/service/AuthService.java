@@ -4,6 +4,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.api.dto.AuthDtos.AuthResponse;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.LoginRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.RegisterRequest;
@@ -14,6 +17,8 @@ import com.picturecreate.doccanvas.repository.UserAccountRepository;
 
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UserAccountRepository userAccountRepository;
     private final PasswordEncoder passwordEncoder;
@@ -32,6 +37,7 @@ public class AuthService {
         UserAccount user = new UserAccount(request.email().trim().toLowerCase(), request.displayName().trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         userAccountRepository.save(user);
+        log.info("用户注册成功：userId={} email={}", user.getId(), user.getEmail());
         return buildResponse(user);
     }
 
@@ -43,6 +49,7 @@ public class AuthService {
         if (user.getPasswordHash() == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new IllegalStateException("邮箱或密码错误");
         }
+        log.info("用户登录成功：userId={} email={}", user.getId(), email);
         return buildResponse(user);
     }
 
@@ -50,6 +57,7 @@ public class AuthService {
     public AuthResponse refresh(java.util.UUID userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalStateException("用户不存在"));
+        log.info("刷新令牌：userId={}", userId);
         return buildResponse(user);
     }
 

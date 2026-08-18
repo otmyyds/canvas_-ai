@@ -10,11 +10,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * 结构图布局：为思维导图（中心辐射）/ 流程图（分层）计算卡片坐标。
  * 输入：节点 id 列表 + 边（from/to）列表；输出：节点 id → (x, y)。
  */
 public final class GraphLayoutService {
+
+    private static final Logger log = LoggerFactory.getLogger(GraphLayoutService.class);
 
     /** 卡片宽高（与前端默认一致） */
     private static final double CARD_W = 340;
@@ -48,6 +53,7 @@ public final class GraphLayoutService {
         if (nodeIds.isEmpty()) {
             return positions;
         }
+        log.info("思维导图布局：节点数={} 边数={}", nodeIds.size(), edges.size());
         // 根：第一个 level 0 节点，或第一个节点
         String root = nodeIds.stream().filter(id -> nodeLevels.getOrDefault(id, 0) == 0).findFirst()
                 .orElse(nodeIds.get(0));
@@ -106,6 +112,7 @@ public final class GraphLayoutService {
         if (nodeIds.isEmpty()) {
             return positions;
         }
+        log.info("流程图布局：节点数={} 边数={}", nodeIds.size(), edges.size());
         // BFS 分层：入度 0 的根在最上层
         Map<String, Set<String>> adj = buildAdj(nodeIds, edges);
         Map<String, Integer> inDegree = new HashMap<>();

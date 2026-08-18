@@ -1,5 +1,8 @@
 import type { AiTask, AiTaskType, Board, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 
+/**
+ * 后端 API 基地址（来自 .env 的 NEXT_PUBLIC_API_BASE，默认 localhost:8080）。
+ */
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
 // HTTP 头只能是 ISO-8859-1，中文名用 encodeURIComponent 后再传
@@ -8,7 +11,10 @@ export const DEMO_USER_HEADERS = {
   "X-User-Name": encodeURIComponent("演示用户")
 };
 
-/** 认证 token 存取（localStorage） */
+/**
+ * 认证 token 存取（localStorage，key = "dc_token"）。
+ * 有 token → 后续请求带 Authorization 头；无 token → 回退演示用户头。
+ */
 export const authToken = {
   get: () => (typeof window !== "undefined" ? window.localStorage.getItem("dc_token") : null),
   set: (token: string | null) => {
@@ -23,6 +29,10 @@ export const authToken = {
   }
 };
 
+/**
+ * 构建请求认证头。
+ * 已登录 → Bearer <jwt>；未登录 → 演示用户头（X-User-Email，本地兼容）。
+ */
 function authHeaders(): Record<string, string> {
   const token = authToken.get();
   if (token) {
@@ -31,6 +41,17 @@ function authHeaders(): Record<string, string> {
   return DEMO_USER_HEADERS;
 }
 
+/**
+ * 通用请求封装：
+ * - 自动拼 API_BASE 前缀 + 统一认证头
+ * - 401 → 清 token + 跳登录页
+ * - 非 2xx → 解析错误体并转中文错误信息
+ * - 204 → 返回 undefined
+ *
+ * @param path 接口路径（以 /api 开头）
+ * @param init fetch 配置（method/body/headers）
+ * @returns 后端返回的 JSON 数据
+ */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -61,7 +82,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/**
+ * 全部后端接口的封装对象。
+ * 分组：画布 / 卡片 / 图形节点 / 连线 / AI 任务 / 文件 / 快照 / 聊天 / 认证
+ */
 export const api = {
+  // ===== 画布 =====
   listBoards: () => request<Board[]>("/api/boards"),
   createBoard: (title: string) => request<Board>("/api/boards", {
     method: "POST",
@@ -73,9 +99,12 @@ export const api = {
     body: JSON.stringify({ title })
   }),
   deleteBoard: (boardId: string) => request<void>(`/api/boards/${boardId}`, { method: "DELETE" }),
+
+  // ===== 卡片 =====
   deleteCard: (cardId: string) => request<void>(`/api/cards/${cardId}`, { method: "DELETE" }),
   getBoardSnapshot: (boardId: string) => request<{ id: string; boardId: string; snapshotJson: string; version: number; createdAt: string } | null>(`/api/boards/${boardId}/snapshot`),
   listCards: (boardId: string) => request<BoardCard[]>(`/api/boards/${boardId}/cards`),
+  /** 更新卡片（双击编辑卡片正文后的保存路径） */
   updateCard: (cardId: string, body: Partial<Pick<BoardCard, "title" | "contentMarkdown" | "cardType">>) =>
     request<BoardCard>(`/api/cards/${cardId}`, {
       method: "PATCH",
@@ -97,21 +126,32 @@ export const api = {
       height: body.height ?? 180
     })
   }),
+
+  // ===== 图形节点（思维导图/流程图节点） =====
   listEdges: (boardId: string) => request<BoardEdge[]>(`/api/boards/${boardId}/edges`),
   listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
+  /** 删除图形节点（白板删除元素时同步调用，避免刷新复活） */
+  deleteShape: (shapeId: string) => request<void>(`/api/shapes/${shapeId}`, { method: "DELETE" }),
+
+  // ===== 连线 =====
   createEdge: (boardId: string, fromCardId: string, toCardId: string, label?: string) =>
     request<BoardEdge>(`/api/boards/${boardId}/edges`, {
       method: "POST",
       body: JSON.stringify({ fromCardId, toCardId, label })
     }),
+
+  // ===== AI 任务 =====
   listTasks: (boardId: string) => request<AiTask[]>(`/api/boards/${boardId}/ai-tasks`),
   createTask: (boardId: string, type: AiTaskType, prompt: string) => request<AiTask>(`/api/boards/${boardId}/ai-tasks`, {
     method: "POST",
     body: JSON.stringify({ type, prompt })
   }),
   abortTask: (taskId: string) => request<AiTask>(`/api/ai-tasks/${taskId}/abort`, { method: "POST" }),
+
+  // ===== 文件 =====
   listFiles: (boardId: string) => request<SourceFile[]>(`/api/boards/${boardId}/files`),
   deleteFile: (boardId: string, fileId: string) => request<void>(`/api/boards/${boardId}/files/${fileId}`, { method: "DELETE" }),
+  /** 上传文件（multipart/form-data，需要带认证头但无 Content-Type，交给浏览器设置 boundary） */
   uploadFile: async (boardId: string, file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -128,6 +168,8 @@ export const api = {
     }
     return response.json() as Promise<SourceFile>;
   },
+
+  // ===== 快照 =====
   saveSnapshot: (boardId: string, snapshotJson: string) =>
     request<{ id: string; boardId: string; snapshotJson: string; version: number; createdAt: string }>(
       `/api/boards/${boardId}/snapshot`,
@@ -142,12 +184,16 @@ export const api = {
     const base = `${API_BASE}/api/boards/${boardId}/files/${fileId}/content`;
     return token ? `${base}?token=${encodeURIComponent(token)}` : base;
   },
+
+  // ===== 聊天 =====
   /** 纯文本聊天（不生成卡片动作），用于询问/闲聊 */
   chat: (boardId: string, prompt: string) =>
     request<{ reply: string }>(`/api/boards/${boardId}/chat`, {
       method: "POST",
       body: JSON.stringify({ prompt })
     }),
+
+  // ===== 认证 =====
   register: (email: string, displayName: string, password: string) =>
     request<AuthResponse>("/api/auth/register", {
       method: "POST",
@@ -160,18 +206,24 @@ export const api = {
     })
 };
 
+/** 认证用户信息 */
 export type AuthUser = {
   id: string;
   email: string;
   displayName: string;
 };
 
+/** 认证响应：accessToken + refreshToken + 用户信息 */
 export type AuthResponse = {
   token: string;
   refreshToken: string;
   user: AuthUser;
 };
 
+/**
+ * 把后端返回的错误信息转为中文。
+ * 兜底常见错误字符串（网络失败/HTTP 状态/Bean Validation 英文短语）。
+ */
 function toChineseError(message: string) {
   if (!message) {
     return "请求失败，请稍后重试";

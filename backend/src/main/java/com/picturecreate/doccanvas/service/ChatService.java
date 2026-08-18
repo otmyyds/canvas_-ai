@@ -4,6 +4,8 @@ import java.util.List;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 纯文本对话。不走结构化 JSON 输出，不生成 BoardAction，不落库。
@@ -11,6 +13,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class ChatService {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
     private final ChatClient chatClient;
 
@@ -27,6 +31,8 @@ public class ChatService {
      * @return AI 回复
      */
     public String chat(String boardTitle, int cardCount, List<DocumentContext> documents, String userPrompt) {
+        log.info("聊天：board={} cardCount={} 文档数={} prompt={}", boardTitle, cardCount,
+                documents == null ? 0 : documents.size(), userPrompt);
         String systemPrompt = buildSystemPrompt(boardTitle, cardCount, documents);
         try {
             return chatClient.prompt()
@@ -35,6 +41,7 @@ public class ChatService {
                     .call()
                     .content();
         } catch (Exception exception) {
+            log.warn("聊天调用失败：{}", exception.getMessage(), exception);
             return "抱歉，AI 服务暂时不可用：" + exception.getMessage();
         }
     }

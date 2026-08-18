@@ -14,13 +14,18 @@ type TaskPanelProps = {
   onAbortTask: (taskId: string) => Promise<void>;
 };
 
+/** 对话消息（user=用户气泡，assistant=AI 回复或任务卡） */
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   task?: AiTask;
 };
 
-/** 明确的任务意图关键词 → 对应任务类型 */
+/**
+ * 明确的任务意图关键词 → 对应任务类型。
+ * 用户输入命中这些关键词 → 走任务流程（落卡 + 步骤展示）；
+ * 否则 → 走聊天接口（纯文本回复）。
+ */
 const TASK_PATTERNS: Array<{ type: AiTaskType; patterns: string[] }> = [
   { type: "GENERATE_MINDMAP", patterns: ["思维导图", "导图", "脑图", "mindmap"] },
   { type: "GENERATE_FLOWCHART", patterns: ["流程", "flowchart", "flow"] },
@@ -105,6 +110,30 @@ function loadSession(boardId: string): ChatMessage[] {
   }
 }
 
+/**
+ * 右侧 AI 助手面板（对话式交互）。
+ *
+ * 交互模型：
+ * - 用户输入 → 智能路由：
+ *   a) 命中任务关键词（思维导图/流程图/总结等）→ onCreateTask 走任务流程
+ *   b) 未命中 → api.chat 纯文本对话（不落卡）
+ * - 对话流中嵌入 TaskCard（任务进度/步骤/中断），与聊天消息混合展示
+ *
+ * 数据流：
+ * 1. 用户输入 → submit() 判断任务 or 聊天
+ * 2. 任务：onCreateTask(type, prompt) → 后端创建 → WebSocket 推事件 → tasks 更新
+ * 3. 聊天：api.chat(boardId, prompt) → 返回文本 → 追加 assistant 气泡
+ * 4. 新任务出现（tasks[0] 变化）→ 追加一条含 TaskCard 的 assistant 消息
+ *
+ * 持久化：对话文本按画布隔离存 localStorage（dc_chat_{boardId}），刷新不丢；
+ * 任务卡不持久化（任务本身在后端有记录）。
+ *
+ * @param boardId 画布 id（聊天接口用）
+ * @param tasks 任务列表（驱动 TaskCard 进度）
+ * @param connection WebSocket 连接状态
+ * @param onCreateTask 创建任务回调（父组件封装）
+ * @param onAbortTask 中断任务回调
+ */
 export function TaskPanel({ boardId, tasks, connection, onCreateTask, onAbortTask }: TaskPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSession(boardId));
   const [prompt, setPrompt] = useState("");

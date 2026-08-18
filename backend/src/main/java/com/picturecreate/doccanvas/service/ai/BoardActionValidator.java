@@ -5,11 +5,16 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * 校验模型产出的动作。返回校验失败原因（字符串），空串表示通过。
  * 仅做可自动修复/丢弃的校验：重复连线、自连、空动作。归属校验在应用时由 AiTaskService 完成。
  */
 public final class BoardActionValidator {
+
+    private static final Logger log = LoggerFactory.getLogger(BoardActionValidator.class);
 
     private BoardActionValidator() {
     }
@@ -53,6 +58,8 @@ public final class BoardActionValidator {
                 }
             }
         }
-        return String.join("；", problems);
+        String result = String.join("；", problems);
+        log.info("校验动作：动作数={} 问题={}", actions.size(), result.isEmpty() ? "无" : result);
+        return result;
     }
 }

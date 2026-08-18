@@ -15,6 +15,19 @@ import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 
 @Service
 @ConditionalOnProperty(name = "app.ai.provider", havingValue = "spring-ai")
+/**
+ * 真实模型（Spring AI + 百炼 DashScope）的生成服务。
+ *
+ * 职责：接收「AI 任务上下文」（画布卡片、上传资料、用户提示），
+ * 调用大模型生成一批「画布动作」（BoardAction：建卡/建图形/连线/删卡），
+ * 返回给 AiTaskService 统一校验后落库。
+ *
+ * 为什么不用 .entity() 结构化输出？
+ * - 百炼 DashScope 对 Spring AI 的 json_schema 响应格式支持不完整（返回 end-of-input）
+ * - 因此改为 .content() 取纯文本，再用 parseActionsFromContent 手动解析 JSON
+ * 为什么不用工具调用（collectContext）？
+ * - 百炼对 Spring AI 的 tools 请求格式同样有兼容问题，改用 inlineContext 直接注入上下文
+ */
 public class SpringAiGenerationService implements AiGenerationService {
 
     /** 结构化输出失败后的最大重试次数（计划 9.7：最多反馈修复一次） */
@@ -22,8 +35,16 @@ public class SpringAiGenerationService implements AiGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(SpringAiGenerationService.class);
 
+    /** Spring AI 的聊天客户端（构建时注入了只读工具回调，但当前未真正使用工具调用） */
     private final ChatClient chatClient;
 
+    /**
+     * 构造：注册只读工具（get_board_context / list_source_files / search_document_chunks 等），
+     * 构建带默认工具的 ChatClient。
+     *
+     * @param builder Spring AI 自动注入的 ChatClient.Builder
+     * @param boardReadTools 只读工具（经 @Tool 注解暴露给模型）
+     */
     public SpringAiGenerationService(ChatClient.Builder builder, BoardReadTools boardReadTools) {
         ToolCallbackProvider provider = MethodToolCallbackProvider.builder()
                 .toolObjects(boardReadTools)
@@ -35,6 +56,18 @@ public class SpringAiGenerationService implements AiGenerationService {
                 .build();
     }
 
+    /**
+     * 生成画布动作的入口（AiTaskService 调用）。
+     *
+     * 流程：
+     * 1. 打印任务上下文日志（类型/输入/卡片数/资料数）
+     * 2. 若是「思维导图」→ 走两段式生成（AI1 写文章 → AI2 抽结构），质量更高
+     * 3. 其他任务 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作
+     * 4. 校验动作；失败则携带错误反馈重试（MAX_SCHEMA_RETRIES 次）
+     *
+     * @param context 任务上下文（画布卡片、资料、用户提示、skill）
+     * @return 结构化动作列表 + 元信息
+     */
     @Override
     public BoardActionResult generateBoardActions(AiTaskContext context) {
         log.info("========== AI 任务开始 ==========");
@@ -98,7 +131,19 @@ public class SpringAiGenerationService implements AiGenerationService {
         throw new IllegalStateException("AI 动作校验失败：" + lastError);
     }
 
-    /** 从模型输出的 content 文本中解析 JSON 动作（降级方案：不用 .entity() / json_schema） */
+    /**
+     * 从模型输出的 content 文本解析出结构化动作列表。
+     *
+     * 兼容情况：
+     * - 模型可能输出带 ```json ... ``` 代码围栏的文本 → 先剥离围栏
+     * - 模型可能输出纯 JSON 对象 {"actions":[...]} → 解析 actions 数组
+     * - 每个动作按 type 字段分发为对应的 BoardAction 子类（create_card/create_shape/connect 等）
+     * - 无法解析或字段缺失 → 返回空列表（由上层重试或降级）
+     *
+     * @param content 模型原始输出文本
+     * @param context 任务上下文（透传，供必要信息）
+     * @return 解析出的动作列表
+     */
     @SuppressWarnings("unchecked")
     private List<BoardAction> parseActionsFromContent(String content, AiTaskContext context) {
         if (content == null || content.isBlank()) {
@@ -242,10 +287,27 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 思维导图两段式生成：
-     * AI1 先写一篇结构化的 Markdown 文章（用 # / ## / ### 表达层级，内容自然展开）；
-     * AI2 再读文章，按标题层级抽成思维导图节点（create_card + connect），输出 JSON。
-     * 这样深度靠 AI1 自由发挥，分层靠 AI2 专注抽取，质量更合理。
+     * 思维导图两段式生成。
+     *
+     * 为什么用两段式？
+     * - 单次调用时，模型既要"想清楚结构"又要"写满内容"，容易顾此失彼（结构浅或内容空）。
+     * - 拆成两段后，AI1 专注"写文章"（深度自然展开），AI2 专注"抽结构"（分层准确）。
+     *
+     * 阶段一（AI1 写文章）：
+     *   让模型用 Markdown 标题层级表达思维导图结构：
+     *   - #   = 中心主题
+     *   - ##  = 一级分支
+     *   - ### = 二级叶子
+     *   正文用 - 列表写要点，深度由模型自由发挥。
+     *
+     * 阶段二（AI2 抽结构）：
+     *   让模型读文章，按标题层级抽成 create_shape + connect 动作，输出 JSON。
+     *   若 AI2 输出非 JSON 或校验失败 → 降级用 parseMindmapFromArticle 直接从文章标题解析。
+     *
+     * 坐标由后端 GraphLayoutService 重算（layoutMindmap3），模型只出结构不排坐标。
+     *
+     * @param context 任务上下文
+     * @return 思维导图节点 + 连线动作
      */
     private BoardActionResult generateMindmapTwoStage(AiTaskContext context) {
         log.info("========== 思维导图两段式：AI1 写文章 ==========");
@@ -345,7 +407,13 @@ public class SpringAiGenerationService implements AiGenerationService {
         throw new IllegalStateException("思维导图动作校验失败：" + lastError);
     }
 
-    /** 思维导图文章的 user prompt：注入用户需求 + 画布上下文 */
+    /**
+     * 构造思维导图 AI1 写文章阶段的 user prompt。
+     * 只注入用户需求 + 上传资料内容（供 AI1 参考），不注入画布卡片（避免干扰主题）。
+     *
+     * @param context 任务上下文
+     * @return 用户 prompt 字符串
+     */
     private String buildMindmapArticlePrompt(AiTaskContext context) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("用户需求：").append(context.prompt()).append("\n\n");
@@ -360,6 +428,13 @@ public class SpringAiGenerationService implements AiGenerationService {
         return prompt.toString();
     }
 
+    /**
+     * 构造规划模型的 system prompt（所有非思维导图任务共用）。
+     * 约束模型：只输出 JSON 动作、cardType 取值、深度要求、技能说明。
+     *
+     * @param context 任务上下文（含 skill）
+     * @return system prompt 字符串
+     */
     private String systemPrompt(AiTaskContext context) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是单人 AI 文档画布的规划模型。\n");
@@ -380,8 +455,12 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 按任务类型决定卡片正文的深度要求：
-     * 内容类任务（总结/学习/产品）→ 详实深度；结构图/流程图 → 精简扼要。
+     * 按任务类型决定卡片正文的深度要求。
+     * 内容类任务（总结/学习/产品）→ 详实（≥300 字，章节结构）
+     * 结构图类（思维/流程/整理）→ 精简（每张 1-3 句话，关键词/短语）
+     *
+     * @param taskType 任务类型字符串
+     * @return 深度约束文本
      */
     private String contentDepthConstraint(String taskType) {
         if ("DOCUMENT_SUMMARY".equals(taskType) || "STUDY_PLAN".equals(taskType)
@@ -398,7 +477,11 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 对非生产型意图（闲聊/询问）加约束，防止把"你好"当任务执行。
+     * 非生产型意图兜底：防止模型把闲聊（你好/你是谁）当任务执行并生成大量卡片。
+     * 若输入非任务意图，只输出一张"AI 助手"回复卡。
+     *
+     * @param taskType 任务类型字符串（当前未使用，保留接口一致性）
+     * @return 兜底约束文本
      */
     private String chatGuard(String taskType) {
         return """
@@ -408,6 +491,14 @@ public class SpringAiGenerationService implements AiGenerationService {
                 """;
     }
 
+    /**
+     * 结构图任务的专用约束（思维导图/流程图）。
+     * 注意：思维导图实际走 generateMindmapTwoStage，此方法对 MINDMAP 分支不再触发；
+     * 主要服务于 GENERATE_FLOWCHART（单次调用路径）。
+     *
+     * @param taskType 任务类型字符串
+     * @return 结构图约束文本（非结构图返回空串）
+     */
     private String structurePrompt(String taskType) {
         if ("GENERATE_MINDMAP".equals(taskType)) {
             return "\n任务类型是生成思维导图：\n1. 第一个 create_card（id=root1）是中心主题。\n2. 输出 5-8 个分支 create_card，id 依次为 branch1..branchN，每个用 markdown 写深度要点。\n3. 每个分支通过 connect（fromCardId=root1, toCardId=branchN）连到中心。\n4. 各卡片 x/y 中心放 (500,400)，分支围绕 180-360px 间距排列。\n";
@@ -418,6 +509,14 @@ public class SpringAiGenerationService implements AiGenerationService {
         return "";
     }
 
+    /**
+     * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有卡片 + 资料内容 + 工具上下文 + 重试反馈。
+     *
+     * @param context 任务上下文
+     * @param toolContext 内联上下文（卡片/资料拼接文本）
+     * @param previousError 上次校验失败的错误（重试时附带，引导模型修复）
+     * @return user prompt 字符串
+     */
     private String userPrompt(AiTaskContext context, String toolContext, String previousError) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("任务类型：").append(context.type()).append('\n');
@@ -453,8 +552,16 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 用内联上下文收集代替工具调用：不调 collectContext（百炼 qwen-plus 在 Spring AI 工具调用上有端到端兼容问题）。
-     * 直接把 cards/sources 数据注入 prompt，后续可接回工具调用。
+     * 用内联上下文收集代替工具调用（不调 collectContext）。
+     *
+     * 为什么不用 collectContext（工具收集）？
+     * 百炼 qwen-plus 在 Spring AI 工具调用上有端到端兼容问题（返回 end-of-input），
+     * 因此直接把 cards/sources 数据拼接成文本注入 prompt，功能等价。
+     * 若后续适配百炼工具格式，可恢复 collectContext。
+     *
+     * @param cards 画布现有卡片
+     * @param sources 已解析的上传资料
+     * @return 拼接后的上下文文本
      */
     private String inlineContext(List<AiTaskContext.CardContext> cards, List<AiTaskContext.SourceContext> sources) {
         StringBuilder sb = new StringBuilder();

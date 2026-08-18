@@ -13,6 +13,8 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
 import org.yaml.snakeyaml.Yaml;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 加载内置 Skill（classpath 下 ai-skills 各子目录中的 SKILL.md）。
@@ -21,12 +23,16 @@ import org.yaml.snakeyaml.Yaml;
 @Component
 public class SkillLoader {
 
+    private static final Logger log = LoggerFactory.getLogger(SkillLoader.class);
+
     private static final String LOCATION = "classpath:ai-skills/*/SKILL.md";
 
     private final List<SkillDefinition> skills;
 
     public SkillLoader() {
         this.skills = loadAll();
+        log.info("SkillLoader 加载完成：共 {} 个技能：{}", skills.size(),
+                skills.stream().map(SkillDefinition::slug).toList());
     }
 
     /** 按任务类型返回匹配的 Skill，无匹配返回空 */

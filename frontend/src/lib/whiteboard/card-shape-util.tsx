@@ -8,7 +8,20 @@ import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
 import type { BoardCard } from "@/lib/types";
 
-/** 自定义卡片 shape：可自由缩放 + 渲染 markdown + 双击编辑 */
+/**
+ * 自定义卡片 shape（tldraw 扩展）。
+ *
+ * 为什么自定义而不是用 tldraw 原生 note？
+ * - note shape 不可自由缩放（resizeMode: none，宽度恒 200px）
+ * - note 的 richText 不渲染 markdown（##、**、列表原样显示）
+ * - 业务需要：Markdown 渲染 + 自由缩放 + 双击编辑 + 按类型配色
+ *
+ * 实现：
+ * - 继承 BaseBoxShapeUtil（自带 w/h 自由缩放 + onResize + getGeometry）
+ * - component() 用 ReactMarkdown 渲染 markdown
+ * - canEdit() 让 tldraw 支持双击进入编辑态
+ * - 编辑态渲染 textarea，失焦/Esc 保存，写回后端 cards 表
+ */
 export type CardShape = TLBaseShape<
   "card",
   {
@@ -21,8 +34,10 @@ export type CardShape = TLBaseShape<
 >;
 
 export class CardShapeUtil extends BaseBoxShapeUtil<CardShape> {
+  /** shape 类型标识（与 createShape 时 type: "card" 对应） */
   static override type = "card" as const;
 
+  /** props 校验器（tldraw 用它验证 shape 数据合法性） */
   static override props: RecordProps<CardShape> = {
     w: T.nonZeroNumber,
     h: T.nonZeroNumber,
@@ -31,10 +46,12 @@ export class CardShapeUtil extends BaseBoxShapeUtil<CardShape> {
     cardType: T.string
   };
 
+  /** 新卡片的默认属性（宽 340 / 高 220） */
   override getDefaultProps(): CardShape["props"] {
     return { w: 340, h: 220, title: "", markdown: "", cardType: "SUMMARY" };
   }
 
+  /** 允许双击进入编辑态（配合 useIsEditing 渲染 textarea） */
   override canEdit() {
     return true;
   }

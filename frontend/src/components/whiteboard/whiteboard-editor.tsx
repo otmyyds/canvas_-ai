@@ -78,6 +78,27 @@ const SHAPE_TYPES: Array<{ value: string; label: string; icon: string }> = [
   { value: "oval", label: "胶囊", icon: "⭘" }
 ];
 
+/**
+ * 主编辑器组件：tldraw 无限画布 + 白板交互 + 数据同步。
+ *
+ * 职责：
+ * 1. 初始化 tldraw store（含自定义 card shape + 图片上传到 RustFS）
+ * 2. 加载画布快照 + 后端卡片/图形/连线 → 渲染到画布（hydration）
+ * 3. 监听画布变更 → 防抖保存 snapshot
+ * 4. 监听 AI 任务完成 → 增量同步新卡片/图形节点
+ * 5. 工具栏：选择/平移/卡片/文本/图形/线条/箭头/图片/删除/刷新/整理/模板/导出
+ *
+ * 双状态源协调：
+ * - 用户编辑 → 写 board_snapshots（tldraw 快照）
+ * - AI 生成 → 写 cards/shapes/edges 表 → 前端 merge 进 tldraw
+ * - 删除时同步删后端（deleteCard/deleteShape），避免刷新复活
+ *
+ * @param boardId 画布 id
+ * @param cards 后端卡片列表（AI 生成/手动创建）
+ * @param edges 后端连线列表
+ * @param shapes 后端图形节点列表（思维导图/流程图节点）
+ * @param canvasRevision AI 任务完成后递增，触发增量同步 effect
+ */
 export function WhiteboardEditor({
   boardId,
   boardTitle,
@@ -95,6 +116,12 @@ export function WhiteboardEditor({
   onDeleteFile,
   onApplyTemplate
 }: WhiteboardEditorProps) {
+  /**
+   * tldraw store：画布的底层数据源。
+   * - 自定义 shape utils（CardShapeUtil 卡片 + 默认图形）
+   * - 图片资产上传到后端（RustFS）
+   * 注意：useMemo 保证 store 只创建一次（随 boardId 变化重建）
+   */
   const store = useMemo(
     () =>
       createTLStore({
@@ -213,7 +240,7 @@ export function WhiteboardEditor({
             edges: currentEdges,
             files: currentFiles
           });
-          const shapeAdded = mergeMissingShapes(editor, currentShapes);
+          const shapeAdded = mergeMissingShapes(editor, currentShapes, currentEdges);
           knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
           editor.clearHistory();
           editor.selectNone();
@@ -236,7 +263,7 @@ export function WhiteboardEditor({
         files: currentFiles,
         boardTitle
       });
-      mergeMissingShapes(editor, currentShapes);
+      mergeMissingShapes(editor, currentShapes, currentEdges);
       knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
       editor.clearHistory();
       editor.selectNone();
@@ -284,7 +311,7 @@ export function WhiteboardEditor({
     const shapeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
     const newShapes = shapes.filter((s) => !shapeIds.has(createShapeId(s.id)));
     if (newShapes.length > 0) {
-      mergeMissingShapes(editor, newShapes);
+      mergeMissingShapes(editor, newShapes, edges);
       setMessage(`已同步 ${newShapes.length} 个图形节点到画布`);
       queueSave();
     }
@@ -505,10 +532,20 @@ export function WhiteboardEditor({
     // 同步删除后端卡片，避免刷新后 mergeMissingCards 让已删卡片复活
     // 同时存墓碑，供 Ctrl+Z undo 时重建后端卡片
     const cardIds: string[] = [];
+    const shapeIdsToDelete: string[] = [];
     const deletedData: Array<{ cardId: string; shape: { x: number; y: number; props?: Record<string, unknown> } }> = [];
     for (const id of ids) {
       const shape = editor.getShape(id);
       if (!shape) {
+        continue;
+      }
+      // 图形节点（思维导图/流程图节点）→ 调后端删除 shapes 表记录
+      if (shape.type === "geo") {
+        // shape.id 是 "shape:<uuid>" 格式，去掉前缀取真实 UUID
+        const rawId = String(id).replace(/^shape:/, "");
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+          shapeIdsToDelete.push(rawId);
+        }
         continue;
       }
       const metaCardId = (shape.meta?.cardId as string | undefined) ?? undefined;
@@ -524,9 +561,16 @@ export function WhiteboardEditor({
       deletedCardsRef.current.push(...deletedData);
       void Promise.allSettled(cardIds.map((cardId) => api.deleteCard(cardId)));
     }
+    if (shapeIdsToDelete.length > 0) {
+      void Promise.allSettled(shapeIdsToDelete.map((shapeId) => api.deleteShape(shapeId)));
+    }
 
     editor.deleteShapes(ids);
-    setMessage(cardIds.length > 0 ? `已删除 ${ids.length} 个元素（同步后端）` : "已删除选中元素");
+    setMessage(
+      cardIds.length + shapeIdsToDelete.length > 0
+        ? `已删除 ${ids.length} 个元素（同步后端）`
+        : "已删除选中元素"
+    );
   }, []);
 
   // 全局 Delete/Backspace 删除选中的元素（hideUi 移除了 tldraw 内置快捷键）
@@ -860,15 +904,31 @@ async function loadLegacyContent(
  * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊。
  * 返回新增数量。
  */
-function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[]): number {
+function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
   let added = 0;
   for (const node of shapes) {
     const shapeId = createShapeId(node.id);
     if (editor.getShape(shapeId)) {
       continue;
     }
-    createGraphShape(editor, node, shapeId);
-    added += 1;
+    try {
+      createGraphShape(editor, node, shapeId);
+      added += 1;
+    } catch (err) {
+      // 单个节点失败不阻塞其他节点
+      console.error("创建图形节点失败", node.id, err);
+    }
+  }
+  // 创建图形节点间的连线（edges 引用 shape id）
+  if (edges.length > 0) {
+    const shapeIdByNode = new Map(shapes.map((s) => [s.id, createShapeId(s.id)]));
+    for (const edge of edges) {
+      try {
+        createEdgeBinding(editor, edge, shapeIdByNode);
+      } catch (err) {
+        console.error("创建连线失败", edge.id, err);
+      }
+    }
   }
   return added;
 }
@@ -1103,7 +1163,8 @@ function createEdgeBinding(
   }
   // 连线样式：curve→arc 曲线（加大 bend），straight→直线（bend=0）；颜色/粗细按 edge 配置
   const isCurve = edge.style === "curve";
-  const color = edge.color ?? "green";
+  // tldraw arrow color 只接受内建颜色名（black/blue/green...），不能是 hex 或空串
+  const color = mapEdgeColor(edge.color);
   const weight = edge.weight ?? 2;
 
   editor.createShape({
@@ -1184,6 +1245,41 @@ function viewportPlacement(editor: TldrawEditor, index: number) {
 function extractSourceFileId(markdown: string) {
   const match = markdown.match(/sourceFileId:([0-9a-fA-F-]+)/);
   return match?.[1];
+}
+
+/** 把后端颜色映射为 tldraw 内建颜色名（tldraw arrow color 不接受 hex） */
+function mapEdgeColor(color?: string): string {
+  if (!color || color.trim() === "") {
+    return "green";
+  }
+  const trimmed = color.trim().toLowerCase();
+  // 已是内建颜色名
+  const builtin = ["black", "blue", "green", "grey", "light-blue", "light-green", "light-red", "light-violet",
+    "orange", "red", "violet", "yellow", "white"];
+  if (builtin.includes(trimmed)) {
+    return trimmed;
+  }
+  // hex → 就近映射
+  const hex = trimmed.replace("#", "");
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    if (r > 180 && g > 180 && b > 180) {
+      return "light-green";
+    }
+    if (r > 150 && g < 120 && b < 120) {
+      return "red";
+    }
+    if (b > 150 && r < 120 && g < 120) {
+      return "blue";
+    }
+    if (r > 150 && g > 120 && b < 120) {
+      return "orange";
+    }
+    return "green";
+  }
+  return "green";
 }
 
 function saveStatusText(status: SaveStatus) {

@@ -14,6 +14,9 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.picturecreate.doccanvas.domain.FileParseStatus;
 import com.picturecreate.doccanvas.domain.SourceFile;
 import com.picturecreate.doccanvas.repository.SourceFileRepository;
@@ -24,6 +27,8 @@ import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObject;
 
 @Service
 public class FileService {
+
+    private static final Logger log = LoggerFactory.getLogger(FileService.class);
 
     /** 单个文件注入 AI 的上限字符数 */
     private static final int MAX_FILE_CHARS = 6000;
@@ -72,6 +77,8 @@ public class FileService {
         SourceFile sourceFile = sourceFileRepository.save(new SourceFile(boardId, user.id(), stored.key(), filename, contentType, stored.size()));
         boolean parsed = parseTextContent(sourceFile, file);
         sourceFileRepository.save(sourceFile);
+        log.info("资料已上传：fileId={} filename={} size={} parsed={} status={}", sourceFile.getId(), filename,
+                stored.size(), parsed, sourceFile.getParseStatus());
         if (parsed && sourceFile.getTextExcerpt() != null && !sourceFile.getTextExcerpt().isBlank()) {
             UUID fileId = sourceFile.getId();
             UUID ownerId = user.id();
@@ -175,6 +182,7 @@ public class FileService {
         // 删除 RustFS 对象 + DB 记录
         objectStorageService.delete(file.getStorageKey());
         sourceFileRepository.delete(file);
+        log.info("资料已删除：fileId={} storageKey={}", fileId, file.getStorageKey());
     }
 
     @Transactional(readOnly = true)

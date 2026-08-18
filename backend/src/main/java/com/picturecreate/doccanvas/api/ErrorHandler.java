@@ -11,26 +11,33 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.service.NotFoundException;
 
 @RestControllerAdvice
 public class ErrorHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(ErrorHandler.class);
+
     @ExceptionHandler(NotFoundException.class)
     ResponseEntity<Map<String, String>> notFound(NotFoundException exception) {
+        log.warn("资源不存在：{}", exception.getMessage());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("error", safeMessage(exception.getMessage(), "资源不存在")));
     }
 
     @ExceptionHandler(IllegalStateException.class)
     ResponseEntity<Map<String, String>> conflict(IllegalStateException exception) {
+        log.warn("操作冲突：{}", exception.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("error", safeMessage(exception.getMessage(), "当前操作冲突，请稍后重试")));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException exception) {
+        log.warn("请求参数有误：{}", exception.getMessage());
         return ResponseEntity.badRequest()
                 .body(Map.of("error", safeMessage(exception.getMessage(), "请求参数有误")));
     }
@@ -60,6 +67,7 @@ public class ErrorHandler {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<Map<String, String>> generic(Exception exception) {
+        log.error("服务器内部错误", exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of("error", safeMessage(exception.getMessage(), "服务器内部错误，请稍后重试")));
     }
