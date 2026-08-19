@@ -3,6 +3,9 @@ package com.picturecreate.doccanvas.service.ai;
 import java.util.List;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -28,6 +31,8 @@ import com.picturecreate.doccanvas.service.DocumentChunkService;
  */
 @Component
 public class BoardReadTools {
+
+    private static final Logger log = LoggerFactory.getLogger(BoardReadTools.class);
 
     /** toolContext 中携带的任务 id key */
     public static final String TASK_ID_KEY = "taskId";
@@ -128,20 +133,25 @@ public class BoardReadTools {
         });
     }
 
-    /** 记录一次工具调用的成功/失败与耗时，返回调用结果 */
+    /** 记录一次工具调用的成功/失败与耗时，返回调用结果，并打日志便于排查 */
     private String audit(ToolContext toolContext, String toolName, String inputJson,
             java.util.function.Supplier<String> action) {
         UUID taskId = taskId(toolContext);
         long start = System.currentTimeMillis();
+        log.info("AI 工具调用：taskId={} tool={} input={}", taskId, toolName, inputJson);
         AiToolCall record = taskId == null ? null : toolCallRepository.save(new AiToolCall(taskId, toolName, inputJson, "RUNNING"));
         try {
             String result = action.get();
+            long duration = System.currentTimeMillis() - start;
+            log.info("AI 工具返回：taskId={} tool={} 耗时={}ms 结果={}", taskId, toolName, duration,
+                    truncate(result, 300));
             if (record != null) {
-                record.succeed(result, System.currentTimeMillis() - start);
+                record.succeed(result, duration);
                 toolCallRepository.save(record);
             }
             return result;
         } catch (RuntimeException exception) {
+            log.warn("AI 工具失败：taskId={} tool={} error={}", taskId, toolName, exception.getMessage());
             if (record != null) {
                 record.fail(exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage(),
                         System.currentTimeMillis() - start);

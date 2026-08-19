@@ -73,7 +73,6 @@ public class AiTaskService {
     private final BoardEdgeRepository edgeRepository;
     private final ShapeRepository shapeRepository;
     private final BoardSnapshotRepository snapshotRepository;
-    private final RagContextService ragContextService;
     private final SkillLoader skillLoader;
     private final TaskEventPublisher eventPublisher;
     private final AiGenerationService aiGenerationService;
@@ -83,7 +82,7 @@ public class AiTaskService {
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             CardRepository cardRepository, BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
-            BoardSnapshotRepository snapshotRepository, RagContextService ragContextService, SkillLoader skillLoader,
+            BoardSnapshotRepository snapshotRepository, SkillLoader skillLoader,
             TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor, StringRedisTemplate redisTemplate,
             AppProperties properties) {
@@ -94,7 +93,6 @@ public class AiTaskService {
         this.edgeRepository = edgeRepository;
         this.shapeRepository = shapeRepository;
         this.snapshotRepository = snapshotRepository;
-        this.ragContextService = ragContextService;
         this.skillLoader = skillLoader;
         this.eventPublisher = eventPublisher;
         this.aiGenerationService = aiGenerationService;
@@ -219,9 +217,8 @@ public class AiTaskService {
         if (task.getType() == AiTaskType.CLEAR_CANVAS) {
             return clearCanvas(task);
         }
-        // RAG 检索的相关资料片段（替代全量注入）
-        List<AiTaskContext.SourceContext> sources = ragContextService.retrieve(task.getBoardId(), task.getOwnerId(),
-                task.getPrompt());
+        // 资料检索交给模型通过 search_document_chunks 工具按需执行，服务端不再预取注入
+        List<AiTaskContext.SourceContext> sources = List.of();
         // 画布现有卡片（供 AI 参考已有内容，避免重复）
         List<AiTaskContext.CardContext> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).stream()
                 .map(card -> new AiTaskContext.CardContext(card.getId().toString(), card.getTitle(),

@@ -25,8 +25,10 @@ import org.springframework.ai.tool.method.MethodToolCallbackProvider;
  * 为什么不用 .entity() 结构化输出？
  * - 百炼 DashScope 对 Spring AI 的 json_schema 响应格式支持不完整（返回 end-of-input）
  * - 因此改为 .content() 取纯文本，再用 parseActionsFromContent 手动解析 JSON
- * 为什么不用工具调用（collectContext）？
- * - 百炼对 Spring AI 的 tools 请求格式同样有兼容问题，改用 inlineContext 直接注入上下文
+ * 工具调用（只读）：
+ * - get_board_context / get_card_content / list_source_files / search_document_chunks 已注册，
+ *   模型在规划时按需调用以获取画布现状与资料（同步 .call() 路径下百炼兼容 mode 可用）
+ * - 写操作仍走 JSON 动作方案（BoardAction），由后端校验后落库，不暴露给模型直接写库
  */
 public class SpringAiGenerationService implements AiGenerationService {
 
@@ -35,7 +37,7 @@ public class SpringAiGenerationService implements AiGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(SpringAiGenerationService.class);
 
-    /** Spring AI 的聊天客户端（构建时注入了只读工具回调，但当前未真正使用工具调用） */
+    /** Spring AI 的聊天客户端（构建时注入只读工具回调，规划时由模型按需调用） */
     private final ChatClient chatClient;
 
     /**
@@ -61,7 +63,7 @@ public class SpringAiGenerationService implements AiGenerationService {
      *
      * 流程：
      * 1. 打印任务上下文日志（类型/输入/卡片数/资料数）
-     * 2. 若是「思维导图」→ 走两段式生成（AI1 写文章 → AI2 抽结构），质量更高
+     * 2. 若是「思维导图」→ 单次写文章 + 从标题层级确定性解析节点
      * 3. 其他任务 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作
      * 4. 校验动作；失败则携带错误反馈重试（MAX_SCHEMA_RETRIES 次）
      *
@@ -73,33 +75,31 @@ public class SpringAiGenerationService implements AiGenerationService {
         log.info("========== AI 任务开始 ==========");
         log.info("任务类型: {}", context.type());
         log.info("用户输入: {}", context.prompt());
-        log.info("画布卡片数: {}, 图形数: {}, 资料数: {}", context.cards().size(), context.shapes().size(),
-                context.sources().size());
+        log.info("画布卡片数: {}, 图形数: {}（资料由模型通过工具按需检索）", context.cards().size(),
+                context.shapes().size());
         if (!context.cards().isEmpty()) {
             log.info("现有卡片: {}", context.cards().stream()
                     .map(c -> c.title() + "[" + c.cardId() + "]").toList());
         }
 
-        // 思维导图：两段式生成（AI1 写文章 → AI2 抽结构），深度与分层更合理
+        // 思维导图：单次写文章 + 标题层级解析（不二次调模型抽结构）
         if (context.type() == com.picturecreate.doccanvas.domain.AiTaskType.GENERATE_MINDMAP) {
-            return generateMindmapTwoStage(context);
+            return generateMindmap(context);
         }
-        // 内联上下文：不用工具收集（百炼兼容性），直接用 prompt 传入卡片和资料
-        String toolContext = inlineContext(context.cards(), context.shapes(), context.sources());
-
-        // 结构化输出（用 content() 取文本，手动解析 JSON）
+        // 结构化输出（用 content() 取文本，手动解析 JSON；只读上下文由模型按需调用工具获取）
         int attempts = 0;
         String lastError = null;
         while (attempts <= MAX_SCHEMA_RETRIES) {
             attempts += 1;
             try {
                 String sys = systemPrompt(context);
-                String user = userPrompt(context, toolContext, lastError);
+                String user = userPrompt(context, lastError);
                 log.info("[生成 attempt {}] system prompt:\n{}", attempts, sys);
                 log.info("[生成 attempt {}] user prompt:\n{}", attempts, user);
                 String raw = chatClient.prompt()
                         .system(sys)
                         .user(user)
+                        .toolContext(toolContext(context))
                         .call()
                         .content();
                 log.info("[生成 attempt {}] 模型原始输出:\n{}", attempts, raw);
@@ -216,8 +216,8 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 从 AI1 文章的标题层级（# ## ###）直接解析思维导图节点。
-     * AI2 输出失败时的兜底方案。
+     * 从 AI1 文章的标题层级（# ## ###）直接解析思维导图节点与连线。
+     * 思维导图的唯一结构来源：文章由 AI 写成固定层级，此处确定性解析，不再二次调用模型。
      */
     @SuppressWarnings("unchecked")
     private List<BoardAction> parseMindmapFromArticle(String article) {
@@ -290,48 +290,28 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 思维导图两段式生成。
+     * 思维导图生成：单次模型调用写文章，再从标题层级确定性解析节点。
      *
-     * 为什么用两段式？
-     * - 单次调用时，模型既要"想清楚结构"又要"写满内容"，容易顾此失彼（结构浅或内容空）。
-     * - 拆成两段后，AI1 专注"写文章"（深度自然展开），AI2 专注"抽结构"（分层准确）。
-     *
-     * 阶段一（AI1 写文章）：
-     *   让模型用 Markdown 标题层级表达思维导图结构：
-     *   - #   = 中心主题
-     *   - ##  = 一级分支
-     *   - ### = 二级叶子
-     *   正文用 - 列表写要点，深度由模型自由发挥。
-     *
-     * 阶段二（AI2 抽结构）：
-     *   让模型读文章，按标题层级抽成 create_shape + connect 动作，输出 JSON。
-     *   若 AI2 输出非 JSON 或校验失败 → 降级用 parseMindmapFromArticle 直接从文章标题解析。
+     * 为什么只调一次模型？
+     * - 模型写一篇带 # / ## / ### 标题层级的 Markdown 文章，深度自然展开；
+     * - 节点与连线由 parseMindmapFromArticle 直接从标题层级解析，无需二次调用模型；
+     * - 二次"抽结构"调用既多余（标题层级已定），又容易因输入文章过长触发上游连接重置。
      *
      * 坐标由后端 GraphLayoutService 重算（layoutMindmap3），模型只出结构不排坐标。
      *
      * @param context 任务上下文
      * @return 思维导图节点 + 连线动作
      */
-    private BoardActionResult generateMindmapTwoStage(AiTaskContext context) {
-        log.info("========== 思维导图两段式：AI1 写文章 ==========");
-        // 阶段一：AI1 写文章
+    private BoardActionResult generateMindmap(AiTaskContext context) {
+        log.info("========== 思维导图：AI 写文章 ==========");
         String article;
         try {
             String articlePrompt = buildMindmapArticlePrompt(context);
             log.info("[AI1] 文章生成 user prompt:\n{}", articlePrompt);
             article = chatClient.prompt()
-                    .system("""
-                            你是一位知识组织专家。请根据用户的需求，写一篇结构化的 Markdown 文章。
-                            要求：
-                            1. 用 # 表示中心主题，## 表示一级分支，### 表示二级分支。
-                            2. 每个分支要有实质内容：核心观点、论据、例子或数据。
-                            3. 一级分支 5-8 个，每个一级分支下可含 2-4 个二级分支。
-                            4. 内容要有深度，不要空泛。标题用 # ## ### 层级，正文用 - 列表。
-                            """)
+                    .system(mindmapArticleSystemPrompt(context))
                     .user(articlePrompt)
-                    .toolContext(Map.of(
-                            BoardReadTools.TASK_ID_KEY, context.taskId().toString(),
-                            BoardReadTools.OWNER_ID_KEY, context.ownerId().toString()))
+                    .toolContext(toolContext(context))
                     .call()
                     .content();
         } catch (Exception exception) {
@@ -341,94 +321,49 @@ public class SpringAiGenerationService implements AiGenerationService {
             throw new IllegalStateException("AI 未返回思维导图文章内容");
         }
         log.info("[AI1] 文章生成完成，长度 {}:\n{}", article.length(), article);
-
-        // 阶段二：AI2 抽结构
-        log.info("========== 思维导图两段式：AI2 抽结构 ==========");
-        int attempts = 0;
-        String lastError = null;
-        while (attempts <= MAX_SCHEMA_RETRIES) {
-            attempts += 1;
-            try {
-                log.info("[AI2 attempt {}] 输入文章:\n{}", attempts, article);
-                String raw = chatClient.prompt()
-                        .system("""
-                                你是思维导图结构化专家。请阅读下面用户提供的 Markdown 文章，把它抽取成思维导图的图形节点和连线。
-                                规则：
-                                1. # 标题 → 中心主题 create_shape（id=root1，level=0，shape=ellipse）
-                                2. ## 标题 → 一级分支 create_shape（id=branch1...，level=1，shape=rectangle），connect 连到 root1
-                                3. ### 标题 → 二级叶子 create_shape（id=leaf1...，level=2，shape=oval），connect 连到对应的一级分支 id
-                                4. 每个 create_shape 的 title 用该节点标题，x/y 都填 0（后端自动布局）
-                                5. connect 带 style="curve"（曲线）
-                                6. 只输出 JSON！格式：
-                                {"actions":[
-                                  {"type":"create_shape","id":"root1","title":"中心","shape":"ellipse","level":0,"x":0,"y":0,"width":180,"height":90},
-                                  {"type":"create_shape","id":"branch1","title":"分支","shape":"rectangle","level":1,"x":0,"y":0,"width":140,"height":70},
-                                  {"type":"create_shape","id":"leaf1","title":"叶子","shape":"oval","level":2,"x":0,"y":0,"width":120,"height":60},
-                                  {"type":"connect","fromCardId":"root1","toCardId":"branch1","style":"curve"},
-                                  {"type":"connect","fromCardId":"branch1","toCardId":"leaf1","style":"curve"}
-                                ]}
-                                """)
-                        .user(article)
-                        .toolContext(Map.of(
-                                BoardReadTools.TASK_ID_KEY, context.taskId().toString(),
-                                BoardReadTools.OWNER_ID_KEY, context.ownerId().toString()))
-                        .call()
-                        .content();
-                log.info("[AI2 attempt {}] 模型原始输出:\n{}", attempts, raw);
-                List<BoardAction> actions = parseActionsFromContent(raw, context);
-                log.info("[AI2 attempt {}] 解析出 {} 个动作: {}", attempts, actions.size(),
-                        actions.stream().map(a -> a.getClass().getSimpleName()).toList());
-                String error = BoardActionValidator.validate(actions);
-                if (error.isEmpty()) {
-                    log.info("========== 思维导图两段式完成，共 {} 个动作 ==========", actions.size());
-                    return new BoardActionResult(actions,
-                            "{\"mode\":\"spring-ai-mindmap\",\"actionCount\":%d,\"attempts\":%d,\"message\":\"思维导图生成完成\"}"
-                                    .formatted(actions.size(), attempts), attempts);
-                }
-                // AI2 输出非 JSON 或校验失败 → 降级：直接从 AI1 文章的标题层级解析节点
-                log.warn("[AI2 attempt {}] 校验失败: {}，降级为从文章标题解析", attempts, error);
-                List<BoardAction> fallback = parseMindmapFromArticle(article);
-                if (!fallback.isEmpty()) {
-                    String fallbackError = BoardActionValidator.validate(fallback);
-                    if (fallbackError.isEmpty()) {
-                        log.info("降级解析成功，从文章提取 {} 个动作", fallback.size());
-                        return new BoardActionResult(fallback,
-                                "{\"mode\":\"spring-ai-mindmap-fallback\",\"actionCount\":%d,\"attempts\":%d,\"message\":\"思维导图生成完成（文章解析）\"}"
-                                        .formatted(fallback.size(), attempts), attempts);
-                    }
-                }
-                lastError = error;
-                if (attempts > MAX_SCHEMA_RETRIES) {
-                    throw new IllegalStateException("思维导图动作校验失败：" + error);
-                }
-            } catch (IllegalStateException exception) {
-                throw exception;
-            } catch (Exception exception) {
-                throw new IllegalStateException("AI 抽取思维导图结构失败：" + exception.getMessage(), exception);
-            }
+        // 从标题层级确定性解析节点与连线，不再二次调用模型抽结构
+        List<BoardAction> actions = parseMindmapFromArticle(article);
+        if (actions.isEmpty()) {
+            throw new IllegalStateException("未能从文章解析出思维导图结构");
         }
-        throw new IllegalStateException("思维导图动作校验失败：" + lastError);
+        log.info("========== 思维导图完成，解析出 {} 个动作 ==========", actions.size());
+        return new BoardActionResult(actions,
+                "{\"mode\":\"spring-ai-mindmap\",\"actionCount\":%d,\"message\":\"思维导图生成完成\"}"
+                        .formatted(actions.size()));
+    }
+
+    /**
+     * 构造思维导图 AI1 写文章阶段的 system prompt。
+     * 说明结构要求，并引导模型在存在上传资料时先用工具检索再写文章。
+     *
+     * @param context 任务上下文（用于注入 boardId）
+     * @return system prompt 字符串
+     */
+    private String mindmapArticleSystemPrompt(AiTaskContext context) {
+        return """
+                你是一位知识组织专家。请根据用户的需求，写一篇结构化的 Markdown 文章。
+                要求：
+                1. 用 # 表示中心主题，## 表示一级分支，### 表示二级分支。
+                2. 每个分支要有实质内容：核心观点、论据、例子或数据。
+                3. 一级分支 5-8 个，每个一级分支下可含 2-4 个二级分支。
+                4. 内容要有深度，不要空泛。标题用 # ## ### 层级，正文用 - 列表。
+                5. 直接输出文章，不要输出前言、解释或代码围栏。
+                """
+                + "当前画布 boardId：" + context.boardId() + "\n"
+                + toolInstruction();
     }
 
     /**
      * 构造思维导图 AI1 写文章阶段的 user prompt。
-     * 只注入用户需求 + 上传资料内容（供 AI1 参考），不注入画布卡片（避免干扰主题）。
+     * 只注入用户需求；资料内容由 AI1 通过 search_document_chunks 工具按需检索，
+     * 不注入画布卡片（避免干扰主题）。
      *
      * @param context 任务上下文
      * @return 用户 prompt 字符串
      */
     private String buildMindmapArticlePrompt(AiTaskContext context) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("用户需求：").append(context.prompt()).append("\n\n");
-        if (context.sources() != null && !context.sources().isEmpty()) {
-            prompt.append("参考的上传资料内容：\n");
-            for (var src : context.sources()) {
-                prompt.append("\n===== 文件：").append(src.filename()).append(" =====\n");
-                prompt.append(src.content());
-                prompt.append('\n');
-            }
-        }
-        return prompt.toString();
+        return "用户需求：" + context.prompt() + "\n\n"
+                + "如有上传资料，请先用 search_document_chunks 检索相关内容，再据此写文章。";
     }
 
     /**
@@ -449,6 +384,8 @@ public class SpringAiGenerationService implements AiGenerationService {
         prompt.append("connect 的 fromCardId/toCardId 用已有卡片的 id 或本次 create_card 的 id。\n");
         prompt.append("删除画布元素时输出 delete_card（cardId 为已有卡片 id）或 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
         prompt.append("一次任务输出 3-10 个动作（结构图多输出一些），动作之间有意义。\n");
+        prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
+        prompt.append(toolInstruction());
         prompt.append(structurePrompt(context.type().name()));
         prompt.append(chatGuard(context.type().name()));
         if (context.skill() != null) {
@@ -516,14 +453,14 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有卡片 + 资料内容 + 工具上下文 + 重试反馈。
+     * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有卡片/图形（真实 id）+ 重试反馈。
+     * 资料内容不在 prompt 内联，由模型通过 search_document_chunks 工具按需检索。
      *
      * @param context 任务上下文
-     * @param toolContext 内联上下文（卡片/资料拼接文本）
      * @param previousError 上次校验失败的错误（重试时附带，引导模型修复）
      * @return user prompt 字符串
      */
-    private String userPrompt(AiTaskContext context, String toolContext, String previousError) {
+    private String userPrompt(AiTaskContext context, String previousError) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("任务类型：").append(context.type()).append('\n');
         prompt.append("用户需求：").append(context.prompt()).append("\n\n");
@@ -546,19 +483,6 @@ public class SpringAiGenerationService implements AiGenerationService {
             }
             prompt.append('\n');
         }
-        if (context.sources() != null && !context.sources().isEmpty()) {
-            prompt.append("资料库中已解析的文本如下，请优先依据这些内容回答：\n");
-            for (AiTaskContext.SourceContext source : context.sources()) {
-                prompt.append("\n===== 文件：").append(source.filename()).append(" =====\n");
-                prompt.append(source.content());
-                prompt.append('\n');
-            }
-        } else {
-            prompt.append("\n当前画布没有已解析的资料。\n");
-        }
-        if (toolContext != null && !toolContext.isBlank()) {
-            prompt.append("\n工具收集到的额外上下文：\n").append(toolContext).append('\n');
-        }
         if (previousError != null && !previousError.isBlank()) {
             prompt.append("\n注意：你上一次的输出未通过校验，原因：").append(previousError)
                     .append("。请修复后重新输出，不要重复相同错误。\n");
@@ -567,41 +491,32 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 用内联上下文收集代替工具调用（不调 collectContext）。
+     * 构造工具调用的上下文，把 taskId / ownerId 传给 BoardReadTools，
+     * 使其能解析当前任务归属的用户与画布（替代服务端预取内联上下文）。
      *
-     * 为什么不用 collectContext（工具收集）？
-     * 百炼 qwen-plus 在 Spring AI 工具调用上有端到端兼容问题（返回 end-of-input），
-     * 因此直接把 cards/sources 数据拼接成文本注入 prompt，功能等价。
-     * 若后续适配百炼工具格式，可恢复 collectContext。
-     *
-     * @param cards 画布现有卡片
-     * @param sources 已解析的上传资料
-     * @return 拼接后的上下文文本
+     * @param context 任务上下文
+     * @return 工具调用上下文（taskId + ownerId）
      */
-    private String inlineContext(List<AiTaskContext.CardContext> cards, List<AiTaskContext.ShapeContext> shapes,
-            List<AiTaskContext.SourceContext> sources) {
-        StringBuilder sb = new StringBuilder();
-        if (cards != null && !cards.isEmpty()) {
-            sb.append("画布现有卡片：\n");
-            for (var card : cards) {
-                sb.append("- [").append(card.cardId()).append("] ").append(card.title())
-                        .append("：").append(card.content() == null ? "" : card.content().replace('\n', ' '))
-                        .append('\n');
-            }
-        }
-        if (shapes != null && !shapes.isEmpty()) {
-            sb.append("画布现有图形节点：\n");
-            for (var shape : shapes) {
-                sb.append("- [").append(shape.shapeId()).append("] ").append(shape.title())
-                        .append("（").append(shape.shape()).append(", level=").append(shape.level()).append("）\n");
-            }
-        }
-        if (sources != null && !sources.isEmpty()) {
-            sb.append("已解析资料片段：\n");
-            for (var src : sources) {
-                sb.append(src.filename()).append("：").append(src.content()).append('\n');
-            }
-        }
-        return sb.toString();
+    private Map<String, Object> toolContext(AiTaskContext context) {
+        return Map.of(
+                BoardReadTools.TASK_ID_KEY, context.taskId().toString(),
+                BoardReadTools.OWNER_ID_KEY, context.ownerId().toString());
+    }
+
+    /**
+     * 向模型说明可用的只读工具及使用时机。
+     * 引导模型在涉及画布现有内容或上传资料时，先调用工具检索，再输出最终 JSON 动作方案。
+     *
+     * @return 工具使用说明文本
+     */
+    private String toolInstruction() {
+        return """
+                当任务涉及画布现有内容或上传资料时，先调用工具检索再回答：
+                - get_board_context：获取画布标题与卡片摘要
+                - get_card_content：读取指定卡片的完整正文
+                - list_source_files：列出画布已上传的资料文件
+                - search_document_chunks：从资料向量索引检索相关片段
+                不要编造卡片或资料内容，检索结果以工具返回为准。
+                """;
     }
 }
