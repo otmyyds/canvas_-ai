@@ -38,6 +38,8 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [canvasRevision, setCanvasRevision] = useState(0);
+  // 清空画布信号：CLEAR_CANVAS 任务完成时递增，驱动白板清空 tldraw 内容
+  const [canvasClear, setCanvasClear] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
@@ -91,6 +93,10 @@ function BoardEditor({ boardId }: { boardId: string }) {
         setEdges(edgeResult);
         setShapes(shapeResult);
         setCanvasRevision((value) => value + 1);
+        // 清空画布任务完成：后端已删 cards/shapes/edges 与快照，驱动白板清空残留元素
+        if (event.type === "task.done" && event.taskType === "CLEAR_CANVAS") {
+          setCanvasClear((value) => value + 1);
+        }
       }
     },
     [boardId, setCards, setEdges, setTasks]
@@ -219,6 +225,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           tasks={tasks}
           connection={connection}
           canvasRevision={canvasRevision}
+          clearSignal={canvasClear}
           onRefresh={loadAll}
           onAssist={assist}
           onAbortTask={abortTask}

@@ -53,6 +53,8 @@ type WhiteboardEditorProps = {
   tasks: AiTask[];
   connection: string;
   canvasRevision?: number;
+  /** 清空画布信号：CLEAR_CANVAS 任务完成时递增，触发白板清空 tldraw 元素 */
+  clearSignal?: number;
   onRefresh: () => Promise<void>;
   onAssist: (prompt: string) => Promise<AssistResult>;
   onAbortTask: (taskId: string) => Promise<void>;
@@ -109,6 +111,7 @@ export function WhiteboardEditor({
   tasks,
   connection,
   canvasRevision = 0,
+  clearSignal = 0,
   onRefresh,
   onAssist,
   onAbortTask,
@@ -316,6 +319,26 @@ export function WhiteboardEditor({
       queueSave();
     }
   }, [boardId, canvasRevision, cards, edges, editorReady, files, queueSave, shapes]);
+
+  // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
+  useEffect(() => {
+    if (clearSignal <= 0 || !editorReady) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const shapeIds = [...editor.getCurrentPageShapeIds()];
+    if (shapeIds.length > 0) {
+      editor.deleteShapes(shapeIds);
+    }
+    editor.clearHistory();
+    knownCardIdsRef.current = new Set();
+    deletedCardsRef.current = [];
+    setMessage("画布已清空");
+    queueSave();
+  }, [clearSignal, editorReady, queueSave]);
 
   useEffect(() => {
     const unlisten = store.listen((entry) => {

@@ -9,6 +9,8 @@ public enum AiTaskType {
     DOCUMENT_SUMMARY,
     /** 整理画布 → 精简结构卡（单次调用） */
     CANVAS_STRUCTURE,
+    /** 清空画布 → 确定性删除全部元素（不调 LLM） */
+    CLEAR_CANVAS,
     /** 生成图片 → 提示词草稿卡（未实现真实生图） */
     GENERATE_IMAGE,
     /** 编辑图片（未实现） */

@@ -116,12 +116,14 @@ public class IntentClassifier {
             - PRODUCT_REQUIREMENT：写产品需求文档
             - GENERATE_IMAGE：生成图片/画图
             - DOCUMENT_SUMMARY：总结/摘要/归纳资料
-            - CANVAS_STRUCTURE：整理/梳理/结构化画布内容，或删除/清空画布元素
+            - CANVAS_STRUCTURE：整理/梳理/结构化画布内容
+            - CLEAR_CANVAS：删除/清空/移除画布中的全部元素
             - CHAT：普通聊天、打招呼、问答、询问，或不属于以上任务
 
             规则：
             1. 用户明确表达「生成/制作/画/总结/整理/规划」等动作时才归类为任务。
-            2. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
-            3. 只输出 JSON，格式：{"intent":"..."}，不要输出任何其他文字。
+            2. 表达「删除/清空/移除画布中的全部元素」归类为 CLEAR_CANVAS。
+            3. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
+            4. 只输出 JSON，格式：{"intent":"..."}，不要输出任何其他文字。
             """;
 }

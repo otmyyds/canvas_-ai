@@ -65,6 +65,7 @@ const activeStatuses = new Set(["CREATED", "QUEUED", "RUNNING", "ABORTING"]);
 const taskLabel: Record<AiTaskType, string> = {
   DOCUMENT_SUMMARY: "总结资料",
   CANVAS_STRUCTURE: "整理画布",
+  CLEAR_CANVAS: "清空画布",
   GENERATE_IMAGE: "生成图片",
   EDIT_IMAGE: "编辑图片",
   GENERATE_COVER: "生成封面",

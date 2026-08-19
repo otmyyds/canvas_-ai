@@ -30,6 +30,7 @@ import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.repository.AiTaskRepository;
 import com.picturecreate.doccanvas.repository.AiTaskStepRepository;
 import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
+import com.picturecreate.doccanvas.repository.BoardSnapshotRepository;
 import com.picturecreate.doccanvas.repository.CardRepository;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.ai.AiGenerationService;
@@ -71,6 +72,7 @@ public class AiTaskService {
     private final CardRepository cardRepository;
     private final BoardEdgeRepository edgeRepository;
     private final ShapeRepository shapeRepository;
+    private final BoardSnapshotRepository snapshotRepository;
     private final RagContextService ragContextService;
     private final SkillLoader skillLoader;
     private final TaskEventPublisher eventPublisher;
@@ -81,15 +83,17 @@ public class AiTaskService {
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             CardRepository cardRepository, BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
-            RagContextService ragContextService, SkillLoader skillLoader, TaskEventPublisher eventPublisher,
-            AiGenerationService aiGenerationService, @Qualifier("aiTaskExecutor") Executor aiTaskExecutor,
-            StringRedisTemplate redisTemplate, AppProperties properties) {
+            BoardSnapshotRepository snapshotRepository, RagContextService ragContextService, SkillLoader skillLoader,
+            TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
+            @Qualifier("aiTaskExecutor") Executor aiTaskExecutor, StringRedisTemplate redisTemplate,
+            AppProperties properties) {
         this.boardService = boardService;
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
         this.cardRepository = cardRepository;
         this.edgeRepository = edgeRepository;
         this.shapeRepository = shapeRepository;
+        this.snapshotRepository = snapshotRepository;
         this.ragContextService = ragContextService;
         this.skillLoader = skillLoader;
         this.eventPublisher = eventPublisher;
@@ -211,6 +215,10 @@ public class AiTaskService {
     protected BoardActionResult generate(UUID taskId, SkillDefinition skill) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
+        // 清空画布：确定性删除全部元素，不依赖 LLM 生成动作
+        if (task.getType() == AiTaskType.CLEAR_CANVAS) {
+            return clearCanvas(task);
+        }
         // RAG 检索的相关资料片段（替代全量注入）
         List<AiTaskContext.SourceContext> sources = ragContextService.retrieve(task.getBoardId(), task.getOwnerId(),
                 task.getPrompt());
@@ -233,6 +241,27 @@ public class AiTaskService {
     }
 
     /**
+     * 清空画布：删除全部卡片、图形节点、连线以及 tldraw 快照（确定性操作，不依赖 LLM）。
+     * 画布渲染有两套数据源：cards/shapes/edges 表（AI 生成）+ board_snapshots 快照（手动元素），
+     * 必须同时清空，否则快照里的元素会在前端刷新后残留。
+     * 供 CLEAR_CANVAS 任务调用，返回空动作，后续 finish 正常收尾并推送 done 事件。
+     */
+    private BoardActionResult clearCanvas(AiTask task) {
+        UUID boardId = task.getBoardId();
+        List<Card> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        cardRepository.deleteAll(cards);
+        shapeRepository.deleteAll(shapes);
+        edgeRepository.deleteAll(edges);
+        snapshotRepository.deleteByBoardId(boardId);
+        log.info("清空画布：boardId={} 删除卡片={} 图形={} 连线={} 快照已清空", boardId, cards.size(), shapes.size(),
+                edges.size());
+        return new BoardActionResult(List.of(),
+                "{\"mode\":\"clear-canvas\",\"actionCount\":0,\"message\":\"画布已清空\"}");
+    }
+
+    /**
      * 任务成功收尾：应用动作 → 标记 SUCCEEDED → 推送 actions/done 事件。
      */
     @Transactional
@@ -243,8 +272,9 @@ public class AiTaskService {
         log.info("任务成功：taskId={} 动作数={}", taskId, result.actions() == null ? 0 : result.actions().size());
         task.markSucceeded(result.resultJson());
         taskRepository.save(task);
-        eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.actions(taskId, task.getBoardId(), result.actions()));
-        eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.done(taskId, task.getBoardId()));
+        eventPublisher.publish(task.getBoardId(), taskId,
+                TaskEvent.actions(taskId, task.getBoardId(), result.actions(), task.getType().name()));
+        eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.done(taskId, task.getBoardId(), task.getType().name()));
     }
 
     /** 任务中断收尾：标记 ABORTED，推送 aborted 事件 */

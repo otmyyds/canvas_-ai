@@ -24,6 +24,7 @@ public class MockAiGenerationService implements AiGenerationService {
             case STUDY_PLAN -> "学习计划";
             case PRODUCT_REQUIREMENT -> "产品需求草稿";
             case CANVAS_STRUCTURE -> "画布结构建议";
+            case CLEAR_CANVAS -> "清空画布";
             case GENERATE_MINDMAP -> "思维导图";
             case GENERATE_FLOWCHART -> "流程图";
             case DOCUMENT_SUMMARY -> "资料摘要";

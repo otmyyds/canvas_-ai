@@ -69,7 +69,8 @@ export type AiTaskType =
   | "STUDY_PLAN"
   | "PRODUCT_REQUIREMENT"
   | "GENERATE_MINDMAP"
-  | "GENERATE_FLOWCHART";
+  | "GENERATE_FLOWCHART"
+  | "CLEAR_CANVAS";
 
 /** AI 任务状态机：创建→排队→执行→成功/失败/中断 */
 export type AiTaskStatus = "CREATED" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "ABORTING" | "ABORTED";
@@ -167,6 +168,8 @@ export type TaskEvent = {
   progress: number;
   message?: string;
   actions?: BoardAction[];
+  /** 任务类型（AiTaskType），清空画布等前端需据此响应（如 CLEAR_CANVAS） */
+  taskType?: string;
   error?: string;
   emittedAt: string;
 };

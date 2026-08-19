@@ -492,6 +492,8 @@ public class SpringAiGenerationService implements AiGenerationService {
                 如果用户的输入不是要生成内容或整理画布的任务（例如只是打招呼、自我介绍、闲聊），
                 你仍然输出一个最小的 create_card 动作，卡片标题为 "AI 助手"，内容为简短友好的文字回复，
                 不要再输出额外的大量动作。
+                注意：删除/清空/移除画布元素属于整理画布的任务，必须输出 delete_card / delete_shape 动作，
+                不要当成闲聊输出 AI 助手卡。
                 """;
     }
 
