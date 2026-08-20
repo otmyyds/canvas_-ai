@@ -82,7 +82,7 @@ public class SpringAiGenerationService implements AiGenerationService {
                     .map(c -> c.title() + "[" + c.cardId() + "]").toList());
         }
 
-        // 思维导图：单次写文章 + 标题层级解析（不二次调模型抽结构）
+        // 思维导图：单次输出标题大纲 + 标题层级解析（不二次调模型抽结构）
         if (context.type() == com.picturecreate.doccanvas.domain.AiTaskType.GENERATE_MINDMAP) {
             return generateMindmap(context);
         }
@@ -216,8 +216,8 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 从 AI1 文章的标题层级（# ## ###）直接解析思维导图节点与连线。
-     * 思维导图的唯一结构来源：文章由 AI 写成固定层级，此处确定性解析，不再二次调用模型。
+     * 从 AI1 标题大纲的标题层级（# ## ###）直接解析思维导图节点与连线。
+     * 思维导图的唯一结构来源：大纲由 AI 写成固定层级，标题直接承载知识点，此处确定性解析，不再二次调用模型。
      */
     @SuppressWarnings("unchecked")
     private List<BoardAction> parseMindmapFromArticle(String article) {
@@ -239,7 +239,7 @@ public class SpringAiGenerationService implements AiGenerationService {
                 if (title.isEmpty()) {
                     continue;
                 }
-                actions.add(new BoardAction.CreateShape(rootId, title, "ellipse", 0, 0, 0, 180, 90));
+                actions.add(new BoardAction.CreateShape(rootId, title, "ellipse", 0, 0, 0, 200, 96));
             } else if (trimmed.startsWith("## ") && !trimmed.startsWith("### ")) {
                 // 一级分支
                 String title = trimmed.substring(3).trim();
@@ -248,7 +248,7 @@ public class SpringAiGenerationService implements AiGenerationService {
                 }
                 branchCount += 1;
                 String id = "branch" + branchCount;
-                actions.add(new BoardAction.CreateShape(id, title, "rectangle", 1, 0, 0, 140, 70));
+                actions.add(new BoardAction.CreateShape(id, title, "rectangle", 1, 0, 0, 180, 72));
                 actions.add(new BoardAction.Connect(rootId, id, "", "curve", null, 2));
                 currentBranch = id;
                 branchIds.add(id);
@@ -260,7 +260,7 @@ public class SpringAiGenerationService implements AiGenerationService {
                 }
                 leafCount += 1;
                 String id = "leaf" + leafCount;
-                actions.add(new BoardAction.CreateShape(id, title, "oval", 2, 0, 0, 120, 60));
+                actions.add(new BoardAction.CreateShape(id, title, "oval", 2, 0, 0, 160, 60));
                 actions.add(new BoardAction.Connect(currentBranch, id, "", "curve", null, 1));
             }
         }
@@ -290,12 +290,12 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 思维导图生成：单次模型调用写文章，再从标题层级确定性解析节点。
+     * 思维导图生成：单次模型调用输出标题大纲，再从标题层级确定性解析节点。
      *
      * 为什么只调一次模型？
-     * - 模型写一篇带 # / ## / ### 标题层级的 Markdown 文章，深度自然展开；
+     * - 模型输出带 # / ## / ### 标题层级的 Markdown 大纲，知识点直接写进标题；
      * - 节点与连线由 parseMindmapFromArticle 直接从标题层级解析，无需二次调用模型；
-     * - 二次"抽结构"调用既多余（标题层级已定），又容易因输入文章过长触发上游连接重置。
+     * - 二次"抽结构"调用既多余（标题层级已定），又容易因输入过长触发上游连接重置。
      *
      * 坐标由后端 GraphLayoutService 重算（layoutMindmap3），模型只出结构不排坐标。
      *
@@ -303,11 +303,11 @@ public class SpringAiGenerationService implements AiGenerationService {
      * @return 思维导图节点 + 连线动作
      */
     private BoardActionResult generateMindmap(AiTaskContext context) {
-        log.info("========== 思维导图：AI 写文章 ==========");
+        log.info("========== 思维导图：AI 输出标题大纲 ==========");
         String article;
         try {
             String articlePrompt = buildMindmapArticlePrompt(context);
-            log.info("[AI1] 文章生成 user prompt:\n{}", articlePrompt);
+            log.info("[AI1] 标题大纲生成 user prompt:\n{}", articlePrompt);
             article = chatClient.prompt()
                     .system(mindmapArticleSystemPrompt(context))
                     .user(articlePrompt)
@@ -320,7 +320,7 @@ public class SpringAiGenerationService implements AiGenerationService {
         if (article == null || article.isBlank()) {
             throw new IllegalStateException("AI 未返回思维导图文章内容");
         }
-        log.info("[AI1] 文章生成完成，长度 {}:\n{}", article.length(), article);
+        log.info("[AI1] 标题大纲生成完成，长度 {}:\n{}", article.length(), article);
         // 从标题层级确定性解析节点与连线，不再二次调用模型抽结构
         List<BoardAction> actions = parseMindmapFromArticle(article);
         if (actions.isEmpty()) {
@@ -341,13 +341,13 @@ public class SpringAiGenerationService implements AiGenerationService {
      */
     private String mindmapArticleSystemPrompt(AiTaskContext context) {
         return """
-                你是一位知识组织专家。请根据用户的需求，写一篇结构化的 Markdown 文章。
+                你是一位知识组织专家。请根据用户的需求，输出一份结构化的 Markdown 标题大纲。
                 要求：
                 1. 用 # 表示中心主题，## 表示一级分支，### 表示二级分支。
-                2. 每个分支要有实质内容：核心观点、论据、例子或数据。
+                2. 每个标题必须是有实质信息的精炼短语（核心概念、观点或结论），8-16 字左右，
+                   禁止只写"概述""介绍""背景"等空泛词，也禁止只写单个词。
                 3. 一级分支 5-8 个，每个一级分支下可含 2-4 个二级分支。
-                4. 内容要有深度，不要空泛。标题用 # ## ### 层级，正文用 - 列表。
-                5. 直接输出文章，不要输出前言、解释或代码围栏。
+                4. 只输出 # / ## / ### 标题行，不要输出任何正文、列表、前言、解释或代码围栏。
                 """
                 + "当前画布 boardId：" + context.boardId() + "\n"
                 + toolInstruction();
@@ -363,7 +363,7 @@ public class SpringAiGenerationService implements AiGenerationService {
      */
     private String buildMindmapArticlePrompt(AiTaskContext context) {
         return "用户需求：" + context.prompt() + "\n\n"
-                + "如有上传资料，请先用 search_document_chunks 检索相关内容，再据此写文章。";
+                + "如有上传资料，请先用 search_document_chunks 检索相关内容，再据此输出标题大纲。";
     }
 
     /**
