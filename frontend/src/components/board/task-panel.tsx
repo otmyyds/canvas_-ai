@@ -11,6 +11,8 @@ type TaskPanelProps = {
   connection: string;
   onAssist: (prompt: string) => Promise<AssistResult>;
   onAbortTask: (taskId: string) => Promise<void>;
+  /** 当前选中的元素数量（>0 时提示「操作将针对选中元素」） */
+  selectionCount?: number;
 };
 
 /** 对话消息（user=用户气泡，assistant=AI 回复或任务卡） */
@@ -73,7 +75,8 @@ const taskLabel: Record<AiTaskType, string> = {
   STUDY_PLAN: "学习计划",
   PRODUCT_REQUIREMENT: "产品需求",
   GENERATE_MINDMAP: "思维导图",
-  GENERATE_FLOWCHART: "流程图"
+  GENERATE_FLOWCHART: "流程图",
+  EDIT_ELEMENT: "编辑元素"
 };
 
 /** 会话持久化 key（按画布隔离） */
@@ -121,7 +124,7 @@ function loadSession(boardId: string): ChatMessage[] {
  * @param onAssist 统一提交回调（父组件封装，调后端 /assist）
  * @param onAbortTask 中断任务回调
  */
-export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask }: TaskPanelProps) {
+export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, selectionCount = 0 }: TaskPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSession(boardId));
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -258,6 +261,11 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask }:
         {activeTask ? (
           <div className="mb-2 rounded-md border border-spruce/20 bg-spruce/5 px-3 py-2 text-xs text-spruce">
             有任务执行中（{activeTask.currentStep ?? "准备中"} {activeTask.progress}%）...
+          </div>
+        ) : null}
+        {selectionCount > 0 ? (
+          <div className="mb-2 rounded-md border border-spruce/20 bg-spruce/5 px-3 py-2 text-xs text-spruce">
+            已选中 {selectionCount} 个元素，修改/丰富/添加分支/删除将针对它们
           </div>
         ) : null}
         <form onSubmit={submit} className="flex items-end gap-2">

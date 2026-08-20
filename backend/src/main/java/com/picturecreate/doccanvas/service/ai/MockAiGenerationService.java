@@ -28,6 +28,7 @@ public class MockAiGenerationService implements AiGenerationService {
             case GENERATE_MINDMAP -> "思维导图";
             case GENERATE_FLOWCHART -> "流程图";
             case DOCUMENT_SUMMARY -> "资料摘要";
+            case EDIT_ELEMENT -> "编辑选中元素";
         };
         String markdown = """
                 ## %s

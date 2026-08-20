@@ -42,6 +42,11 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [canvasClear, setCanvasClear] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  // 当前选中的卡片/图形节点真实 id（用于「编辑选中元素」任务）
+  const [selection, setSelection] = useState<{ cardIds: string[]; shapeIds: string[] }>({
+    cardIds: [],
+    shapeIds: []
+  });
 
   async function renameBoard(title: string) {
     const safe = title.trim();
@@ -105,7 +110,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const connection = useTaskStream(boardId, onTaskEvent);
 
   async function assist(prompt: string) {
-    const result = await api.assist(boardId, prompt);
+    const result = await api.assist(boardId, prompt, selection);
     if (result.kind === "task") {
       setTasks(await api.listTasks(boardId));
     }
@@ -232,6 +237,8 @@ function BoardEditor({ boardId }: { boardId: string }) {
           onUploadFile={uploadFile}
           onDeleteFile={deleteFile}
           onApplyTemplate={applyTemplate}
+          onSelectionChange={setSelection}
+          selectionCount={selection.cardIds.length + selection.shapeIds.length}
         />
       )}
     </main>

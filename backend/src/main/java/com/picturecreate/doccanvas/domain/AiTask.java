@@ -35,6 +35,10 @@ public class AiTask extends BaseEntity {
     @Column(nullable = false, columnDefinition = "text")
     private String prompt;
 
+    /** 任务上下文 JSON（如选中的卡片/图形节点 id 列表），供异步执行时还原请求上下文 */
+    @Column(name = "context_json", columnDefinition = "text")
+    private String contextJson;
+
     /** 任务状态（状态机核心字段） */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -117,6 +121,14 @@ public class AiTask extends BaseEntity {
 
     public String getPrompt() {
         return prompt;
+    }
+
+    public String getContextJson() {
+        return contextJson;
+    }
+
+    public void setContextJson(String contextJson) {
+        this.contextJson = contextJson;
     }
 
     public AiTaskStatus getStatus() {

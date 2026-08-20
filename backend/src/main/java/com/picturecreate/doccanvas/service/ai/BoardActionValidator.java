@@ -19,7 +19,7 @@ public final class BoardActionValidator {
     private BoardActionValidator() {
     }
 
-    public static String validate(List<BoardAction> actions) {
+    public static String validate(List<BoardAction> actions, AiTaskContext context) {
         if (actions == null || actions.isEmpty()) {
             return "模型未返回任何动作";
         }
@@ -60,9 +60,32 @@ public final class BoardActionValidator {
                 if (deleteShape.shapeId() == null || deleteShape.shapeId().isBlank()) {
                     problems.add("存在 shapeId 缺失的 delete_shape 动作");
                 }
+            } else if (action instanceof BoardAction.ConvertCardToShape convert) {
+                if (convert.cardId() == null || convert.cardId().isBlank()) {
+                    problems.add("存在 cardId 缺失的 convert_card_to_shape 动作");
+                }
+            } else if (action instanceof BoardAction.ConvertShapeToCard convert) {
+                if (convert.shapeId() == null || convert.shapeId().isBlank()) {
+                    problems.add("存在 shapeId 缺失的 convert_shape_to_card 动作");
+                }
             } else if (action instanceof BoardAction.CreateGroup group) {
                 if (group.title() == null || group.title().isBlank()) {
                     problems.add("存在标题为空的分组动作");
+                }
+            }
+        }
+        // EDIT_ELEMENT 类型一致：选中图形节点扩展只能用 create_shape，选中卡片只能用 create_card
+        if (context != null) {
+            boolean onlyShapes = context.selectedShapes() != null && !context.selectedShapes().isEmpty()
+                    && (context.selectedCards() == null || context.selectedCards().isEmpty());
+            boolean onlyCards = context.selectedCards() != null && !context.selectedCards().isEmpty()
+                    && (context.selectedShapes() == null || context.selectedShapes().isEmpty());
+            for (BoardAction action : actions) {
+                if (onlyShapes && action instanceof BoardAction.CreateCard) {
+                    problems.add("选中图形节点扩展必须用 create_shape，禁止 create_card");
+                }
+                if (onlyCards && action instanceof BoardAction.CreateShape) {
+                    problems.add("选中卡片扩展必须用 create_card，禁止 create_shape");
                 }
             }
         }

@@ -94,4 +94,10 @@ public class Shape extends BaseEntity {
     public double getHeight() {
         return height;
     }
+
+    /** 更新节点坐标（思维导图扩展后整树重排时用） */
+    public void update(double x, double y) {
+        this.x = x;
+        this.y = y;
+    }
 }

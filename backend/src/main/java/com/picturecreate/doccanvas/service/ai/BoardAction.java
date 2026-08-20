@@ -19,11 +19,13 @@ import jakarta.validation.constraints.NotBlank;
         @JsonSubTypes.Type(value = BoardAction.Connect.class, name = "connect"),
         @JsonSubTypes.Type(value = BoardAction.CreateGroup.class, name = "create_group"),
         @JsonSubTypes.Type(value = BoardAction.DeleteCard.class, name = "delete_card"),
-        @JsonSubTypes.Type(value = BoardAction.DeleteShape.class, name = "delete_shape")
+        @JsonSubTypes.Type(value = BoardAction.DeleteShape.class, name = "delete_shape"),
+        @JsonSubTypes.Type(value = BoardAction.ConvertCardToShape.class, name = "convert_card_to_shape"),
+        @JsonSubTypes.Type(value = BoardAction.ConvertShapeToCard.class, name = "convert_shape_to_card")
 })
 public sealed interface BoardAction permits BoardAction.CreateCard, BoardAction.CreateShape,
         BoardAction.UpdateCard, BoardAction.Connect, BoardAction.CreateGroup, BoardAction.DeleteCard,
-        BoardAction.DeleteShape {
+        BoardAction.DeleteShape, BoardAction.ConvertCardToShape, BoardAction.ConvertShapeToCard {
 
     /** 新建一张卡片；id 可选，供本计划内其他动作（connect）引用新卡 */
     record CreateCard(
@@ -88,6 +90,19 @@ public sealed interface BoardAction permits BoardAction.CreateCard, BoardAction.
     /** 删除一个图形节点（思维导图/流程图节点，连带其连线） */
     record DeleteShape(
             @NotBlank(message = "节点 id 不能为空") String shapeId) implements BoardAction {
+    }
+
+    /** 把一张卡片转换为图形节点（保留标题与位置，正文丢弃）；shape 默认 oval，level 默认 2 */
+    record ConvertCardToShape(
+            @NotBlank(message = "卡片 id 不能为空") String cardId,
+            String shape,
+            int level) implements BoardAction {
+    }
+
+    /** 把一个图形节点转换为卡片（标题作为卡片内容）；cardType 默认 IDEA */
+    record ConvertShapeToCard(
+            @NotBlank(message = "节点 id 不能为空") String shapeId,
+            String cardType) implements BoardAction {
     }
 
     /** 模型返回的整体计划，便于 Spring AI 结构化反序列化 */

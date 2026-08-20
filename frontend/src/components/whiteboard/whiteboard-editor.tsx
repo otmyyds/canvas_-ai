@@ -61,6 +61,10 @@ type WhiteboardEditorProps = {
   onUploadFile: (file: File) => Promise<void>;
   onDeleteFile: (fileId: string) => Promise<void>;
   onApplyTemplate: (templateId: string, rootTitle: string) => Promise<void>;
+  /** 选中变化回调：上报当前选中的卡片/图形节点真实 id（供「编辑选中元素」使用） */
+  onSelectionChange?: (selection: { cardIds: string[]; shapeIds: string[] }) => void;
+  /** 当前选中的元素数量（用于 AI 助手面板提示） */
+  selectionCount?: number;
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -117,7 +121,9 @@ export function WhiteboardEditor({
   onAbortTask,
   onUploadFile,
   onDeleteFile,
-  onApplyTemplate
+  onApplyTemplate,
+  onSelectionChange,
+  selectionCount = 0
 }: WhiteboardEditorProps) {
   /**
    * tldraw store：画布的底层数据源。
@@ -400,6 +406,43 @@ export function WhiteboardEditor({
     editor.setCameraOptions({ wheelBehavior: "pan" });
     setEditorReady(true);
   }, []);
+
+  // 监听选中变化，把选中的卡片/图形节点真实 id 上报给父组件
+  // 映射规则与 deleteSelected 一致：geo 节点去掉 "shape:" 前缀取真实 id；卡片取 meta.cardId
+  useEffect(() => {
+    if (!editorReady || !onSelectionChange) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const sync = () => {
+      const cardIds = new Set<string>();
+      const shapeIds = new Set<string>();
+      for (const id of editor.getSelectedShapeIds()) {
+        const shape = editor.getShape(id);
+        if (!shape) {
+          continue;
+        }
+        if (shape.type === "geo") {
+          const rawId = String(id).replace(/^shape:/, "");
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+            shapeIds.add(rawId);
+          }
+          continue;
+        }
+        const cardId = shape.meta?.cardId as string | undefined;
+        if (cardId) {
+          cardIds.add(cardId);
+        }
+      }
+      onSelectionChange({ cardIds: [...cardIds], shapeIds: [...shapeIds] });
+    };
+    sync();
+    const unlisten = editor.store.listen(sync, { scope: "document" });
+    return () => unlisten();
+  }, [editorReady, onSelectionChange]);
 
   const setTool = useCallback((toolId: string, hint: string) => {
     const editor = editorRef.current;
@@ -896,6 +939,7 @@ export function WhiteboardEditor({
         connection={connection}
         onAssist={onAssist}
         onAbortTask={onAbortTask}
+        selectionCount={selectionCount}
       />
     </div>
   );

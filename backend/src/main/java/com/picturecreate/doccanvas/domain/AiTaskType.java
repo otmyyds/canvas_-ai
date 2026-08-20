@@ -26,5 +26,7 @@ public enum AiTaskType {
     /** 思维导图 → 两段式生成（图形节点 + 曲线连线） */
     GENERATE_MINDMAP,
     /** 流程图 → 单次调用（卡片节点 + 连线） */
-    GENERATE_FLOWCHART
+    GENERATE_FLOWCHART,
+    /** 编辑选中的画布元素 → 修改/丰富/添加分支/删除（单次调用，针对选中卡片或图形节点） */
+    EDIT_ELEMENT
 }

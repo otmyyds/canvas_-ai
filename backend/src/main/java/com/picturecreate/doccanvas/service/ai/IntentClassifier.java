@@ -35,12 +35,13 @@ public class IntentClassifier {
      * 分类用户输入。
      *
      * @param prompt 用户输入
+     * @param hasSelection 当前是否有选中的画布元素（用于区分「编辑选中元素」与「清空画布」）
      * @return 分类决策（taskType 为 null 表示纯聊天）
      */
-    public IntentDecision classify(String prompt) {
+    public IntentDecision classify(String prompt, boolean hasSelection) {
         String raw = chatClient.prompt()
                 .system(SYSTEM_PROMPT)
-                .user("用户输入：" + prompt)
+                .user("用户输入：" + prompt + "\n是否有选中元素：" + (hasSelection ? "是" : "否"))
                 .call()
                 .content();
         log.info("意图分类原始输出: {}", raw);
@@ -118,12 +119,15 @@ public class IntentClassifier {
             - DOCUMENT_SUMMARY：总结/摘要/归纳资料
             - CANVAS_STRUCTURE：整理/梳理/结构化画布内容
             - CLEAR_CANVAS：删除/清空/移除画布中的全部元素
+            - EDIT_ELEMENT：修改/丰富/删除选中的画布元素，或给选中的元素添加分支
             - CHAT：普通聊天、打招呼、问答、询问，或不属于以上任务
 
             规则：
             1. 用户明确表达「生成/制作/画/总结/整理/规划」等动作时才归类为任务。
             2. 表达「删除/清空/移除画布中的全部元素」归类为 CLEAR_CANVAS。
-            3. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
-            4. 只输出 JSON，格式：{"intent":"..."}，不要输出任何其他文字。
+            3. 当「是否有选中元素」为是，且指令是针对选中元素的「修改/丰富/添加分支/删除」时，归类为 EDIT_ELEMENT。
+               注意：删除某个/某些选中元素是 EDIT_ELEMENT，删除全部元素才是 CLEAR_CANVAS。
+            4. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
+            5. 只输出 JSON，格式：{"intent":"..."}，不要输出任何其他文字。
             """;
 }

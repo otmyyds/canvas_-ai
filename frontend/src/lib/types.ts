@@ -70,6 +70,7 @@ export type AiTaskType =
   | "PRODUCT_REQUIREMENT"
   | "GENERATE_MINDMAP"
   | "GENERATE_FLOWCHART"
+  | "EDIT_ELEMENT"
   | "CLEAR_CANVAS";
 
 /** AI 任务状态机：创建→排队→执行→成功/失败/中断 */

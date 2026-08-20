@@ -14,10 +14,12 @@ public record AiTaskContext(
         List<SourceContext> sources,
         List<CardContext> cards,
         List<ShapeContext> shapes,
-        SkillDefinition skill) {
+        SkillDefinition skill,
+        List<CardContext> selectedCards,
+        List<ShapeContext> selectedShapes) {
 
     public AiTaskContext(UUID taskId, UUID boardId, UUID ownerId, AiTaskType type, String prompt) {
-        this(taskId, boardId, ownerId, type, prompt, List.of(), List.of(), List.of(), null);
+        this(taskId, boardId, ownerId, type, prompt, List.of(), List.of(), List.of(), null, List.of(), List.of());
     }
 
     /** 画布资料库中已解析的文本片段 */

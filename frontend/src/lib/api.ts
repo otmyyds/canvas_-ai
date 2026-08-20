@@ -182,11 +182,18 @@ export const api = {
   },
 
   // ===== AI 助手统一入口 =====
-  /** 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落卡任务 */
-  assist: (boardId: string, prompt: string) =>
+  /**
+   * 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落卡任务。
+   * selection 携带用户当前选中的卡片/图形节点真实 id，用于「编辑选中元素」任务。
+   */
+  assist: (boardId: string, prompt: string, selection?: { cardIds: string[]; shapeIds: string[] }) =>
     request<AssistResult>(`/api/boards/${boardId}/assist`, {
       method: "POST",
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({
+        prompt,
+        selectedCardIds: selection?.cardIds ?? [],
+        selectedShapeIds: selection?.shapeIds ?? []
+      })
     }),
 
   // ===== 认证 =====

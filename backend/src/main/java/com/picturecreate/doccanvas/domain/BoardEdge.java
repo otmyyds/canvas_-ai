@@ -88,4 +88,10 @@ public class BoardEdge extends BaseEntity {
     public int getWeight() {
         return weight;
     }
+
+    /** 更新连线端点（卡片/图形互换后重定向连线用） */
+    public void updateEndpoints(UUID fromCardId, UUID toCardId) {
+        this.fromCardId = fromCardId;
+        this.toCardId = toCardId;
+    }
 }

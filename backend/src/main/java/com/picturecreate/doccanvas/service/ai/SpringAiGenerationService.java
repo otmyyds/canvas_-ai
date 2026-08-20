@@ -107,7 +107,7 @@ public class SpringAiGenerationService implements AiGenerationService {
                 List<BoardAction> actions = parseActionsFromContent(raw, context);
                 log.info("[生成 attempt {}] 解析出 {} 个动作: {}", attempts, actions.size(),
                         actions.stream().map(a -> a.getClass().getSimpleName()).toList());
-                String error = BoardActionValidator.validate(actions);
+                String error = BoardActionValidator.validate(actions, context);
                 if (error.isEmpty()) {
                     log.info("========== AI 任务完成，共 {} 个动作 ==========", actions.size());
                     return new BoardActionResult(actions,
@@ -202,6 +202,13 @@ public class SpringAiGenerationService implements AiGenerationService {
                             str(map.get("cardId"))));
                     case "delete_shape" -> actions.add(new BoardAction.DeleteShape(
                             str(map.get("shapeId"))));
+                    case "convert_card_to_shape" -> actions.add(new BoardAction.ConvertCardToShape(
+                            str(map.get("cardId")),
+                            str(map.get("shape"), "oval"),
+                            intValue(map.get("level"), 2)));
+                    case "convert_shape_to_card" -> actions.add(new BoardAction.ConvertShapeToCard(
+                            str(map.get("shapeId")),
+                            str(map.get("cardType"), "IDEA")));
                     default -> {
                         // 忽略未知动作
                     }
@@ -225,43 +232,43 @@ public class SpringAiGenerationService implements AiGenerationService {
             return List.of();
         }
         List<BoardAction> actions = new java.util.ArrayList<>();
-        List<String> branchIds = new java.util.ArrayList<>();
-        String rootId = "root1";
-        String currentBranch = null;
-        int branchCount = 0;
-        int leafCount = 0;
+        // parentAtLevel[level] 记录每层最近出现的节点 id（level=井号数-1），供 connect 到父节点
+        String[] parentAtLevel = new String[8];
+        int nodeCount = 0;
 
         for (String line : article.split("\n")) {
             String trimmed = line.trim();
-            if (trimmed.startsWith("# ") && !trimmed.startsWith("## ")) {
-                // 中心主题（# 单井号）
-                String title = trimmed.substring(2).trim();
-                if (title.isEmpty()) {
-                    continue;
-                }
-                actions.add(new BoardAction.CreateShape(rootId, title, "ellipse", 0, 0, 0, 200, 96));
-            } else if (trimmed.startsWith("## ") && !trimmed.startsWith("### ")) {
-                // 一级分支
-                String title = trimmed.substring(3).trim();
-                if (title.isEmpty()) {
-                    continue;
-                }
-                branchCount += 1;
-                String id = "branch" + branchCount;
-                actions.add(new BoardAction.CreateShape(id, title, "rectangle", 1, 0, 0, 180, 72));
-                actions.add(new BoardAction.Connect(rootId, id, "", "curve", null, 2));
-                currentBranch = id;
-                branchIds.add(id);
-            } else if (trimmed.startsWith("### ") && currentBranch != null) {
-                // 二级叶子
-                String title = trimmed.substring(4).trim();
-                if (title.isEmpty()) {
-                    continue;
-                }
-                leafCount += 1;
-                String id = "leaf" + leafCount;
-                actions.add(new BoardAction.CreateShape(id, title, "oval", 2, 0, 0, 160, 60));
-                actions.add(new BoardAction.Connect(currentBranch, id, "", "curve", null, 1));
+            if (trimmed.isEmpty() || !trimmed.startsWith("#")) {
+                continue;
+            }
+            int hashes = 0;
+            while (hashes < trimmed.length() && trimmed.charAt(hashes) == '#') {
+                hashes += 1;
+            }
+            // 标题井号后必须有空格分隔
+            if (hashes >= trimmed.length() || trimmed.charAt(hashes) != ' ') {
+                continue;
+            }
+            String title = trimmed.substring(hashes + 1).trim();
+            if (title.isEmpty()) {
+                continue;
+            }
+            int level = hashes - 1;
+            nodeCount += 1;
+            String id = "node" + nodeCount;
+            // 节点类型与尺寸按层级：0=ellipse 中心，1=rectangle 分支，>=2=oval 叶子
+            String shape = level == 0 ? "ellipse" : level == 1 ? "rectangle" : "oval";
+            double w = level == 0 ? 200 : level == 1 ? 180 : 160;
+            double h = level == 0 ? 96 : level == 1 ? 72 : 60;
+            actions.add(new BoardAction.CreateShape(id, title, shape, level, 0, 0, w, h));
+            // 连接到上一层最近出现的父节点
+            if (level > 0 && parentAtLevel[level - 1] != null) {
+                actions.add(new BoardAction.Connect(parentAtLevel[level - 1], id, "", "curve", null, level == 1 ? 2 : 1));
+            }
+            parentAtLevel[level] = id;
+            // 同层新节点会重置其子树，清空更深层记录
+            for (int i = level + 1; i < parentAtLevel.length; i++) {
+                parentAtLevel[i] = null;
             }
         }
         return actions;
@@ -343,11 +350,11 @@ public class SpringAiGenerationService implements AiGenerationService {
         return """
                 你是一位知识组织专家。请根据用户的需求，输出一份结构化的 Markdown 标题大纲。
                 要求：
-                1. 用 # 表示中心主题，## 表示一级分支，### 表示二级分支。
+                1. 用标题井号数量表示层级：# 中心主题，## 一级分支，### 二级，#### 三级，##### 四级（最多五层）。
                 2. 每个标题必须是有实质信息的精炼短语（核心概念、观点或结论），8-16 字左右，
                    禁止只写"概述""介绍""背景"等空泛词，也禁止只写单个词。
-                3. 一级分支 5-8 个，每个一级分支下可含 2-4 个二级分支。
-                4. 只输出 # / ## / ### 标题行，不要输出任何正文、列表、前言、解释或代码围栏。
+                3. 一级分支 5-8 个，每级分支下可含 2-4 个子分支，逐层展开。
+                4. 只输出 # 到 ##### 标题行，不要输出任何正文、列表、前言、解释或代码围栏。
                 """
                 + "当前画布 boardId：" + context.boardId() + "\n"
                 + toolInstruction();
@@ -383,10 +390,12 @@ public class SpringAiGenerationService implements AiGenerationService {
         prompt.append(contentDepthConstraint(context.type().name()));
         prompt.append("connect 的 fromCardId/toCardId 用已有卡片的 id 或本次 create_card 的 id。\n");
         prompt.append("删除画布元素时输出 delete_card（cardId 为已有卡片 id）或 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
+        prompt.append("把卡片改成图形样式时输出 convert_card_to_shape（cardId=已有卡片 id，shape=oval/rectangle/ellipse，level=层级）；把图形改成卡片时输出 convert_shape_to_card（shapeId=已有图形节点 id，cardType=SUMMARY/IDEA/QUESTION 等）。\n");
         prompt.append("一次任务输出 3-10 个动作（结构图多输出一些），动作之间有意义。\n");
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
         prompt.append(toolInstruction());
         prompt.append(structurePrompt(context.type().name()));
+        prompt.append(editElementPrompt(context.type().name()));
         prompt.append(chatGuard(context.type().name()));
         if (context.skill() != null) {
             prompt.append("\n当前技能说明：\n").append(context.skill().body()).append('\n');
@@ -453,6 +462,36 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
+     * 编辑选中元素任务的专用约束。
+     * 用户已选中若干卡片/图形节点，指令是修改/丰富/添加分支/删除，模型据此输出针对性动作。
+     *
+     * @param taskType 任务类型字符串
+     * @return 编辑约束文本（非编辑任务返回空串）
+     */
+    private String editElementPrompt(String taskType) {
+        if (!"EDIT_ELEMENT".equals(taskType)) {
+            return "";
+        }
+        return """
+                任务类型是编辑选中的画布元素：
+                1. 用户已选中若干卡片/图形节点，其真实 id 见 user prompt 的「选中」段落。
+                2. 根据用户指令，对选中元素输出对应动作：
+                   - 修改/丰富内容 → update_card（cardId=选中卡片真实 id，markdown=新的更详实的内容）
+                   - 删除卡片 → delete_card（cardId）；删除图形节点 → delete_shape（shapeId）
+                   - 给选中卡片添加子卡片 → create_card + connect（fromCardId=选中卡片 id，toCardId=新卡 id）
+                   - 给选中图形节点添加分支 → create_shape + connect（fromCardId=选中图形节点 id，toCardId=新节点 id）
+                3. 类型必须与选中元素一致，禁止混用：
+                   - 选中图形节点时，扩展只能用 create_shape（shape=oval，level=选中节点 level+1），绝对禁止 create_card；
+                   - 选中卡片时，扩展只能用 create_card，绝对禁止 create_shape。
+                4. 把选中元素改成另一种样式（互换）：
+                   - 选中卡片要改成图形样式 → convert_card_to_shape（cardId=选中卡片 id）
+                   - 选中图形节点要改成卡片 → convert_shape_to_card（shapeId=选中图形节点 id）
+                5. 动作里的 id 必须用 user prompt 注入的真实 id，不要编造。
+                6. 新生成的内容要有深度（章节/要点/论据），不要空泛。
+                """;
+    }
+
+    /**
      * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有卡片/图形（真实 id）+ 重试反馈。
      * 资料内容不在 prompt 内联，由模型通过 search_document_chunks 工具按需检索。
      *
@@ -477,6 +516,25 @@ public class SpringAiGenerationService implements AiGenerationService {
         if (context.shapes() != null && !context.shapes().isEmpty()) {
             prompt.append("画布中现有图形节点（shapeId 以此为准）：\n");
             for (AiTaskContext.ShapeContext shape : context.shapes()) {
+                prompt.append("- [").append(shape.shapeId()).append("] ")
+                        .append(shape.title()).append(" (").append(shape.shape()).append(", level=")
+                        .append(shape.level()).append(")\n");
+            }
+            prompt.append('\n');
+        }
+        if (context.selectedCards() != null && !context.selectedCards().isEmpty()) {
+            prompt.append("用户当前选中的卡片（编辑操作目标，id 以此为准）：\n");
+            for (AiTaskContext.CardContext card : context.selectedCards()) {
+                prompt.append("- [").append(card.cardId()).append("] ")
+                        .append(card.title()).append(" (").append(card.cardType()).append(")：")
+                        .append(card.content() == null ? "" : card.content().replace('\n', ' '))
+                        .append('\n');
+            }
+            prompt.append('\n');
+        }
+        if (context.selectedShapes() != null && !context.selectedShapes().isEmpty()) {
+            prompt.append("用户当前选中的图形节点（编辑操作目标，id 以此为准）：\n");
+            for (AiTaskContext.ShapeContext shape : context.selectedShapes()) {
                 prompt.append("- [").append(shape.shapeId()).append("] ")
                         .append(shape.title()).append(" (").append(shape.shape()).append(", level=")
                         .append(shape.level()).append(")\n");
