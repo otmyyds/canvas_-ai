@@ -753,7 +753,7 @@ export function WhiteboardEditor({
 
 /**
  * 把后端图形节点（思维导图/流程图节点）渲染为 tldraw geo shape。
- * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊。
+ * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊，diamond→菱形。
  * 返回新增数量。
  */
 function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
@@ -814,7 +814,10 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
 }
 
 function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
-  const geoType = node.shape === "ellipse" ? "ellipse" : node.shape === "oval" ? "oval" : "rectangle";
+  const geoType = node.shape === "ellipse" ? "ellipse"
+    : node.shape === "oval" ? "oval"
+    : node.shape === "diamond" ? "diamond"
+    : "rectangle";
   const isCenter = node.level === 0;
   editor.createShape({
     id: shapeId,

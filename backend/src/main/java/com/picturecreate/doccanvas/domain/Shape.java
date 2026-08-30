@@ -24,7 +24,7 @@ public class Shape extends BaseEntity {
     @Column(nullable = false)
     private String title;
 
-    /** 图形类型：ellipse 椭圆 / rectangle 矩形 / oval 胶囊 */
+    /** 图形类型：ellipse 椭圆 / rectangle 矩形 / oval 胶囊 / diamond 菱形（流程图判断节点） */
     @Column(nullable = false)
     private String shape;
 

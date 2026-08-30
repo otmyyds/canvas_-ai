@@ -388,7 +388,7 @@ public class SpringAiGenerationService implements AiGenerationService {
         prompt.append("你是单人 AI 文档画布的规划模型。\n");
         prompt.append("**你必须只输出 JSON 对象！不要输出任何文字、解释、代码围栏。直接输出 JSON。**\n");
         prompt.append("JSON 格式：{\"actions\":[{\"type\":\"create_shape\",\"id\":\"node1\",\"title\":\"...\",\"shape\":\"ellipse\",\"level\":0,\"x\":120,\"y\":120}, {\"type\":\"connect\",\"fromShapeId\":\"node1\",\"toShapeId\":\"node2\",\"label\":\"...\"}, {\"type\":\"delete_shape\",\"shapeId\":\"...\"}]}\n");
-        prompt.append("shape 取值：ellipse（中心/结束）、rectangle（处理/分支）、oval（叶子/判断）。\n");
+        prompt.append("shape 取值：ellipse（开始/结束）、rectangle（处理步骤）、diamond（判断/分支）、oval（其他节点）。\n");
         prompt.append("id 是可选的临时 id（string），供本计划内 connect 引用新节点。\n");
         prompt.append("connect 的 fromShapeId/toShapeId 用已有图形节点的 id 或本次 create_shape 的 id。\n");
         prompt.append("删除画布元素时输出 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
@@ -412,10 +412,19 @@ public class SpringAiGenerationService implements AiGenerationService {
      * @return 结构图约束文本（非流程图返回空串）
      */
     private String structurePrompt(String taskType) {
-        if ("GENERATE_FLOWCHART".equals(taskType)) {
-            return "\n任务类型是生成流程图：\n1. 第一个 create_shape（id=start1，shape=ellipse）是开始节点，最后一个（id=end1，shape=ellipse）是结束节点。\n2. 中间输出 4-6 个 create_shape 作为处理/判断节点（shape=rectangle 或 oval）。\n3. 用 connect 按流程顺序串联（fromShapeId/toShapeId 用各节点的 id）。\n";
+        if (!"GENERATE_FLOWCHART".equals(taskType)) {
+            return "";
         }
-        return "";
+        return """
+                任务类型是生成流程图：
+                1. 开始节点（id=start1，shape=ellipse）一个；结束节点（shape=ellipse）可有多个。
+                2. 处理步骤用 shape=rectangle；判断/分支点用 shape=diamond，标题写成「是否…」「…选择」等。
+                3. 流程要有分支，不能是一条直线：找出原文里的判断、条件、选择、并列（「或者/或」「以及」），
+                   从判断节点用多条 connect 分出不同后续节点，每条 connect 的 label 写明分支条件
+                   （如「是」「否」「线上」「线下」「注射」「吸入式」）。
+                4. 分支各自走几步后可以汇合到同一节点（多条 connect 指向同一个 toShapeId）。
+                5. 节点数量按内容实际需要输出（一般 8-16 个），不要为了直线而合并步骤。
+                """;
     }
 
     /**
