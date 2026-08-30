@@ -1,8 +1,10 @@
 package com.picturecreate.doccanvas.service.ai;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,35 +31,42 @@ import com.picturecreate.doccanvas.domain.AiTaskType;
  * - 因此改为 .content() 取纯文本，再用 parseActionsFromContent 手动解析 JSON
  * 工具调用（只读）：
  * - get_board_context / list_source_files / search_document_chunks 已注册，
- *   模型在规划时按需调用以获取画布现状与资料（同步 .call() 路径下百炼兼容 mode 可用）
+ *   每次调用按当前 skill 的 allowed_tools 过滤后暴露给模型（未声明则全量）
  * - 写操作仍走 JSON 动作方案（BoardAction），由后端校验后落库，不暴露给模型直接写库
  */
 public class SpringAiGenerationService implements AiGenerationService {
 
-    /** 结构化输出失败后的最大重试次数（最多反馈修复一次） */
-    private static final int MAX_SCHEMA_RETRIES = 1;
-
     private static final Logger log = LoggerFactory.getLogger(SpringAiGenerationService.class);
 
-    /** Spring AI 的聊天客户端（构建时注入只读工具回调，规划时由模型按需调用） */
+    /** Spring AI 的聊天客户端（每次调用按 skill 过滤工具） */
     private final ChatClient chatClient;
+    /** 全量只读工具回调（skill 未声明 allowed_tools 时返回） */
+    private final ToolCallback[] allCallbacks;
+    /** 工具名 → 回调，供按 skill.allowedTools 过滤 */
+    private final Map<String, ToolCallback> toolsByName = new HashMap<>();
+    private final PromptCatalog promptCatalog;
+    private final AiRetryInvoker retryInvoker;
 
     /**
-     * 构造：注册只读工具（get_board_context / list_source_files / search_document_chunks 等），
-     * 构建带默认工具的 ChatClient。
+     * 构造：注册只读工具，构建带按需过滤的 ChatClient。
      *
      * @param builder Spring AI 自动注入的 ChatClient.Builder
      * @param boardReadTools 只读工具（经 @Tool 注解暴露给模型）
      */
-    public SpringAiGenerationService(ChatClient.Builder builder, BoardReadTools boardReadTools) {
+    public SpringAiGenerationService(ChatClient.Builder builder, BoardReadTools boardReadTools,
+            PromptCatalog promptCatalog, AiRetryInvoker retryInvoker) {
         ToolCallbackProvider provider = MethodToolCallbackProvider.builder()
                 .toolObjects(boardReadTools)
                 .build();
-        ToolCallback[] callbacks = provider.getToolCallbacks();
-        log.info("已注册 AI 只读工具：{}", Arrays.stream(callbacks).map(c -> c.getToolDefinition().name()).toList());
-        this.chatClient = builder
-                .defaultToolCallbacks(callbacks)
-                .build();
+        this.allCallbacks = provider.getToolCallbacks();
+        for (ToolCallback callback : allCallbacks) {
+            toolsByName.put(callback.getToolDefinition().name(), callback);
+        }
+        log.info("已注册 AI 只读工具：{}", Arrays.stream(allCallbacks).map(c -> c.getToolDefinition().name()).toList());
+        this.promptCatalog = promptCatalog;
+        this.retryInvoker = retryInvoker;
+        // 不设 defaultToolCallbacks：每次调用按 skill.allowedTools 过滤后经 .tools() 传入
+        this.chatClient = builder.build();
     }
 
     /**
@@ -66,8 +75,7 @@ public class SpringAiGenerationService implements AiGenerationService {
      * 流程：
      * 1. 打印任务上下文日志（类型/输入/图形节点数/资料数）
      * 2. 树型任务（思维导图/总结/学习计划/产品需求）→ 单次写大纲 + 从标题层级确定性解析节点
-     * 3. 流程图 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作
-     * 4. 校验动作；失败则携带错误反馈重试（MAX_SCHEMA_RETRIES 次）
+     * 3. 流程图/编辑 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作 → 校验（失败重试）
      *
      * @param context 任务上下文（画布图形节点、资料、用户提示、skill）
      * @return 结构化动作列表 + 元信息
@@ -89,50 +97,62 @@ public class SpringAiGenerationService implements AiGenerationService {
             return BoardActionResult.empty(
                     "{\"mode\":\"spring-ai\",\"actionCount\":0,\"attempts\":0,\"message\":\"整理画布\"}");
         }
-        // 结构化输出（用 content() 取文本，手动解析 JSON；只读上下文由模型按需调用工具获取）
-        int attempts = 0;
-        String lastError = null;
-        while (attempts <= MAX_SCHEMA_RETRIES) {
-            attempts += 1;
+        return generateActions(context);
+    }
+
+    /** 流程图/编辑任务：调用模型生成 JSON 动作，校验失败按 skill.maxModelCalls 重试 */
+    private BoardActionResult generateActions(AiTaskContext context) {
+        Integer maxAttempts = context.skill() != null && context.skill().maxModelCalls() > 0
+                ? context.skill().maxModelCalls()
+                : null;
+        ToolCallback[] tools = toolsFor(context.skill());
+        return retryInvoker.invoke(log, "AI 动作生成", maxAttempts, previousError -> {
+            String sys = systemPrompt(context, toolNames(tools));
+            String user = userPrompt(context, previousError);
+            log.info("[生成] system prompt:\n{}", sys);
+            log.info("[生成] user prompt:\n{}", user);
+            String raw;
             try {
-                String sys = systemPrompt(context);
-                String user = userPrompt(context, lastError);
-                log.info("[生成 attempt {}] system prompt:\n{}", attempts, sys);
-                log.info("[生成 attempt {}] user prompt:\n{}", attempts, user);
-                String raw = chatClient.prompt()
+                raw = chatClient.prompt()
                         .system(sys)
                         .user(user)
+                        .toolCallbacks(tools)
                         .toolContext(toolContext(context))
                         .call()
                         .content();
-                log.info("[生成 attempt {}] 模型原始输出:\n{}", attempts, raw);
-                // 手动解析：content() 返回的是文本，model 在 system 引导下输出的 JSON
-                List<BoardAction> actions = parseActionsFromContent(raw, context);
-                log.info("[生成 attempt {}] 解析出 {} 个动作: {}", attempts, actions.size(),
-                        actions.stream().map(a -> a.getClass().getSimpleName()).toList());
-                String error = BoardActionValidator.validate(actions, context);
-                if (error.isEmpty()) {
-                    log.info("========== AI 任务完成，共 {} 个动作 ==========", actions.size());
-                    return new BoardActionResult(actions,
-                            "{\"mode\":\"spring-ai\",\"actionCount\":%d,\"attempts\":%d,\"message\":\"模型生成完成\"}"
-                                    .formatted(actions.size(), attempts), attempts);
-                }
-                lastError = error;
-                log.warn("[生成 attempt {}] 校验失败: {}", attempts, error);
-                if (attempts > MAX_SCHEMA_RETRIES) {
-                    throw new IllegalStateException("AI 动作校验失败：" + error);
-                }
-            } catch (Exception exception) {
-                // 如果异常已经是 IllegalState，直接抛出
-                if (exception instanceof IllegalStateException) {
-                    throw (IllegalStateException) exception;
-                }
-                String detail = exception.getMessage() == null ? exception.getClass().getSimpleName()
-                        : exception.getMessage();
-                throw new IllegalStateException("调用 AI 模型失败：" + detail, exception);
+            } catch (RuntimeException exception) {
+                throw new IllegalStateException("调用 AI 模型失败："
+                        + (exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage()),
+                        exception);
             }
+            log.info("[生成] 模型原始输出:\n{}", raw);
+            List<BoardAction> actions = parseActionsFromContent(raw, context);
+            log.info("[生成] 解析出 {} 个动作: {}", actions.size(),
+                    actions.stream().map(a -> a.getClass().getSimpleName()).toList());
+            String error = BoardActionValidator.validate(actions, context);
+            if (!error.isEmpty()) {
+                throw new AiRetryInvoker.AttemptFailedException(error);
+            }
+            log.info("========== AI 任务完成，共 {} 个动作 ==========", actions.size());
+            return new BoardActionResult(actions,
+                    "{\"mode\":\"spring-ai\",\"actionCount\":%d,\"message\":\"模型生成完成\"}".formatted(actions.size()));
+        });
+    }
+
+    /** 按 skill 的 allowed_tools 过滤工具；skill 为空或未声明则返回全量 */
+    private ToolCallback[] toolsFor(SkillDefinition skill) {
+        if (skill == null || skill.allowedTools() == null || skill.allowedTools().isEmpty()) {
+            return allCallbacks;
         }
-        throw new IllegalStateException("AI 动作校验失败：" + lastError);
+        return skill.allowedTools().stream()
+                .map(toolsByName::get)
+                .filter(Objects::nonNull)
+                .toArray(ToolCallback[]::new);
+    }
+
+    /** 从工具回调数组提取工具名，供按实际暴露的工具生成提示词 */
+    private List<String> toolNames(ToolCallback[] tools) {
+        return Arrays.stream(tools).map(callback -> callback.getToolDefinition().name()).toList();
     }
 
     /** 树型任务（走标题大纲 → 确定性解析图形节点树） */
@@ -305,11 +325,13 @@ public class SpringAiGenerationService implements AiGenerationService {
         log.info("========== 树型任务：AI 输出标题大纲 ==========");
         String article;
         try {
-            String articlePrompt = buildOutlineArticlePrompt(context);
+            String articlePrompt = promptCatalog.outlineUserPrompt(context.prompt());
             log.info("[AI1] 标题大纲生成 user prompt:\n{}", articlePrompt);
+            ToolCallback[] tools = toolsFor(context.skill());
             article = chatClient.prompt()
-                    .system(outlineArticleSystemPrompt(context))
+                    .system(outlineArticleSystemPrompt(context, toolNames(tools)))
                     .user(articlePrompt)
+                    .toolCallbacks(tools)
                     .toolContext(toolContext(context))
                     .call()
                     .content();
@@ -332,122 +354,39 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 构造树型任务写大纲阶段的 system prompt。
-     * 说明结构要求（按任务类型给出一句产出要求），并引导模型在存在上传资料时先用工具检索再写大纲。
+     * 构造树型任务写大纲阶段的 system prompt（静态文案来自 PromptCatalog，按类型补充产出要求）。
      *
      * @param context 任务上下文（用于注入 boardId）
      * @return system prompt 字符串
      */
-    private String outlineArticleSystemPrompt(AiTaskContext context) {
-        return """
-                你是一位知识组织专家。请根据用户的需求，输出一份结构化的 Markdown 标题大纲。
-                要求：
-                1. 用标题井号数量表示层级：# 中心主题，## 一级分支，### 二级，#### 三级，##### 四级（最多五层）。
-                2. 每个标题必须是有实质信息的精炼短语（核心概念、观点或结论），8-16 字左右，
-                   禁止只写"概述""介绍""背景"等空泛词，也禁止只写单个词。
-                3. 一级分支 5-8 个，每级分支下可含 2-4 个子分支，逐层展开。
-                4. 只输出 # 到 ##### 标题行，不要输出任何正文、列表、前言、解释或代码围栏。
-                """
-                + outlineRequirement(context.type().name())
+    private String outlineArticleSystemPrompt(AiTaskContext context, List<String> toolNames) {
+        return promptCatalog.outlineIntro()
+                + promptCatalog.outlineRequirement(context.type().name())
                 + "当前画布 boardId：" + context.boardId() + "\n"
-                + toolInstruction();
-    }
-
-    /** 按任务类型给出一句产出要求，引导大纲内容贴合任务语义 */
-    private String outlineRequirement(String taskType) {
-        return switch (taskType) {
-            case "DOCUMENT_SUMMARY" -> "本任务是总结资料：把资料核心内容归纳为要点分支。\n";
-            case "STUDY_PLAN" -> "本任务是学习计划：把计划组织为阶段 → 步骤的树形结构。\n";
-            case "PRODUCT_REQUIREMENT" -> "本任务是产品需求：围绕目标、用户、范围、里程碑展开分支。\n";
-            default -> "本任务是思维导图：以中心主题为根，逐层辐射展开知识点。\n";
-        };
+                + promptCatalog.toolInstruction(toolNames);
     }
 
     /**
-     * 构造树型任务写大纲阶段的 user prompt。
-     * 只注入用户需求；资料内容由模型通过 search_document_chunks 工具按需检索，
-     * 不注入画布现有节点（避免干扰主题）。
-     *
-     * @param context 任务上下文
-     * @return 用户 prompt 字符串
-     */
-    private String buildOutlineArticlePrompt(AiTaskContext context) {
-        return "用户需求：" + context.prompt() + "\n\n"
-                + "如有上传资料，请先用 search_document_chunks 检索相关内容，再据此输出标题大纲。";
-    }
-
-    /**
-     * 构造规划模型的 system prompt（非树型任务共用，当前主要是流程图）。
+     * 构造规划模型的 system prompt（流程图/编辑任务共用）。
      * 约束模型：只输出 JSON 动作（create_shape/connect/delete_shape）、技能说明。
      *
      * @param context 任务上下文（含 skill）
      * @return system prompt 字符串
      */
-    private String systemPrompt(AiTaskContext context) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("你是单人 AI 文档画布的规划模型。\n");
-        prompt.append("**你必须只输出 JSON 对象！不要输出任何文字、解释、代码围栏。直接输出 JSON。**\n");
-        prompt.append("JSON 格式：{\"actions\":[{\"type\":\"create_shape\",\"id\":\"node1\",\"title\":\"...\",\"shape\":\"ellipse\",\"level\":0,\"x\":120,\"y\":120}, {\"type\":\"connect\",\"fromShapeId\":\"node1\",\"toShapeId\":\"node2\",\"label\":\"...\"}, {\"type\":\"delete_shape\",\"shapeId\":\"...\"}]}\n");
-        prompt.append("shape 取值：ellipse（开始/结束）、rectangle（处理步骤）、diamond（判断/分支）、oval（其他节点）。\n");
-        prompt.append("id 是可选的临时 id（string），供本计划内 connect 引用新节点。\n");
-        prompt.append("connect 的 fromShapeId/toShapeId 用已有图形节点的 id 或本次 create_shape 的 id。\n");
-        prompt.append("删除画布元素时输出 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
-        prompt.append("一次任务输出 3-10 个动作（结构图多输出一些），动作之间有意义。\n");
+    private String systemPrompt(AiTaskContext context, List<String> toolNames) {
+        StringBuilder prompt = new StringBuilder(promptCatalog.boardActionInstruction());
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
-        prompt.append(toolInstruction());
-        prompt.append(structurePrompt(context.type().name()));
-        prompt.append(editElementPrompt(context.type().name()));
+        prompt.append(promptCatalog.toolInstruction(toolNames));
+        if (context.type() == AiTaskType.GENERATE_FLOWCHART) {
+            prompt.append(promptCatalog.flowchartStructure());
+        }
+        if (context.type() == AiTaskType.EDIT_ELEMENT) {
+            prompt.append(promptCatalog.editElementConstraint());
+        }
         if (context.skill() != null) {
             prompt.append("\n当前技能说明：\n").append(context.skill().body()).append('\n');
-            prompt.append("可调用工具范围：").append(String.join("、", context.skill().allowedTools())).append('\n');
         }
         return prompt.toString();
-    }
-
-    /**
-     * 流程图任务的专用约束（单次调用路径）。
-     * 思维导图/总结/学习/产品需求已改走 generateOutlineTree，不经过此路径。
-     *
-     * @param taskType 任务类型字符串
-     * @return 结构图约束文本（非流程图返回空串）
-     */
-    private String structurePrompt(String taskType) {
-        if (!"GENERATE_FLOWCHART".equals(taskType)) {
-            return "";
-        }
-        return """
-                任务类型是生成流程图：
-                1. 开始节点（id=start1，shape=ellipse）一个；结束节点（shape=ellipse）可有多个。
-                2. 处理步骤用 shape=rectangle；判断/分支点用 shape=diamond，标题写成「是否…」「…选择」等。
-                3. 流程要有分支，不能是一条直线：找出原文里的判断、条件、选择、并列（「或者/或」「以及」），
-                   从判断节点用多条 connect 分出不同后续节点，每条 connect 的 label 写明分支条件
-                   （如「是」「否」「线上」「线下」「注射」「吸入式」）。
-                4. 分支各自走几步后可以汇合到同一节点（多条 connect 指向同一个 toShapeId）。
-                5. 节点数量按内容实际需要输出（一般 8-16 个），不要为了直线而合并步骤。
-                """;
-    }
-
-    /**
-     * 编辑选中元素任务的专用约束。
-     * 用户已选中若干图形节点，指令是修改/丰富/添加分支/删除，模型据此输出针对性动作。
-     *
-     * @param taskType 任务类型字符串
-     * @return 编辑约束文本（非编辑任务返回空串）
-     */
-    private String editElementPrompt(String taskType) {
-        if (!"EDIT_ELEMENT".equals(taskType)) {
-            return "";
-        }
-        return """
-                任务类型是编辑选中的画布元素：
-                1. 用户已选中若干图形节点，其真实 id 见 user prompt 的「选中」段落。
-                2. 根据用户指令，对选中元素输出对应动作：
-                   - 删除选中图形节点 → delete_shape（shapeId=选中节点真实 id）
-                   - 给选中图形节点添加分支 → create_shape + connect（fromShapeId=选中节点 id，toShapeId=新节点 id）
-                3. 扩展只能用 create_shape（shape=oval，level=选中节点 level+1），绝对禁止其他节点类型。
-                4. 动作里的 id 必须用 user prompt 注入的真实 id，不要编造。
-                5. 新生成的内容要有深度（要点/论据），不要空泛。
-                """;
     }
 
     /**
@@ -498,21 +437,5 @@ public class SpringAiGenerationService implements AiGenerationService {
         return Map.of(
                 BoardReadTools.TASK_ID_KEY, context.taskId().toString(),
                 BoardReadTools.OWNER_ID_KEY, context.ownerId().toString());
-    }
-
-    /**
-     * 向模型说明可用的只读工具及使用时机。
-     * 引导模型在涉及画布现有内容或上传资料时，先调用工具检索，再输出最终 JSON 动作方案。
-     *
-     * @return 工具使用说明文本
-     */
-    private String toolInstruction() {
-        return """
-                当任务涉及画布现有内容或上传资料时，先调用工具检索再回答：
-                - get_board_context：获取画布标题与图形节点摘要
-                - list_source_files：列出画布已上传的资料文件
-                - search_document_chunks：从资料向量索引检索相关片段
-                不要编造节点或资料内容，检索结果以工具返回为准。
-                """;
     }
 }

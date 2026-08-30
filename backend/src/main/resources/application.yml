@@ -76,6 +76,8 @@ app:
   ai:
     # mock | spring-ai；真实调用请设 AI_PROVIDER=spring-ai 并配置 GPT_API_KEY
     provider: ${AI_PROVIDER:spring-ai}
+    retry:
+      max-attempts: ${AI_RETRY_MAX_ATTEMPTS:2}
     task:
       max-steps: ${AI_TASK_MAX_STEPS:8}
       max-model-calls: ${AI_TASK_MAX_MODEL_CALLS:3}

@@ -174,21 +174,21 @@ public final class GraphLayoutService {
         for (String id : nodeIds) {
             layer.putIfAbsent(id, 0);
         }
-        // 每层纵向排列（y 递增），层间横向推进（x 递增）
+        // 每层横向排列（x 递增），层间纵向推进（y 递增，自上而下）
         Map<Integer, List<String>> byLayer = new LinkedHashMap<>();
         for (String id : nodeIds) {
             byLayer.computeIfAbsent(layer.get(id), k -> new ArrayList<>()).add(id);
         }
-        double x = MARGIN;
+        double y = MARGIN;
         for (int key : byLayer.keySet().stream().sorted().toList()) {
-            double y = MARGIN;
-            double layerMaxX = x;
+            double x = MARGIN;
+            double layerMaxY = y;
             for (String id : byLayer.get(key)) {
                 positions.put(id, new double[] { x, y });
-                layerMaxX = Math.max(layerMaxX, x + NODE_W);
-                y += NODE_H + GAP;
+                layerMaxY = Math.max(layerMaxY, y + NODE_H);
+                x += NODE_W + GAP;
             }
-            x = layerMaxX + GAP;
+            y = layerMaxY + GAP;
         }
         return positions;
     }

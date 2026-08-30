@@ -12,6 +12,9 @@ public record SkillDefinition(
         String description,
         List<String> taskTypes,
         List<String> allowedTools,
+        int maxSteps,
+        int maxModelCalls,
+        int maxToolCalls,
         String body) {
 
     public boolean supports(String taskType) {

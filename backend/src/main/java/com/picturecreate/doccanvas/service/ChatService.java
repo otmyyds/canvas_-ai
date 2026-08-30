@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.repository.BoardRepository;
 import com.picturecreate.doccanvas.service.ai.AiTaskContext.SourceContext;
+import com.picturecreate.doccanvas.service.ai.PromptCatalog;
 
 /**
  * 纯文本对话。不走结构化 JSON 输出，不生成 BoardAction，不落库。
@@ -30,12 +31,14 @@ public class ChatService {
     private final ChatClient chatClient;
     private final BoardRepository boardRepository;
     private final RagContextService ragContextService;
+    private final PromptCatalog promptCatalog;
 
     public ChatService(ChatClient.Builder builder, BoardRepository boardRepository,
-            RagContextService ragContextService) {
+            RagContextService ragContextService, PromptCatalog promptCatalog) {
         this.chatClient = builder.build();
         this.boardRepository = boardRepository;
         this.ragContextService = ragContextService;
+        this.promptCatalog = promptCatalog;
     }
 
     /**
@@ -51,7 +54,7 @@ public class ChatService {
         String boardTitle = boardRepository.findById(boardId).map(b -> b.getTitle()).orElse(null);
         List<SourceContext> sources = ragContextService.retrieve(boardId, user.id(), userPrompt, RAG_TOP_K);
         log.info("聊天：board={} 检索片段数={} prompt={}", boardTitle, sources.size(), userPrompt);
-        String systemPrompt = buildSystemPrompt(boardTitle, sources);
+        String systemPrompt = promptCatalog.chatSystemPrompt(boardTitle, sources);
         try {
             return chatClient.prompt()
                     .system(systemPrompt)
@@ -62,30 +65,5 @@ public class ChatService {
             log.warn("聊天调用失败：{}", exception.getMessage(), exception);
             return "抱歉，AI 服务暂时不可用：" + exception.getMessage();
         }
-    }
-
-    private String buildSystemPrompt(String boardTitle, List<SourceContext> sources) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("你是 Doc Canvas 画布 AI 助手，一个单人 AI 文档画布应用。\n");
-        builder.append("你的职责：\n");
-        builder.append("- 友好地回答用户关于画布功能、AI 能力、技术问题\n");
-        builder.append("- 用户上传的文档相关内容已在下方提供，回答相关问题时请依据这些内容\n");
-        builder.append("- 在用户需要生成内容时给出建议（如\"需要我帮你生成思维导图吗？\"）\n");
-        builder.append("- 不要生成 JSON 或代码，用自然语言回复\n");
-        builder.append("- 保持回复简洁、有帮助\n");
-        if (boardTitle != null && !boardTitle.isBlank()) {
-            builder.append("\n当前画布：").append(boardTitle).append('\n');
-        }
-        if (sources != null && !sources.isEmpty()) {
-            builder.append("\n与当前问题相关的资料片段（供回答参考）：\n");
-            for (SourceContext source : sources) {
-                builder.append("\n===== 片段（").append(source.filename()).append("） =====\n");
-                builder.append(source.content());
-                builder.append('\n');
-            }
-        } else {
-            builder.append("\n（当前画布没有已解析的上传文档）\n");
-        }
-        return builder.toString();
     }
 }

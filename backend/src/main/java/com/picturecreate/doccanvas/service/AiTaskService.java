@@ -503,12 +503,12 @@ public class AiTaskService {
 
     /**
      * 对结构图/编辑任务重算节点坐标，避免重叠。
-     * - 思维导图 → 递归径向树布局 + 偏移到已有内容右侧空白
+     * - 树型任务（思维导图/总结/学习计划/产品需求）→ 递归径向树布局 + 偏移到已有内容右侧空白
      * - 流程图 → 分层布局（layoutFlowchart）
      * - 编辑扩展图形节点 → 对选中节点所在树整树重排
      */
     private List<BoardAction> maybeLayoutGraph(AiTask task, List<BoardAction> actions) {
-        if (task.getType() == AiTaskType.GENERATE_MINDMAP) {
+        if (isTreeTask(task.getType())) {
             return layoutNewMindmap(task, actions);
         }
         if (task.getType() == AiTaskType.EDIT_ELEMENT) {
@@ -540,6 +540,14 @@ public class AiTaskService {
         }
         Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(nodeIds, edges);
         return rebuildWithPositions(actions, positions);
+    }
+
+    /** 树型任务（思维导图/总结/学习计划/产品需求）：产出同一套父→子树结构，统一按径向树布局 */
+    private boolean isTreeTask(AiTaskType type) {
+        return type == AiTaskType.GENERATE_MINDMAP
+                || type == AiTaskType.DOCUMENT_SUMMARY
+                || type == AiTaskType.STUDY_PLAN
+                || type == AiTaskType.PRODUCT_REQUIREMENT;
     }
 
     /**

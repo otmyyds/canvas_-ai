@@ -86,10 +86,14 @@ public class SkillLoader {
             String description = str(meta.get("description"));
             List<String> taskTypes = stringList(meta.get("task_types"));
             List<String> allowedTools = stringList(meta.get("allowed_tools"));
+            int maxSteps = intValue(meta.get("max_steps"), 0);
+            int maxModelCalls = intValue(meta.get("max_model_calls"), 0);
+            int maxToolCalls = intValue(meta.get("max_tool_calls"), 0);
             if (slug == null || taskTypes.isEmpty()) {
                 return Optional.empty();
             }
-            return Optional.of(new SkillDefinition(slug, name, version, description, taskTypes, allowedTools, body));
+            return Optional.of(new SkillDefinition(slug, name, version, description, taskTypes, allowedTools,
+                    maxSteps, maxModelCalls, maxToolCalls, body));
         } catch (RuntimeException exception) {
             return Optional.empty();
         }

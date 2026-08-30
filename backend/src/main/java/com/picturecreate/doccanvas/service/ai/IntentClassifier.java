@@ -20,6 +20,7 @@ import com.picturecreate.doccanvas.domain.AiTaskType;
  * 输出结构化 JSON { "plan": ["类型1", "类型2", ...] }，plan 为按执行顺序排列的
  * 任务类型列表；单个任务就一个元素；纯聊天输出 ["CHAT"]。
  * 用 .content() 取纯文本 + 手动解析 JSON（百炼兼容模式不支持 Spring AI 结构化输出/tool calling）。
+ * 解析失败由 AiRetryInvoker 统一重试。
  */
 @Component
 public class IntentClassifier {
@@ -28,9 +29,13 @@ public class IntentClassifier {
 
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final PromptCatalog promptCatalog;
+    private final AiRetryInvoker retryInvoker;
 
-    public IntentClassifier(ChatClient.Builder builder) {
+    public IntentClassifier(ChatClient.Builder builder, PromptCatalog promptCatalog, AiRetryInvoker retryInvoker) {
         this.chatClient = builder.build();
+        this.promptCatalog = promptCatalog;
+        this.retryInvoker = retryInvoker;
     }
 
     /**
@@ -41,31 +46,38 @@ public class IntentClassifier {
      * @return 分类决策（plan 为空表示纯聊天）
      */
     public IntentDecision classify(String prompt, boolean hasSelection) {
-        String raw = chatClient.prompt()
-                .system(SYSTEM_PROMPT)
-                .user("用户输入：" + prompt + "\n是否有选中元素：" + (hasSelection ? "是" : "否"))
-                .call()
-                .content();
-        log.info("意图分类原始输出: {}", raw);
-        return parse(raw);
+        return retryInvoker.invoke(log, "意图分类", null, previousError -> {
+            StringBuilder user = new StringBuilder("用户输入：").append(prompt)
+                    .append("\n是否有选中元素：").append(hasSelection ? "是" : "否");
+            if (previousError != null) {
+                user.append("\n注意：上次输出未通过校验，原因：").append(previousError).append("。请只输出合法 JSON。");
+            }
+            String raw = chatClient.prompt()
+                    .system(promptCatalog.classificationSystemPrompt())
+                    .user(user.toString())
+                    .call()
+                    .content();
+            log.info("意图分类原始输出: {}", raw);
+            return parse(raw);
+        });
     }
 
-    /** 解析模型输出的 plan JSON，非法输出直接抛异常（由上层 ErrorHandler 处理） */
+    /** 解析模型输出的 plan JSON，非法输出抛 AttemptFailedException（由 AiRetryInvoker 重试） */
     @SuppressWarnings("unchecked")
     private IntentDecision parse(String raw) {
         if (raw == null || raw.isBlank()) {
-            throw new IllegalStateException("意图分类未返回内容");
+            throw new AiRetryInvoker.AttemptFailedException("意图分类未返回内容");
         }
         String json = stripCodeFence(raw);
         Map<String, Object> root;
         try {
             root = objectMapper.readValue(json, Map.class);
         } catch (Exception exception) {
-            throw new IllegalStateException("意图分类输出不是合法 JSON：" + exception.getMessage(), exception);
+            throw new AiRetryInvoker.AttemptFailedException("意图分类输出不是合法 JSON：" + exception.getMessage());
         }
         Object planValue = root.get("plan");
         if (!(planValue instanceof List<?> list) || list.isEmpty()) {
-            throw new IllegalStateException("意图分类缺少 plan 字段");
+            throw new AiRetryInvoker.AttemptFailedException("意图分类缺少 plan 字段");
         }
         List<String> values = list.stream()
                 .map(String::valueOf)
@@ -79,7 +91,7 @@ public class IntentClassifier {
             try {
                 return AiTaskType.valueOf(value);
             } catch (IllegalArgumentException exception) {
-                throw new IllegalStateException("未知意图类型：" + value, exception);
+                throw new AiRetryInvoker.AttemptFailedException("未知意图类型：" + value);
             }
         }).toList();
         return IntentDecision.task(plan);
@@ -115,30 +127,4 @@ public class IntentClassifier {
             return new IntentDecision(plan);
         }
     }
-
-    private static final String SYSTEM_PROMPT = """
-            你是意图分类器。把用户输入拆解为「画布生成任务」或「普通聊天/问答」。
-
-            可选任务类型（plan 中每一项是以下之一）：
-            - GENERATE_MINDMAP：生成思维导图
-            - GENERATE_FLOWCHART：生成流程图
-            - STUDY_PLAN：制定学习计划/学习路径
-            - PRODUCT_REQUIREMENT：写产品需求文档
-            - DOCUMENT_SUMMARY：总结/摘要/归纳资料
-            - CANVAS_STRUCTURE：整理/梳理/结构化画布内容
-            - CLEAR_CANVAS：删除/清空/移除画布中的全部元素
-            - EDIT_ELEMENT：修改/丰富/删除选中的画布元素，或给选中的元素添加分支
-            - CHAT：普通聊天、打招呼、问答、询问，或不属于以上任务
-
-            规则：
-            1. 用户明确表达「生成/制作/画/总结/整理/规划」等动作时才归类为任务。
-            2. 表达「删除/清空/移除画布中的全部元素」归类为 CLEAR_CANVAS。
-            3. 当「是否有选中元素」为是，且指令是针对选中元素的「修改/丰富/添加分支/删除」时，归类为 EDIT_ELEMENT。
-               注意：删除某个/某些选中元素是 EDIT_ELEMENT，删除全部元素才是 CLEAR_CANVAS。
-            4. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
-            5. 多步骤指令要按执行顺序拆成多个任务，例如：
-               「先删除之前的流程图，再根据上述文本生成新的流程图」→ {"plan":["CLEAR_CANVAS","GENERATE_FLOWCHART"]}；
-               「总结资料并整理画布」→ {"plan":["DOCUMENT_SUMMARY","CANVAS_STRUCTURE"]}。
-            6. 只输出 JSON，格式：{"plan":["类型1","类型2",...]}。单个任务就一个元素；纯聊天输出 {"plan":["CHAT"]}。不要输出任何其他文字。
-            """;
 }
