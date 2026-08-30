@@ -10,7 +10,7 @@ import jakarta.persistence.Table;
 
 /**
  * 画布（board）实体，对应 boards 表。
- * 画布是内容的顶层容器：包含卡片、图形节点、连线、快照、资料。
+ * 画布是内容的顶层容器：包含图形节点、连线、快照、资料。
  * 数据按 owner 隔离（每张画布只有一个所有者）。
  */
 @Entity

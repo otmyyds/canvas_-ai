@@ -13,26 +13,28 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 
+import com.picturecreate.doccanvas.domain.AiTaskType;
+
 @Service
 @ConditionalOnProperty(name = "app.ai.provider", havingValue = "spring-ai")
 /**
  * 真实模型（Spring AI + 百炼 DashScope）的生成服务。
  *
- * 职责：接收「AI 任务上下文」（画布卡片、上传资料、用户提示），
- * 调用大模型生成一批「画布动作」（BoardAction：建卡/建图形/连线/删卡），
+ * 职责：接收「AI 任务上下文」（画布图形节点、上传资料、用户提示），
+ * 调用大模型生成一批「画布动作」（BoardAction：建图形节点/连线/删节点），
  * 返回给 AiTaskService 统一校验后落库。
  *
  * 为什么不用 .entity() 结构化输出？
  * - 百炼 DashScope 对 Spring AI 的 json_schema 响应格式支持不完整（返回 end-of-input）
  * - 因此改为 .content() 取纯文本，再用 parseActionsFromContent 手动解析 JSON
  * 工具调用（只读）：
- * - get_board_context / get_card_content / list_source_files / search_document_chunks 已注册，
+ * - get_board_context / list_source_files / search_document_chunks 已注册，
  *   模型在规划时按需调用以获取画布现状与资料（同步 .call() 路径下百炼兼容 mode 可用）
  * - 写操作仍走 JSON 动作方案（BoardAction），由后端校验后落库，不暴露给模型直接写库
  */
 public class SpringAiGenerationService implements AiGenerationService {
 
-    /** 结构化输出失败后的最大重试次数（计划 9.7：最多反馈修复一次） */
+    /** 结构化输出失败后的最大重试次数（最多反馈修复一次） */
     private static final int MAX_SCHEMA_RETRIES = 1;
 
     private static final Logger log = LoggerFactory.getLogger(SpringAiGenerationService.class);
@@ -62,12 +64,12 @@ public class SpringAiGenerationService implements AiGenerationService {
      * 生成画布动作的入口（AiTaskService 调用）。
      *
      * 流程：
-     * 1. 打印任务上下文日志（类型/输入/卡片数/资料数）
-     * 2. 若是「思维导图」→ 单次写文章 + 从标题层级确定性解析节点
-     * 3. 其他任务 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作
+     * 1. 打印任务上下文日志（类型/输入/图形节点数/资料数）
+     * 2. 树型任务（思维导图/总结/学习计划/产品需求）→ 单次写大纲 + 从标题层级确定性解析节点
+     * 3. 流程图 → 单次调用：拼 system+user prompt → 模型输出 JSON → 手动解析动作
      * 4. 校验动作；失败则携带错误反馈重试（MAX_SCHEMA_RETRIES 次）
      *
-     * @param context 任务上下文（画布卡片、资料、用户提示、skill）
+     * @param context 任务上下文（画布图形节点、资料、用户提示、skill）
      * @return 结构化动作列表 + 元信息
      */
     @Override
@@ -75,16 +77,17 @@ public class SpringAiGenerationService implements AiGenerationService {
         log.info("========== AI 任务开始 ==========");
         log.info("任务类型: {}", context.type());
         log.info("用户输入: {}", context.prompt());
-        log.info("画布卡片数: {}, 图形数: {}（资料由模型通过工具按需检索）", context.cards().size(),
-                context.shapes().size());
-        if (!context.cards().isEmpty()) {
-            log.info("现有卡片: {}", context.cards().stream()
-                    .map(c -> c.title() + "[" + c.cardId() + "]").toList());
-        }
+        log.info("画布图形节点数: {}（资料由模型通过工具按需检索）", context.shapes().size());
 
-        // 思维导图：单次输出标题大纲 + 标题层级解析（不二次调模型抽结构）
-        if (context.type() == com.picturecreate.doccanvas.domain.AiTaskType.GENERATE_MINDMAP) {
-            return generateMindmap(context);
+        // 树型任务：单次输出标题大纲 + 标题层级解析（不二次调模型抽结构）
+        if (isOutlineTreeTask(context.type())) {
+            return generateOutlineTree(context);
+        }
+        // 整理画布：确定性重新布局已有图形节点，不调模型生成新内容（布局由 AiTaskService 完成）
+        if (context.type() == AiTaskType.CANVAS_STRUCTURE) {
+            log.info("========== 整理画布：跳过模型生成，直接重新布局 ==========");
+            return BoardActionResult.empty(
+                    "{\"mode\":\"spring-ai\",\"actionCount\":0,\"attempts\":0,\"message\":\"整理画布\"}");
         }
         // 结构化输出（用 content() 取文本，手动解析 JSON；只读上下文由模型按需调用工具获取）
         int attempts = 0;
@@ -132,13 +135,21 @@ public class SpringAiGenerationService implements AiGenerationService {
         throw new IllegalStateException("AI 动作校验失败：" + lastError);
     }
 
+    /** 树型任务（走标题大纲 → 确定性解析图形节点树） */
+    private boolean isOutlineTreeTask(AiTaskType type) {
+        return type == AiTaskType.GENERATE_MINDMAP
+                || type == AiTaskType.DOCUMENT_SUMMARY
+                || type == AiTaskType.STUDY_PLAN
+                || type == AiTaskType.PRODUCT_REQUIREMENT;
+    }
+
     /**
      * 从模型输出的 content 文本解析出结构化动作列表。
      *
      * 兼容情况：
      * - 模型可能输出带 ```json ... ``` 代码围栏的文本 → 先剥离围栏
      * - 模型可能输出纯 JSON 对象 {"actions":[...]} → 解析 actions 数组
-     * - 每个动作按 type 字段分发为对应的 BoardAction 子类（create_card/create_shape/connect 等）
+     * - 每个动作按 type 字段分发为对应的 BoardAction 子类（create_shape/connect/delete_shape）
      * - 无法解析或字段缺失 → 返回空列表（由上层重试或降级）
      *
      * @param content 模型原始输出文本
@@ -175,13 +186,6 @@ public class SpringAiGenerationService implements AiGenerationService {
                 }
                 String type = map.get("type") == null ? "" : map.get("type").toString();
                 switch (type) {
-                    case "create_card" -> actions.add(new BoardAction.CreateCard(
-                            str(map.get("id")),
-                            str(map.get("title")), str(map.get("markdown")),
-                            str(map.get("cardType"), "SUMMARY"),
-                            dbl(map.get("x"), 120), dbl(map.get("y"), 120),
-                            dbl(map.get("width"), 340), dbl(map.get("height"), 220),
-                            List.of()));
                     case "create_shape" -> actions.add(new BoardAction.CreateShape(
                             str(map.get("id")),
                             str(map.get("title")),
@@ -189,26 +193,14 @@ public class SpringAiGenerationService implements AiGenerationService {
                             intValue(map.get("level"), 0),
                             dbl(map.get("x"), 0), dbl(map.get("y"), 0),
                             dbl(map.get("width"), 140), dbl(map.get("height"), 60)));
-                    case "update_card" -> actions.add(new BoardAction.UpdateCard(
-                            str(map.get("cardId")),
-                            str(map.get("title")), str(map.get("markdown"))));
                     case "connect" -> actions.add(new BoardAction.Connect(
-                            str(map.get("fromCardId")), str(map.get("toCardId")),
+                            str(map.get("fromShapeId")), str(map.get("toShapeId")),
                             str(map.get("label")),
                             str(map.get("style")),
                             str(map.get("color")),
                             intValue(map.get("weight"), 2)));
-                    case "delete_card" -> actions.add(new BoardAction.DeleteCard(
-                            str(map.get("cardId"))));
                     case "delete_shape" -> actions.add(new BoardAction.DeleteShape(
                             str(map.get("shapeId"))));
-                    case "convert_card_to_shape" -> actions.add(new BoardAction.ConvertCardToShape(
-                            str(map.get("cardId")),
-                            str(map.get("shape"), "oval"),
-                            intValue(map.get("level"), 2)));
-                    case "convert_shape_to_card" -> actions.add(new BoardAction.ConvertShapeToCard(
-                            str(map.get("shapeId")),
-                            str(map.get("cardType"), "IDEA")));
                     default -> {
                         // 忽略未知动作
                     }
@@ -223,8 +215,8 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 从 AI1 标题大纲的标题层级（# ## ###）直接解析思维导图节点与连线。
-     * 思维导图的唯一结构来源：大纲由 AI 写成固定层级，标题直接承载知识点，此处确定性解析，不再二次调用模型。
+     * 从 AI 标题大纲的标题层级（# ## ###）直接解析图形节点与连线。
+     * 树型任务的唯一结构来源：大纲由 AI 写成固定层级，标题直接承载知识点，此处确定性解析，不再二次调用模型。
      */
     @SuppressWarnings("unchecked")
     private List<BoardAction> parseMindmapFromArticle(String article) {
@@ -297,56 +289,56 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 思维导图生成：单次模型调用输出标题大纲，再从标题层级确定性解析节点。
+     * 树型任务生成：单次模型调用输出标题大纲，再从标题层级确定性解析图形节点。
      *
      * 为什么只调一次模型？
      * - 模型输出带 # / ## / ### 标题层级的 Markdown 大纲，知识点直接写进标题；
      * - 节点与连线由 parseMindmapFromArticle 直接从标题层级解析，无需二次调用模型；
      * - 二次"抽结构"调用既多余（标题层级已定），又容易因输入过长触发上游连接重置。
      *
-     * 坐标由后端 GraphLayoutService 重算（layoutMindmap3），模型只出结构不排坐标。
+     * 坐标由后端 GraphLayoutService 重算，模型只出结构不排坐标。
      *
      * @param context 任务上下文
-     * @return 思维导图节点 + 连线动作
+     * @return 图形节点 + 连线动作
      */
-    private BoardActionResult generateMindmap(AiTaskContext context) {
-        log.info("========== 思维导图：AI 输出标题大纲 ==========");
+    private BoardActionResult generateOutlineTree(AiTaskContext context) {
+        log.info("========== 树型任务：AI 输出标题大纲 ==========");
         String article;
         try {
-            String articlePrompt = buildMindmapArticlePrompt(context);
+            String articlePrompt = buildOutlineArticlePrompt(context);
             log.info("[AI1] 标题大纲生成 user prompt:\n{}", articlePrompt);
             article = chatClient.prompt()
-                    .system(mindmapArticleSystemPrompt(context))
+                    .system(outlineArticleSystemPrompt(context))
                     .user(articlePrompt)
                     .toolContext(toolContext(context))
                     .call()
                     .content();
         } catch (Exception exception) {
-            throw new IllegalStateException("AI 生成思维导图文章失败：" + exception.getMessage(), exception);
+            throw new IllegalStateException("AI 生成大纲失败：" + exception.getMessage(), exception);
         }
         if (article == null || article.isBlank()) {
-            throw new IllegalStateException("AI 未返回思维导图文章内容");
+            throw new IllegalStateException("AI 未返回大纲内容");
         }
         log.info("[AI1] 标题大纲生成完成，长度 {}:\n{}", article.length(), article);
         // 从标题层级确定性解析节点与连线，不再二次调用模型抽结构
         List<BoardAction> actions = parseMindmapFromArticle(article);
         if (actions.isEmpty()) {
-            throw new IllegalStateException("未能从文章解析出思维导图结构");
+            throw new IllegalStateException("未能从大纲解析出图形结构");
         }
-        log.info("========== 思维导图完成，解析出 {} 个动作 ==========", actions.size());
+        log.info("========== 树型任务完成，解析出 {} 个动作 ==========", actions.size());
         return new BoardActionResult(actions,
-                "{\"mode\":\"spring-ai-mindmap\",\"actionCount\":%d,\"message\":\"思维导图生成完成\"}"
+                "{\"mode\":\"spring-ai-outline\",\"actionCount\":%d,\"message\":\"图形结构生成完成\"}"
                         .formatted(actions.size()));
     }
 
     /**
-     * 构造思维导图 AI1 写文章阶段的 system prompt。
-     * 说明结构要求，并引导模型在存在上传资料时先用工具检索再写文章。
+     * 构造树型任务写大纲阶段的 system prompt。
+     * 说明结构要求（按任务类型给出一句产出要求），并引导模型在存在上传资料时先用工具检索再写大纲。
      *
      * @param context 任务上下文（用于注入 boardId）
      * @return system prompt 字符串
      */
-    private String mindmapArticleSystemPrompt(AiTaskContext context) {
+    private String outlineArticleSystemPrompt(AiTaskContext context) {
         return """
                 你是一位知识组织专家。请根据用户的需求，输出一份结构化的 Markdown 标题大纲。
                 要求：
@@ -356,26 +348,37 @@ public class SpringAiGenerationService implements AiGenerationService {
                 3. 一级分支 5-8 个，每级分支下可含 2-4 个子分支，逐层展开。
                 4. 只输出 # 到 ##### 标题行，不要输出任何正文、列表、前言、解释或代码围栏。
                 """
+                + outlineRequirement(context.type().name())
                 + "当前画布 boardId：" + context.boardId() + "\n"
                 + toolInstruction();
     }
 
+    /** 按任务类型给出一句产出要求，引导大纲内容贴合任务语义 */
+    private String outlineRequirement(String taskType) {
+        return switch (taskType) {
+            case "DOCUMENT_SUMMARY" -> "本任务是总结资料：把资料核心内容归纳为要点分支。\n";
+            case "STUDY_PLAN" -> "本任务是学习计划：把计划组织为阶段 → 步骤的树形结构。\n";
+            case "PRODUCT_REQUIREMENT" -> "本任务是产品需求：围绕目标、用户、范围、里程碑展开分支。\n";
+            default -> "本任务是思维导图：以中心主题为根，逐层辐射展开知识点。\n";
+        };
+    }
+
     /**
-     * 构造思维导图 AI1 写文章阶段的 user prompt。
-     * 只注入用户需求；资料内容由 AI1 通过 search_document_chunks 工具按需检索，
-     * 不注入画布卡片（避免干扰主题）。
+     * 构造树型任务写大纲阶段的 user prompt。
+     * 只注入用户需求；资料内容由模型通过 search_document_chunks 工具按需检索，
+     * 不注入画布现有节点（避免干扰主题）。
      *
      * @param context 任务上下文
      * @return 用户 prompt 字符串
      */
-    private String buildMindmapArticlePrompt(AiTaskContext context) {
+    private String buildOutlineArticlePrompt(AiTaskContext context) {
         return "用户需求：" + context.prompt() + "\n\n"
                 + "如有上传资料，请先用 search_document_chunks 检索相关内容，再据此输出标题大纲。";
     }
 
     /**
-     * 构造规划模型的 system prompt（所有非思维导图任务共用）。
-     * 约束模型：只输出 JSON 动作、cardType 取值、深度要求、技能说明。
+     * 构造规划模型的 system prompt（非树型任务共用，当前主要是流程图）。
+     * 约束模型：只输出 JSON 动作（create_shape/connect/delete_shape）、技能说明。
      *
      * @param context 任务上下文（含 skill）
      * @return system prompt 字符串
@@ -384,19 +387,16 @@ public class SpringAiGenerationService implements AiGenerationService {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是单人 AI 文档画布的规划模型。\n");
         prompt.append("**你必须只输出 JSON 对象！不要输出任何文字、解释、代码围栏。直接输出 JSON。**\n");
-        prompt.append("JSON 格式：{\"actions\":[{\"type\":\"create_card\",\"title\":\"...\",\"markdown\":\"...\",\"cardType\":\"SUMMARY\",\"x\":120,\"y\":120}, ...]}\n");
-        prompt.append("cardType 取值：SUMMARY、IDEA、SOURCE、QUESTION、NOTE。\n");
-        prompt.append("id 是可选的临时 id（string），供本计划内 connect 引用新卡。\n");
-        prompt.append(contentDepthConstraint(context.type().name()));
-        prompt.append("connect 的 fromCardId/toCardId 用已有卡片的 id 或本次 create_card 的 id。\n");
-        prompt.append("删除画布元素时输出 delete_card（cardId 为已有卡片 id）或 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
-        prompt.append("把卡片改成图形样式时输出 convert_card_to_shape（cardId=已有卡片 id，shape=oval/rectangle/ellipse，level=层级）；把图形改成卡片时输出 convert_shape_to_card（shapeId=已有图形节点 id，cardType=SUMMARY/IDEA/QUESTION 等）。\n");
+        prompt.append("JSON 格式：{\"actions\":[{\"type\":\"create_shape\",\"id\":\"node1\",\"title\":\"...\",\"shape\":\"ellipse\",\"level\":0,\"x\":120,\"y\":120}, {\"type\":\"connect\",\"fromShapeId\":\"node1\",\"toShapeId\":\"node2\",\"label\":\"...\"}, {\"type\":\"delete_shape\",\"shapeId\":\"...\"}]}\n");
+        prompt.append("shape 取值：ellipse（中心/结束）、rectangle（处理/分支）、oval（叶子/判断）。\n");
+        prompt.append("id 是可选的临时 id（string），供本计划内 connect 引用新节点。\n");
+        prompt.append("connect 的 fromShapeId/toShapeId 用已有图形节点的 id 或本次 create_shape 的 id。\n");
+        prompt.append("删除画布元素时输出 delete_shape（shapeId 为已有图形节点 id），id 以上文注入的真实 id 为准，不要编造。\n");
         prompt.append("一次任务输出 3-10 个动作（结构图多输出一些），动作之间有意义。\n");
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
         prompt.append(toolInstruction());
         prompt.append(structurePrompt(context.type().name()));
         prompt.append(editElementPrompt(context.type().name()));
-        prompt.append(chatGuard(context.type().name()));
         if (context.skill() != null) {
             prompt.append("\n当前技能说明：\n").append(context.skill().body()).append('\n');
             prompt.append("可调用工具范围：").append(String.join("、", context.skill().allowedTools())).append('\n');
@@ -405,65 +405,22 @@ public class SpringAiGenerationService implements AiGenerationService {
     }
 
     /**
-     * 按任务类型决定卡片正文的深度要求。
-     * 内容类任务（总结/学习/产品）→ 详实（≥300 字，章节结构）
-     * 结构图类（思维/流程/整理）→ 精简（每张 1-3 句话，关键词/短语）
+     * 流程图任务的专用约束（单次调用路径）。
+     * 思维导图/总结/学习/产品需求已改走 generateOutlineTree，不经过此路径。
      *
      * @param taskType 任务类型字符串
-     * @return 深度约束文本
-     */
-    private String contentDepthConstraint(String taskType) {
-        if ("DOCUMENT_SUMMARY".equals(taskType) || "STUDY_PLAN".equals(taskType)
-                || "PRODUCT_REQUIREMENT".equals(taskType)) {
-            return """
-                    卡片正文 markdown 要有深度：章节标题、要点、论据、实例/数据，不少于 300 字。
-                    """;
-        }
-        return """
-                卡片正文 markdown 要短小精悍，每张卡片 1-3 句话即可。
-                不要写大段文字、不要写长章节。
-                思维导图分支用关键词或短语，流程图节点用一句话描述步骤。
-                """;
-    }
-
-    /**
-     * 非生产型意图兜底：防止模型把闲聊（你好/你是谁）当任务执行并生成大量卡片。
-     * 若输入非任务意图，只输出一张"AI 助手"回复卡。
-     *
-     * @param taskType 任务类型字符串（当前未使用，保留接口一致性）
-     * @return 兜底约束文本
-     */
-    private String chatGuard(String taskType) {
-        return """
-                如果用户的输入不是要生成内容或整理画布的任务（例如只是打招呼、自我介绍、闲聊），
-                你仍然输出一个最小的 create_card 动作，卡片标题为 "AI 助手"，内容为简短友好的文字回复，
-                不要再输出额外的大量动作。
-                注意：删除/清空/移除画布元素属于整理画布的任务，必须输出 delete_card / delete_shape 动作，
-                不要当成闲聊输出 AI 助手卡。
-                """;
-    }
-
-    /**
-     * 结构图任务的专用约束（思维导图/流程图）。
-     * 注意：思维导图实际走 generateMindmapTwoStage，此方法对 MINDMAP 分支不再触发；
-     * 主要服务于 GENERATE_FLOWCHART（单次调用路径）。
-     *
-     * @param taskType 任务类型字符串
-     * @return 结构图约束文本（非结构图返回空串）
+     * @return 结构图约束文本（非流程图返回空串）
      */
     private String structurePrompt(String taskType) {
-        if ("GENERATE_MINDMAP".equals(taskType)) {
-            return "\n任务类型是生成思维导图：\n1. 第一个 create_card（id=root1）是中心主题。\n2. 输出 5-8 个分支 create_card，id 依次为 branch1..branchN，每个用 markdown 写深度要点。\n3. 每个分支通过 connect（fromCardId=root1, toCardId=branchN）连到中心。\n4. 各卡片 x/y 中心放 (500,400)，分支围绕 180-360px 间距排列。\n";
-        }
         if ("GENERATE_FLOWCHART".equals(taskType)) {
-            return "\n任务类型是生成流程图：\n1. 第一个 create_card（id=start1）是开始节点，最后一个（id=end1）是结束节点。\n2. 中间输出 4-6 个 create_card 作为处理/判断节点。\n3. 用 connect 按流程顺序串联。\n4. 各卡片 y 从 100 起向下 180px 间距，x 在 200-600 间。\n";
+            return "\n任务类型是生成流程图：\n1. 第一个 create_shape（id=start1，shape=ellipse）是开始节点，最后一个（id=end1，shape=ellipse）是结束节点。\n2. 中间输出 4-6 个 create_shape 作为处理/判断节点（shape=rectangle 或 oval）。\n3. 用 connect 按流程顺序串联（fromShapeId/toShapeId 用各节点的 id）。\n";
         }
         return "";
     }
 
     /**
      * 编辑选中元素任务的专用约束。
-     * 用户已选中若干卡片/图形节点，指令是修改/丰富/添加分支/删除，模型据此输出针对性动作。
+     * 用户已选中若干图形节点，指令是修改/丰富/添加分支/删除，模型据此输出针对性动作。
      *
      * @param taskType 任务类型字符串
      * @return 编辑约束文本（非编辑任务返回空串）
@@ -474,25 +431,18 @@ public class SpringAiGenerationService implements AiGenerationService {
         }
         return """
                 任务类型是编辑选中的画布元素：
-                1. 用户已选中若干卡片/图形节点，其真实 id 见 user prompt 的「选中」段落。
+                1. 用户已选中若干图形节点，其真实 id 见 user prompt 的「选中」段落。
                 2. 根据用户指令，对选中元素输出对应动作：
-                   - 修改/丰富内容 → update_card（cardId=选中卡片真实 id，markdown=新的更详实的内容）
-                   - 删除卡片 → delete_card（cardId）；删除图形节点 → delete_shape（shapeId）
-                   - 给选中卡片添加子卡片 → create_card + connect（fromCardId=选中卡片 id，toCardId=新卡 id）
-                   - 给选中图形节点添加分支 → create_shape + connect（fromCardId=选中图形节点 id，toCardId=新节点 id）
-                3. 类型必须与选中元素一致，禁止混用：
-                   - 选中图形节点时，扩展只能用 create_shape（shape=oval，level=选中节点 level+1），绝对禁止 create_card；
-                   - 选中卡片时，扩展只能用 create_card，绝对禁止 create_shape。
-                4. 把选中元素改成另一种样式（互换）：
-                   - 选中卡片要改成图形样式 → convert_card_to_shape（cardId=选中卡片 id）
-                   - 选中图形节点要改成卡片 → convert_shape_to_card（shapeId=选中图形节点 id）
-                5. 动作里的 id 必须用 user prompt 注入的真实 id，不要编造。
-                6. 新生成的内容要有深度（章节/要点/论据），不要空泛。
+                   - 删除选中图形节点 → delete_shape（shapeId=选中节点真实 id）
+                   - 给选中图形节点添加分支 → create_shape + connect（fromShapeId=选中节点 id，toShapeId=新节点 id）
+                3. 扩展只能用 create_shape（shape=oval，level=选中节点 level+1），绝对禁止其他节点类型。
+                4. 动作里的 id 必须用 user prompt 注入的真实 id，不要编造。
+                5. 新生成的内容要有深度（要点/论据），不要空泛。
                 """;
     }
 
     /**
-     * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有卡片/图形（真实 id）+ 重试反馈。
+     * 构造规划阶段的 user prompt：任务类型 + 用户需求 + 画布现有图形节点（真实 id）+ 重试反馈。
      * 资料内容不在 prompt 内联，由模型通过 search_document_chunks 工具按需检索。
      *
      * @param context 任务上下文
@@ -503,32 +453,12 @@ public class SpringAiGenerationService implements AiGenerationService {
         StringBuilder prompt = new StringBuilder();
         prompt.append("任务类型：").append(context.type()).append('\n');
         prompt.append("用户需求：").append(context.prompt()).append("\n\n");
-        if (context.cards() != null && !context.cards().isEmpty()) {
-            prompt.append("画布中现有卡片（cardId 以此为准）：\n");
-            for (AiTaskContext.CardContext card : context.cards()) {
-                prompt.append("- [").append(card.cardId()).append("] ")
-                        .append(card.title()).append(" (").append(card.cardType()).append(")：")
-                        .append(card.content() == null ? "" : card.content().replace('\n', ' '))
-                        .append('\n');
-            }
-            prompt.append('\n');
-        }
         if (context.shapes() != null && !context.shapes().isEmpty()) {
             prompt.append("画布中现有图形节点（shapeId 以此为准）：\n");
             for (AiTaskContext.ShapeContext shape : context.shapes()) {
                 prompt.append("- [").append(shape.shapeId()).append("] ")
                         .append(shape.title()).append(" (").append(shape.shape()).append(", level=")
                         .append(shape.level()).append(")\n");
-            }
-            prompt.append('\n');
-        }
-        if (context.selectedCards() != null && !context.selectedCards().isEmpty()) {
-            prompt.append("用户当前选中的卡片（编辑操作目标，id 以此为准）：\n");
-            for (AiTaskContext.CardContext card : context.selectedCards()) {
-                prompt.append("- [").append(card.cardId()).append("] ")
-                        .append(card.title()).append(" (").append(card.cardType()).append(")：")
-                        .append(card.content() == null ? "" : card.content().replace('\n', ' '))
-                        .append('\n');
             }
             prompt.append('\n');
         }
@@ -570,11 +500,10 @@ public class SpringAiGenerationService implements AiGenerationService {
     private String toolInstruction() {
         return """
                 当任务涉及画布现有内容或上传资料时，先调用工具检索再回答：
-                - get_board_context：获取画布标题与卡片摘要
-                - get_card_content：读取指定卡片的完整正文
+                - get_board_context：获取画布标题与图形节点摘要
                 - list_source_files：列出画布已上传的资料文件
                 - search_document_chunks：从资料向量索引检索相关片段
-                不要编造卡片或资料内容，检索结果以工具返回为准。
+                不要编造节点或资料内容，检索结果以工具返回为准。
                 """;
     }
 }

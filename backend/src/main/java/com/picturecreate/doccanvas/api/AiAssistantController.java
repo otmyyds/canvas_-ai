@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
+import com.picturecreate.doccanvas.domain.AiTaskType;
 import com.picturecreate.doccanvas.service.AiTaskService;
 import com.picturecreate.doccanvas.service.ChatService;
 import com.picturecreate.doccanvas.service.CurrentUser;
@@ -28,7 +29,7 @@ import jakarta.validation.constraints.NotBlank;
  * 前端不再用关键词表判断「该聊天还是该执行任务」，统一提交到本接口，
  * 由后端意图分类器（IntentClassifier）决定路由：
  * - CHAT → 纯文本回复（ChatService，带 RAG 检索）
- * - 生成类任务 → 创建 AI 任务（AiTaskService，异步执行落卡）
+ * - 生成类任务 → 创建 AI 任务（AiTaskService，异步执行落图形节点）
  *
  * 区别于 ChatController / AiTaskController：那两个是底层原子能力（显式指定意图），
  * 本接口是面向对话面板的唯一智能入口（由 AI 判断意图）。
@@ -60,27 +61,28 @@ public class AiAssistantController {
     public AssistResponse assist(@PathVariable UUID boardId, @Valid @RequestBody AssistRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        List<String> selectedCardIds = body.selectedCardIds() == null ? List.of() : body.selectedCardIds();
         List<String> selectedShapeIds = body.selectedShapeIds() == null ? List.of() : body.selectedShapeIds();
-        log.info("AI 助手请求：boardId={} prompt={} 选中卡片={} 选中图形={}", boardId, body.prompt(),
-                selectedCardIds.size(), selectedShapeIds.size());
-        boolean hasSelection = !selectedCardIds.isEmpty() || !selectedShapeIds.isEmpty();
+        log.info("AI 助手请求：boardId={} prompt={} 选中图形={}", boardId, body.prompt(),
+                selectedShapeIds.size());
+        boolean hasSelection = !selectedShapeIds.isEmpty();
         IntentDecision decision = intentClassifier.classify(body.prompt(), hasSelection);
         if (decision.isChat()) {
             log.info("意图分类：CHAT");
             String reply = chatService.chat(boardId, user, body.prompt());
             return AssistResponse.chat(reply);
         }
-        log.info("意图分类：任务 type={}", decision.taskType());
-        AiTaskResponse task = aiTaskService.create(boardId, user, decision.taskType(), body.prompt(), selectedCardIds,
-                selectedShapeIds);
+        List<AiTaskType> plan = decision.plan();
+        log.info("意图分类：任务 plan={}", plan);
+        // 多步骤计划：创建首任务，剩余步骤存入上下文由 AiTaskService 链式续跑
+        AiTaskType first = plan.get(0);
+        List<AiTaskType> remaining = plan.subList(1, plan.size());
+        AiTaskResponse task = aiTaskService.create(boardId, user, first, body.prompt(), selectedShapeIds, remaining);
         return AssistResponse.task(task);
     }
 
-    /** 请求体：用户输入文本 + 可选的选中元素 id（用于编辑选中元素的任务） */
+    /** 请求体：用户输入文本 + 可选的选中图形节点 id（用于编辑选中元素的任务） */
     public record AssistRequest(
             @NotBlank(message = "输入不能为空") String prompt,
-            List<String> selectedCardIds,
             List<String> selectedShapeIds) {
     }
 

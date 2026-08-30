@@ -1,5 +1,6 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import java.util.List;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -11,12 +12,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 
 /**
- * 意图分类器。
+ * 意图分类器（规划器）。
  *
- * 一次 LLM 调用判断用户输入属于「生成类任务」还是「闲聊/问答」，
+ * 一次 LLM 调用把用户输入拆解为「生成类任务计划」或「闲聊/问答」，
  * 替代前端的关键词匹配表（matchTaskType），把路由决策收敛到后端。
  *
- * 输出结构化 JSON { "intent": "..." }，intent 取值限定为已实现的 7 个任务类型或 CHAT。
+ * 输出结构化 JSON { "plan": ["类型1", "类型2", ...] }，plan 为按执行顺序排列的
+ * 任务类型列表；单个任务就一个元素；纯聊天输出 ["CHAT"]。
  * 用 .content() 取纯文本 + 手动解析 JSON（百炼兼容模式不支持 Spring AI 结构化输出/tool calling）。
  */
 @Component
@@ -32,11 +34,11 @@ public class IntentClassifier {
     }
 
     /**
-     * 分类用户输入。
+     * 分类用户输入，拆解为有序的任务计划。
      *
      * @param prompt 用户输入
      * @param hasSelection 当前是否有选中的画布元素（用于区分「编辑选中元素」与「清空画布」）
-     * @return 分类决策（taskType 为 null 表示纯聊天）
+     * @return 分类决策（plan 为空表示纯聊天）
      */
     public IntentDecision classify(String prompt, boolean hasSelection) {
         String raw = chatClient.prompt()
@@ -48,7 +50,7 @@ public class IntentClassifier {
         return parse(raw);
     }
 
-    /** 解析模型输出的 intent JSON，非法输出直接抛异常（由上层 ErrorHandler 处理） */
+    /** 解析模型输出的 plan JSON，非法输出直接抛异常（由上层 ErrorHandler 处理） */
     @SuppressWarnings("unchecked")
     private IntentDecision parse(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -61,19 +63,26 @@ public class IntentClassifier {
         } catch (Exception exception) {
             throw new IllegalStateException("意图分类输出不是合法 JSON：" + exception.getMessage(), exception);
         }
-        Object intent = root.get("intent");
-        if (intent == null) {
-            throw new IllegalStateException("意图分类缺少 intent 字段");
+        Object planValue = root.get("plan");
+        if (!(planValue instanceof List<?> list) || list.isEmpty()) {
+            throw new IllegalStateException("意图分类缺少 plan 字段");
         }
-        String value = intent.toString().trim().toUpperCase();
-        if ("CHAT".equals(value)) {
+        List<String> values = list.stream()
+                .map(String::valueOf)
+                .map(String::trim)
+                .map(String::toUpperCase)
+                .toList();
+        if (values.size() == 1 && "CHAT".equals(values.get(0))) {
             return IntentDecision.chat();
         }
-        try {
-            return IntentDecision.task(AiTaskType.valueOf(value));
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalStateException("未知意图类型：" + value, exception);
-        }
+        List<AiTaskType> plan = values.stream().map(value -> {
+            try {
+                return AiTaskType.valueOf(value);
+            } catch (IllegalArgumentException exception) {
+                throw new IllegalStateException("未知意图类型：" + value, exception);
+            }
+        }).toList();
+        return IntentDecision.task(plan);
     }
 
     /** 剥离 ```json ... ``` 代码围栏 */
@@ -91,31 +100,30 @@ public class IntentClassifier {
         return json;
     }
 
-    /** 分类决策：taskType 为 null 表示纯聊天 */
-    public record IntentDecision(AiTaskType taskType) {
+    /** 分类决策：plan 为按执行顺序排列的任务类型列表，空列表表示纯聊天 */
+    public record IntentDecision(List<AiTaskType> plan) {
 
         public boolean isChat() {
-            return taskType == null;
+            return plan.isEmpty();
         }
 
         public static IntentDecision chat() {
-            return new IntentDecision(null);
+            return new IntentDecision(List.of());
         }
 
-        public static IntentDecision task(AiTaskType type) {
-            return new IntentDecision(type);
+        public static IntentDecision task(List<AiTaskType> plan) {
+            return new IntentDecision(plan);
         }
     }
 
     private static final String SYSTEM_PROMPT = """
-            你是意图分类器。判断用户输入属于「画布生成任务」还是「普通聊天/问答」。
+            你是意图分类器。把用户输入拆解为「画布生成任务」或「普通聊天/问答」。
 
-            可选 intent（只输出以下之一）：
+            可选任务类型（plan 中每一项是以下之一）：
             - GENERATE_MINDMAP：生成思维导图
             - GENERATE_FLOWCHART：生成流程图
             - STUDY_PLAN：制定学习计划/学习路径
             - PRODUCT_REQUIREMENT：写产品需求文档
-            - GENERATE_IMAGE：生成图片/画图
             - DOCUMENT_SUMMARY：总结/摘要/归纳资料
             - CANVAS_STRUCTURE：整理/梳理/结构化画布内容
             - CLEAR_CANVAS：删除/清空/移除画布中的全部元素
@@ -128,6 +136,9 @@ public class IntentClassifier {
             3. 当「是否有选中元素」为是，且指令是针对选中元素的「修改/丰富/添加分支/删除」时，归类为 EDIT_ELEMENT。
                注意：删除某个/某些选中元素是 EDIT_ELEMENT，删除全部元素才是 CLEAR_CANVAS。
             4. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
-            5. 只输出 JSON，格式：{"intent":"..."}，不要输出任何其他文字。
+            5. 多步骤指令要按执行顺序拆成多个任务，例如：
+               「先删除之前的流程图，再根据上述文本生成新的流程图」→ {"plan":["CLEAR_CANVAS","GENERATE_FLOWCHART"]}；
+               「总结资料并整理画布」→ {"plan":["DOCUMENT_SUMMARY","CANVAS_STRUCTURE"]}。
+            6. 只输出 JSON，格式：{"plan":["类型1","类型2",...]}。单个任务就一个元素；纯聊天输出 {"plan":["CHAT"]}。不要输出任何其他文字。
             """;
 }

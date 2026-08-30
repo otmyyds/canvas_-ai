@@ -12,13 +12,13 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 import com.picturecreate.doccanvas.domain.AiToolCall;
-import com.picturecreate.doccanvas.domain.Card;
 import com.picturecreate.doccanvas.domain.DocumentChunk;
+import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.domain.SourceFile;
 import com.picturecreate.doccanvas.domain.UserAccount;
 import com.picturecreate.doccanvas.repository.AiToolCallRepository;
 import com.picturecreate.doccanvas.repository.BoardRepository;
-import com.picturecreate.doccanvas.repository.CardRepository;
+import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.repository.SourceFileRepository;
 import com.picturecreate.doccanvas.repository.UserAccountRepository;
 import com.picturecreate.doccanvas.service.BoardService;
@@ -40,18 +40,18 @@ public class BoardReadTools {
     public static final String OWNER_ID_KEY = "ownerId";
 
     private final BoardRepository boardRepository;
-    private final CardRepository cardRepository;
+    private final ShapeRepository shapeRepository;
     private final SourceFileRepository sourceFileRepository;
     private final AiToolCallRepository toolCallRepository;
     private final DocumentChunkService chunkService;
     private final BoardService boardService;
     private final UserAccountRepository userAccountRepository;
 
-    public BoardReadTools(BoardRepository boardRepository, CardRepository cardRepository,
+    public BoardReadTools(BoardRepository boardRepository, ShapeRepository shapeRepository,
             SourceFileRepository sourceFileRepository, AiToolCallRepository toolCallRepository,
             DocumentChunkService chunkService, BoardService boardService, UserAccountRepository userAccountRepository) {
         this.boardRepository = boardRepository;
-        this.cardRepository = cardRepository;
+        this.shapeRepository = shapeRepository;
         this.sourceFileRepository = sourceFileRepository;
         this.toolCallRepository = toolCallRepository;
         this.chunkService = chunkService;
@@ -59,7 +59,7 @@ public class BoardReadTools {
         this.userAccountRepository = userAccountRepository;
     }
 
-    @Tool(name = "get_board_context", description = "获取当前画布标题与卡片摘要，供 AI 规划使用")
+    @Tool(name = "get_board_context", description = "获取当前画布标题与图形节点摘要，供 AI 规划使用")
     public String getBoardContext(
             @ToolParam(description = "画布 id") String boardId,
             ToolContext toolContext) {
@@ -69,24 +69,15 @@ public class BoardReadTools {
             boardService.getOwned(boardUuid, user);
             String title = boardRepository.findById(boardUuid).map(b -> b.getTitle()).orElse("未命名画布");
             StringBuilder result = new StringBuilder("画布标题：").append(title).append('\n');
-            List<Card> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(boardUuid);
-            result.append("卡片数量：").append(cards.size()).append('\n');
-            for (Card card : cards) {
-                result.append("- [").append(card.getId()).append("] ")
-                        .append(card.getTitle()).append(" (").append(card.getCardType()).append(")：")
-                        .append(truncate(card.getContentMarkdown(), 120)).append('\n');
+            List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardUuid);
+            result.append("图形节点数量：").append(shapes.size()).append('\n');
+            for (Shape shape : shapes) {
+                result.append("- [").append(shape.getId()).append("] ")
+                        .append(shape.getTitle()).append(" (").append(shape.getShape())
+                        .append(", level=").append(shape.getLevel()).append(")\n");
             }
             return result.toString();
         });
-    }
-
-    @Tool(name = "get_card_content", description = "读取指定卡片的完整正文")
-    public String getCardContent(
-            @ToolParam(description = "卡片 id") String cardId,
-            ToolContext toolContext) {
-        return audit(toolContext, "get_card_content", cardId, () -> cardRepository.findById(UUID.fromString(cardId))
-                .map(card -> card.getTitle() + "\n\n" + card.getContentMarkdown())
-                .orElse("卡片不存在：" + cardId));
     }
 
     @Tool(name = "list_source_files", description = "列出当前画布已上传的资料文件名与解析状态")

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AssetRecordType,
   Tldraw,
   createBindingId,
   createShapeId,
@@ -21,10 +20,8 @@ import {
   FolderOpen,
   Hand,
   LayoutGrid,
-  LayoutTemplate,
   Minus,
   MousePointer2,
-  Plus,
   RefreshCw,
   Save,
   Shield,
@@ -32,21 +29,19 @@ import {
   Text,
   Trash2
 } from "lucide-react";
-import type { AiTask, AssistResult, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 import { api } from "@/lib/api";
 import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
-import { whiteboardTemplates } from "@/lib/whiteboard/templates";
-import { CardShapeUtil } from "@/lib/whiteboard/card-shape-util";
 
-const CARD_SHAPE_UTILS = [...defaultShapeUtils, CardShapeUtil];
+/** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type WhiteboardEditorProps = {
   boardId: string;
   boardTitle?: string;
-  cards: BoardCard[];
   edges: BoardEdge[];
   shapes: BoardShape[];
   files: SourceFile[];
@@ -60,9 +55,8 @@ type WhiteboardEditorProps = {
   onAbortTask: (taskId: string) => Promise<void>;
   onUploadFile: (file: File) => Promise<void>;
   onDeleteFile: (fileId: string) => Promise<void>;
-  onApplyTemplate: (templateId: string, rootTitle: string) => Promise<void>;
-  /** 选中变化回调：上报当前选中的卡片/图形节点真实 id（供「编辑选中元素」使用） */
-  onSelectionChange?: (selection: { cardIds: string[]; shapeIds: string[] }) => void;
+  /** 选中变化回调：上报当前选中的图形节点真实 id（供「编辑选中元素」使用） */
+  onSelectionChange?: (selection: { shapeIds: string[] }) => void;
   /** 当前选中的元素数量（用于 AI 助手面板提示） */
   selectionCount?: number;
 };
@@ -88,19 +82,18 @@ const SHAPE_TYPES: Array<{ value: string; label: string; icon: string }> = [
  * 主编辑器组件：tldraw 无限画布 + 白板交互 + 数据同步。
  *
  * 职责：
- * 1. 初始化 tldraw store（含自定义 card shape + 图片上传到 RustFS）
- * 2. 加载画布快照 + 后端卡片/图形/连线 → 渲染到画布（hydration）
+ * 1. 初始化 tldraw store（默认图形 + 图片上传到 RustFS）
+ * 2. 加载画布快照 + 后端图形/连线 → 渲染到画布（hydration）
  * 3. 监听画布变更 → 防抖保存 snapshot
- * 4. 监听 AI 任务完成 → 增量同步新卡片/图形节点
- * 5. 工具栏：选择/平移/卡片/文本/图形/线条/箭头/图片/删除/刷新/整理/模板/导出
+ * 4. 监听 AI 任务完成 → 增量同步新图形节点
+ * 5. 工具栏：选择/平移/文本/图形/线条/箭头/图片/删除/刷新/整理/导出
  *
  * 双状态源协调：
  * - 用户编辑 → 写 board_snapshots（tldraw 快照）
- * - AI 生成 → 写 cards/shapes/edges 表 → 前端 merge 进 tldraw
- * - 删除时同步删后端（deleteCard/deleteShape），避免刷新复活
+ * - AI 生成 → 写 shapes/edges 表 → 前端 merge 进 tldraw
+ * - 删除时同步删后端（deleteShape），避免刷新复活
  *
  * @param boardId 画布 id
- * @param cards 后端卡片列表（AI 生成/手动创建）
  * @param edges 后端连线列表
  * @param shapes 后端图形节点列表（思维导图/流程图节点）
  * @param canvasRevision AI 任务完成后递增，触发增量同步 effect
@@ -108,7 +101,6 @@ const SHAPE_TYPES: Array<{ value: string; label: string; icon: string }> = [
 export function WhiteboardEditor({
   boardId,
   boardTitle,
-  cards,
   edges,
   shapes,
   files,
@@ -121,20 +113,19 @@ export function WhiteboardEditor({
   onAbortTask,
   onUploadFile,
   onDeleteFile,
-  onApplyTemplate,
   onSelectionChange,
   selectionCount = 0
 }: WhiteboardEditorProps) {
   /**
    * tldraw store：画布的底层数据源。
-   * - 自定义 shape utils（CardShapeUtil 卡片 + 默认图形）
+   * - 默认图形 utils（defaultShapeUtils）
    * - 图片资产上传到后端（RustFS）
    * 注意：useMemo 保证 store 只创建一次（随 boardId 变化重建）
    */
   const store = useMemo(
     () =>
       createTLStore({
-        shapeUtils: CARD_SHAPE_UTILS,
+        shapeUtils: defaultShapeUtils,
         bindingUtils: defaultBindingUtils,
         assets: {
           async upload(_asset, file) {
@@ -160,12 +151,6 @@ export function WhiteboardEditor({
   const saveTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const hydratedBoardRef = useRef<string | null>(null);
-  const knownCardIdsRef = useRef<Set<string>>(new Set());
-  // 已删除卡片的墓碑，供 Ctrl+Z 恢复时重建后端记录
-  const deletedCardsRef = useRef<
-    Array<{ cardId: string; shape: { x: number; y: number; props?: Record<string, unknown> } }>
-  >([]);
-  const cardsRef = useRef(cards);
   const edgesRef = useRef(edges);
   const shapesRef = useRef(shapes);
   const filesRef = useRef(files);
@@ -173,7 +158,6 @@ export function WhiteboardEditor({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [message, setMessage] = useState("滚轮/中键拖动平移画布，滚轮缩放已改为平移；选中元素按 Delete 删除");
 
-  cardsRef.current = cards;
   edgesRef.current = edges;
   shapesRef.current = shapes;
   filesRef.current = files;
@@ -210,10 +194,8 @@ export function WhiteboardEditor({
       return;
     }
 
-    // 切换画布时重置 hydration 状态
-    if (hydratedBoardRef.current !== boardId) {
-      knownCardIdsRef.current = new Set();
-    } else {
+    // 已初始化过当前画布则跳过（避免重复 hydration）
+    if (hydratedBoardRef.current === boardId) {
       return;
     }
 
@@ -230,10 +212,8 @@ export function WhiteboardEditor({
         return;
       }
 
-      const currentCards = cardsRef.current;
       const currentEdges = edgesRef.current;
       const currentShapes = shapesRef.current;
-      const currentFiles = filesRef.current;
 
       if (snapshot?.snapshotJson) {
         const parsed = parseTldrawJsonFile({
@@ -242,21 +222,15 @@ export function WhiteboardEditor({
         });
         if (parsed.ok) {
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
-          const migrated = migrateLegacyCardShapes(editor, currentCards);
-          const added = mergeMissingCards(editor, {
-            boardId,
-            cards: currentCards,
-            edges: currentEdges,
-            files: currentFiles
-          });
           const shapeAdded = mergeMissingShapes(editor, currentShapes, currentEdges);
-          knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
+          // 快照可能残留已被后端删除的节点，清理掉避免刷新复活
+          const removed = removeOrphanShapes(editor, currentShapes, currentEdges);
           editor.clearHistory();
           editor.selectNone();
           hydratedBoardRef.current = boardId;
           mountedRef.current = true;
-          if (migrated > 0 || added > 0 || shapeAdded > 0) {
-            setMessage(`已载入画布快照，迁移 ${migrated} 张旧卡片，同步 ${added} 张新卡片、${shapeAdded} 个节点`);
+          if (shapeAdded > 0 || removed > 0) {
+            setMessage(`已载入画布快照，同步 ${shapeAdded} 个节点，清理 ${removed} 个残留`);
             queueSave();
           } else {
             setMessage("已载入画布快照");
@@ -265,15 +239,8 @@ export function WhiteboardEditor({
         }
       }
 
-      await loadLegacyContent(editor, {
-        boardId,
-        cards: currentCards,
-        edges: currentEdges,
-        files: currentFiles,
-        boardTitle
-      });
       mergeMissingShapes(editor, currentShapes, currentEdges);
-      knownCardIdsRef.current = new Set(currentCards.map((card) => card.id));
+      removeOrphanShapes(editor, currentShapes, currentEdges);
       editor.clearHistory();
       editor.selectNone();
       hydratedBoardRef.current = boardId;
@@ -288,7 +255,7 @@ export function WhiteboardEditor({
     };
   }, [boardId, boardTitle, editorReady, queueSave]);
 
-  // AI 任务完成后把后端 cards 增量同步进 tldraw
+  // AI 任务完成后把后端图形节点增量同步进 tldraw（新增 + 清理被删除的残留）
   useEffect(() => {
     if (!editorReady || hydratedBoardRef.current !== boardId || !mountedRef.current) {
       return;
@@ -299,32 +266,24 @@ export function WhiteboardEditor({
       return;
     }
 
-    // 增量同步卡片
-    const known = knownCardIdsRef.current;
-    const missing = cards.filter((card) => !known.has(card.id));
-    if (missing.length > 0) {
-      const added = mergeMissingCards(editor, {
-        boardId,
-        cards: missing,
-        edges,
-        files
-      });
-      if (added > 0) {
-        setMessage(`已同步 ${added} 张 AI 生成卡片到画布`);
-        queueSave();
-      }
-    }
-    knownCardIdsRef.current = new Set(cards.map((card) => card.id));
-
     // 增量同步图形节点（思维导图/流程图节点）
     const shapeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
     const newShapes = shapes.filter((s) => !shapeIds.has(createShapeId(s.id)));
     if (newShapes.length > 0) {
       mergeMissingShapes(editor, newShapes, edges);
-      setMessage(`已同步 ${newShapes.length} 个图形节点到画布`);
+    }
+    // 后端已删除、但 tldraw 快照里还残留的图形节点/连线需一并清理，
+    // 否则下次刷新时快照会把已删节点"复活"
+    const removed = removeOrphanShapes(editor, shapes, edges);
+    if (newShapes.length > 0 || removed > 0) {
+      setMessage(
+        newShapes.length > 0
+          ? `已同步 ${newShapes.length} 个图形节点到画布`
+          : `已清理 ${removed} 个残留元素`
+      );
       queueSave();
     }
-  }, [boardId, canvasRevision, cards, edges, editorReady, files, queueSave, shapes]);
+  }, [boardId, canvasRevision, edges, editorReady, queueSave, shapes]);
 
   // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
   useEffect(() => {
@@ -340,52 +299,14 @@ export function WhiteboardEditor({
       editor.deleteShapes(shapeIds);
     }
     editor.clearHistory();
-    knownCardIdsRef.current = new Set();
-    deletedCardsRef.current = [];
     setMessage("画布已清空");
     queueSave();
   }, [clearSignal, editorReady, queueSave]);
 
   useEffect(() => {
-    const unlisten = store.listen((entry) => {
+    const unlisten = store.listen(() => {
       if (!mountedRef.current) {
         return;
-      }
-      // 检测 undo 恢复：被删卡片的 shape 重新出现 → 重建后端卡片
-      const added = entry?.changes?.added;
-      const addedRecords = added ? Object.values(added) : [];
-      if (addedRecords.length > 0) {
-        const tombstone = deletedCardsRef.current;
-        if (tombstone.length > 0) {
-          for (const record of addedRecords) {
-            if (record.typeName !== "shape") {
-              continue;
-            }
-            const shape = record as { id: string; type: string; meta?: Record<string, unknown> };
-            const cardId = (shape.meta?.cardId as string | undefined) ?? shape.id;
-            const idx = tombstone.findIndex((item) => item.cardId === cardId);
-            if (idx >= 0 && shape.type === "card") {
-              const item = tombstone.splice(idx, 1)[0];
-              const props = item.shape.props ?? {};
-              void api
-                .createCard(boardId, {
-                  title: (props.title as string) ?? "未命名卡片",
-                  contentMarkdown: (props.markdown as string) ?? "",
-                  cardType: ((props.cardType as string) ?? "NOTE") as BoardCard["cardType"],
-                  x: item.shape.x,
-                  y: item.shape.y,
-                  width: (props.w as number) ?? 340,
-                  height: (props.h as number) ?? 220
-                })
-                .then(() => {
-                  knownCardIdsRef.current.add(cardId);
-                })
-                .catch(() => {
-                  // 重建失败静默
-                });
-            }
-          }
-        }
       }
       queueSave();
     }, { scope: "document" });
@@ -396,7 +317,7 @@ export function WhiteboardEditor({
         window.clearTimeout(saveTimerRef.current);
       }
     };
-  }, [boardId, queueSave, store]);
+  }, [queueSave, store]);
 
   const onMount = useCallback((editor: TldrawEditor) => {
     editorRef.current = editor;
@@ -407,8 +328,8 @@ export function WhiteboardEditor({
     setEditorReady(true);
   }, []);
 
-  // 监听选中变化，把选中的卡片/图形节点真实 id 上报给父组件
-  // 映射规则与 deleteSelected 一致：geo 节点去掉 "shape:" 前缀取真实 id；卡片取 meta.cardId
+  // 监听选中变化，把选中的图形节点真实 id 上报给父组件
+  // 映射规则与 deleteSelected 一致：geo 节点去掉 "shape:" 前缀取真实 id
   useEffect(() => {
     if (!editorReady || !onSelectionChange) {
       return;
@@ -418,7 +339,6 @@ export function WhiteboardEditor({
       return;
     }
     const sync = () => {
-      const cardIds = new Set<string>();
       const shapeIds = new Set<string>();
       for (const id of editor.getSelectedShapeIds()) {
         const shape = editor.getShape(id);
@@ -427,17 +347,12 @@ export function WhiteboardEditor({
         }
         if (shape.type === "geo") {
           const rawId = String(id).replace(/^shape:/, "");
-          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+          if (UUID_PATTERN.test(rawId)) {
             shapeIds.add(rawId);
           }
-          continue;
-        }
-        const cardId = shape.meta?.cardId as string | undefined;
-        if (cardId) {
-          cardIds.add(cardId);
         }
       }
-      onSelectionChange({ cardIds: [...cardIds], shapeIds: [...shapeIds] });
+      onSelectionChange({ shapeIds: [...shapeIds] });
     };
     sync();
     const unlisten = editor.store.listen(sync, { scope: "document" });
@@ -451,30 +366,6 @@ export function WhiteboardEditor({
     }
     editor.setCurrentTool(toolId);
     setMessage(hint);
-  }, []);
-
-  const addNote = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const id = createShapeId();
-    const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
-    editor.createShape({
-      id,
-      type: "card",
-      x: base.x,
-      y: base.y,
-      props: {
-        w: 340,
-        h: 220,
-        title: "新建卡片",
-        markdown: "在这里输入内容，支持 **Markdown** 语法",
-        cardType: "NOTE"
-      }
-    });
-    editor.select(id);
-    setMessage("已添加卡片");
   }, []);
 
   const addText = useCallback(() => {
@@ -595,11 +486,8 @@ export function WhiteboardEditor({
       setMessage("请先选中要删除的元素");
       return;
     }
-    // 同步删除后端卡片，避免刷新后 mergeMissingCards 让已删卡片复活
-    // 同时存墓碑，供 Ctrl+Z undo 时重建后端卡片
-    const cardIds: string[] = [];
+    // 同步删除后端图形节点，避免刷新后 mergeMissingShapes 让已删节点复活
     const shapeIdsToDelete: string[] = [];
-    const deletedData: Array<{ cardId: string; shape: { x: number; y: number; props?: Record<string, unknown> } }> = [];
     for (const id of ids) {
       const shape = editor.getShape(id);
       if (!shape) {
@@ -609,23 +497,10 @@ export function WhiteboardEditor({
       if (shape.type === "geo") {
         // shape.id 是 "shape:<uuid>" 格式，去掉前缀取真实 UUID
         const rawId = String(id).replace(/^shape:/, "");
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+        if (UUID_PATTERN.test(rawId)) {
           shapeIdsToDelete.push(rawId);
         }
-        continue;
       }
-      const metaCardId = (shape.meta?.cardId as string | undefined) ?? undefined;
-      const cardId = metaCardId ?? (shape.type === "card" ? shape.id : undefined);
-      if (cardId) {
-        cardIds.push(cardId);
-        deletedData.push({ cardId, shape: { x: shape.x, y: shape.y, props: shape.props as Record<string, unknown> } });
-      }
-    }
-    if (cardIds.length > 0) {
-      const known = knownCardIdsRef.current;
-      cardIds.forEach((cardId) => known.delete(cardId));
-      deletedCardsRef.current.push(...deletedData);
-      void Promise.allSettled(cardIds.map((cardId) => api.deleteCard(cardId)));
     }
     if (shapeIdsToDelete.length > 0) {
       void Promise.allSettled(shapeIdsToDelete.map((shapeId) => api.deleteShape(shapeId)));
@@ -633,7 +508,7 @@ export function WhiteboardEditor({
 
     editor.deleteShapes(ids);
     setMessage(
-      cardIds.length + shapeIdsToDelete.length > 0
+      shapeIdsToDelete.length > 0
         ? `已删除 ${ids.length} 个元素（同步后端）`
         : "已删除选中元素"
     );
@@ -684,14 +559,13 @@ export function WhiteboardEditor({
     }
     const moved = autoLayoutTldraw(editor);
     if (moved === 0) {
-      setMessage("画布暂无可整理的卡片");
+      setMessage("画布暂无可整理的元素");
       return;
     }
     setMessage(`已自动整理 ${moved} 个元素`);
     queueSave();
   }, [queueSave]);
 
-  const [templateOpen, setTemplateOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -713,39 +587,6 @@ export function WhiteboardEditor({
       setMessage("PNG 导出失败");
     }
   }, [boardTitle]);
-
-  const exportMarkdown = useCallback(() => {
-    const lines: string[] = [];
-    for (const card of cards) {
-      lines.push(`## ${card.title}\n\n${card.contentMarkdown ?? ""}\n`);
-    }
-    if (lines.length === 0) {
-      setMessage("画布暂无卡片可导出");
-      return;
-    }
-    const blob = new Blob([lines.join("\n---\n\n")], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${boardTitle || "画布"}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setMessage(`已导出 ${cards.length} 张卡片为 Markdown`);
-  }, [boardTitle, cards]);
-
-  const applyTemplate = useCallback(
-    async (templateId: string) => {
-      setTemplateOpen(false);
-      try {
-        const rootTitle = window.prompt("请输入模板标题（可留空）", "");
-        await onApplyTemplate(templateId, rootTitle ?? "");
-        setMessage("模板已创建");
-      } catch (err) {
-        setMessage(err instanceof Error ? err.message : "模板创建失败");
-      }
-    },
-    [onApplyTemplate]
-  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
@@ -785,10 +626,6 @@ export function WhiteboardEditor({
           <GhostButton onClick={() => setTool("hand", "已切换到抓手工具：按住拖动可平移画布，滚轮缩放；切回选择可编辑")}>
             <Hand className="h-4 w-4" />
             平移
-          </GhostButton>
-          <GhostButton onClick={addNote}>
-            <Plus className="h-4 w-4" />
-            卡片
           </GhostButton>
           <GhostButton onClick={addText}>
             <Text className="h-4 w-4" />
@@ -838,31 +675,10 @@ export function WhiteboardEditor({
             <RefreshCw className="h-4 w-4" />
             刷新
           </GhostButton>
-          <GhostButton onClick={autoArrange} title="按连线分层自动排列卡片">
+          <GhostButton onClick={autoArrange} title="按连线分层自动排列元素">
             <LayoutGrid className="h-4 w-4" />
             整理
           </GhostButton>
-          <div className="relative">
-            <GhostButton onClick={() => setTemplateOpen((value) => !value)} title="创建模板画布">
-              <LayoutTemplate className="h-4 w-4" />
-              模板
-            </GhostButton>
-            {templateOpen ? (
-              <div className="absolute left-0 top-full z-30 mt-1 w-44 rounded-md border border-ink/10 bg-white p-1 shadow-md">
-                {whiteboardTemplates.map((template) => (
-                  <button
-                    key={template.id}
-                    type="button"
-                    onClick={() => void applyTemplate(template.id)}
-                    className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
-                  >
-                    {template.name}
-                    <span className="block text-[11px] text-ink/50">{template.description}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
           <div className="relative">
             <GhostButton onClick={() => setExportOpen((value) => !value)} title="导出画布">
               <Download className="h-4 w-4" />
@@ -879,16 +695,6 @@ export function WhiteboardEditor({
                   className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
                 >
                   导出 PNG
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setExportOpen(false);
-                    exportMarkdown();
-                  }}
-                  className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
-                >
-                  导出 Markdown
                 </button>
               </div>
             ) : null}
@@ -926,7 +732,7 @@ export function WhiteboardEditor({
             hideUi
             autoFocus={false}
             className="h-full w-full"
-            shapeUtils={CARD_SHAPE_UTILS}
+            shapeUtils={defaultShapeUtils}
           />
         </div>
 
@@ -943,27 +749,6 @@ export function WhiteboardEditor({
       />
     </div>
   );
-}
-
-async function loadLegacyContent(
-  editor: TldrawEditor,
-  input: {
-    boardId: string;
-    boardTitle?: string;
-    cards: BoardCard[];
-    edges: BoardEdge[];
-    files: SourceFile[];
-  }
-) {
-  const shapeIdsByCardId = new Map<string, ReturnType<typeof createShapeId>>();
-
-  for (const [index, card] of input.cards.entries()) {
-    createCardShape(editor, input.boardId, card, index, input.files, shapeIdsByCardId);
-  }
-
-  for (const edge of input.edges) {
-    createEdgeBinding(editor, edge, shapeIdsByCardId);
-  }
 }
 
 /**
@@ -1000,6 +785,34 @@ function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
   return added;
 }
 
+/**
+ * 清理 tldraw 里"后端已删除、但快照残留"的元素。
+ * 只处理 AI 生成的元素（id 形如 shape:<uuid>）：
+ * - geo 图形节点：uuid 不在后端 shapes 列表 → 删除
+ * - arrow 连线：uuid 不在后端 edges 列表 → 删除
+ * 手动绘制的元素（id 非 uuid）不受影响。返回清理数量。
+ */
+function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
+  const shapeUuids = new Set(shapes.map((s) => s.id));
+  const edgeUuids = new Set(edges.map((e) => e.id));
+  const toDelete: ReturnType<typeof createShapeId>[] = [];
+  for (const shape of editor.getCurrentPageShapes()) {
+    const rawId = String(shape.id).replace(/^shape:/, "");
+    if (!UUID_PATTERN.test(rawId)) {
+      continue;
+    }
+    if (shape.type === "geo" && !shapeUuids.has(rawId)) {
+      toDelete.push(shape.id);
+    } else if (shape.type === "arrow" && !edgeUuids.has(rawId)) {
+      toDelete.push(shape.id);
+    }
+  }
+  if (toDelete.length > 0) {
+    editor.deleteShapes(toDelete);
+  }
+  return toDelete.length;
+}
+
 function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
   const geoType = node.shape === "ellipse" ? "ellipse" : node.shape === "oval" ? "oval" : "rectangle";
   const isCenter = node.level === 0;
@@ -1028,198 +841,13 @@ function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Retur
   });
 }
 
-/**
- * 把旧快照中的 note/geo 卡片迁移为自定义 card shape。
- * 旧卡片 shape 的 id 等于 createShapeId(card.id)，据此识别并保留坐标。
- * 返回迁移数量。
- */
-function migrateLegacyCardShapes(editor: TldrawEditor, cards: BoardCard[]): number {
-  let migrated = 0;
-  const cardById = new Map(cards.map((card) => [card.id, card]));
-
-  for (const shape of editor.getCurrentPageShapes()) {
-    if (shape.type !== "note" && shape.type !== "geo") {
-      continue;
-    }
-    const card = cardById.get(shape.id);
-    if (!card) {
-      continue;
-    }
-    const props = shape.props as Record<string, unknown>;
-    const text = extractRichTextText(props.richText) || card.contentMarkdown || "";
-    const firstLine = text.split("\n")[0]?.trim() ?? "";
-    const markdown = text.split("\n").slice(1).join("\n").trim();
-    editor.updateShape({
-      id: shape.id,
-      type: "card",
-      x: shape.x,
-      y: shape.y,
-      meta: { cardId: card.id },
-      props: {
-        w: card.width,
-        h: card.height,
-        title: card.title || firstLine,
-        markdown: markdown || text,
-        cardType: card.cardType
-      }
-    });
-    migrated += 1;
-  }
-  return migrated;
-}
-
-/** 从 tldraw richText 结构中提取纯文本 */
-function extractRichTextText(richText: unknown): string {
-  if (!richText || typeof richText !== "object") {
-    return "";
-  }
-  const root = richText as { content?: Array<{ content?: Array<{ text?: string }> }> };
-  if (!Array.isArray(root.content)) {
-    return "";
-  }
-  const lines: string[] = [];
-  for (const block of root.content) {
-    const parts: string[] = [];
-    for (const inline of block.content ?? []) {
-      if (inline.text) {
-        parts.push(inline.text);
-      }
-    }
-    lines.push(parts.join(""));
-  }
-  return lines.join("\n");
-}
-
-function mergeMissingCards(
-  editor: TldrawEditor,
-  input: {
-    boardId: string;
-    cards: BoardCard[];
-    edges: BoardEdge[];
-    files: SourceFile[];
-  }
-) {
-  const shapeIdsByCardId = new Map<string, ReturnType<typeof createShapeId>>();
-  let added = 0;
-  const existingCount = editor.getCurrentPageShapes().length;
-
-  for (const [index, card] of input.cards.entries()) {
-    const shapeId = createShapeId(card.id);    if (editor.getShape(shapeId)) {
-      shapeIdsByCardId.set(card.id, shapeId);
-      continue;
-    }
-    createCardShape(editor, input.boardId, card, existingCount + index, input.files, shapeIdsByCardId);
-    added += 1;
-  }
-
-  for (const edge of input.edges) {
-    createEdgeBinding(editor, edge, shapeIdsByCardId);
-  }
-
-  return added;
-}
-
-function createCardShape(
-  editor: TldrawEditor,
-  boardId: string,
-  card: BoardCard,
-  index: number,
-  files: SourceFile[],
-  shapeIdsByCardId: Map<string, ReturnType<typeof createShapeId>>
-) {
-  const base = nextPlacement(index);
-  const shapeId = createShapeId(card.id);
-  shapeIdsByCardId.set(card.id, shapeId);
-
-  if (card.cardType === "IMAGE") {
-    const fileId = extractSourceFileId(card.contentMarkdown);
-    if (!fileId) {
-      return;
-    }
-    const file = files.find((item) => item.id === fileId);
-    const assetId = AssetRecordType.createId();
-    editor.createAssets([
-      {
-        id: assetId,
-        typeName: "asset",
-        type: "image",
-        meta: {
-          boardId,
-          fileId
-        },
-        props: {
-          src: api.fileContentUrl(boardId, fileId),
-          w: card.width,
-          h: card.height,
-          mimeType: file?.mimeType ?? "image/*",
-          name: card.title,
-          fileSize: file?.size ?? undefined,
-          isAnimated: false
-        }
-      }
-    ]);
-    editor.createShape({
-      id: shapeId,
-      type: "image",
-      x: card.x ?? base.x,
-      y: card.y ?? base.y,
-      meta: { cardId: card.id },
-      props: {
-        w: card.width,
-        h: card.height,
-        playing: false,
-        url: api.fileContentUrl(boardId, fileId),
-        assetId,
-        crop: null,
-        flipX: false,
-        flipY: false,
-        altText: card.title
-      }
-    });
-    return;
-  }
-
-  if (card.cardType === "SOURCE") {
-    editor.createShape({
-      id: shapeId,
-      type: "card",
-      x: card.x ?? base.x,
-      y: card.y ?? base.y,
-      meta: { cardId: card.id },
-      props: {
-        w: card.width,
-        h: card.height,
-        title: card.title,
-        markdown: card.contentMarkdown ?? "",
-        cardType: card.cardType
-      }
-    });
-    return;
-  }
-
-  editor.createShape({
-    id: shapeId,
-    type: "card",
-    x: card.x ?? base.x,
-    y: card.y ?? base.y,
-    meta: { cardId: card.id },
-    props: {
-      w: card.width,
-      h: card.height,
-      title: card.title,
-      markdown: card.contentMarkdown ?? "",
-      cardType: card.cardType
-    }
-  });
-}
-
 function createEdgeBinding(
   editor: TldrawEditor,
   edge: BoardEdge,
-  shapeIdsByCardId: Map<string, ReturnType<typeof createShapeId>>
+  shapeIdsByNode: Map<string, ReturnType<typeof createShapeId>>
 ) {
-  const fromId = shapeIdsByCardId.get(edge.fromCardId) ?? createShapeId(edge.fromCardId);
-  const toId = shapeIdsByCardId.get(edge.toCardId) ?? createShapeId(edge.toCardId);
+  const fromId = shapeIdsByNode.get(edge.fromShapeId) ?? createShapeId(edge.fromShapeId);
+  const toId = shapeIdsByNode.get(edge.toShapeId) ?? createShapeId(edge.toShapeId);
   if (!editor.getShape(fromId) || !editor.getShape(toId)) {
     return;
   }
@@ -1286,18 +914,9 @@ function createEdgeBinding(
   ]);
 }
 
-function nextPlacement(index: number) {
-  const column = index % 3;
-  const row = Math.floor(index / 3);
-  return {
-    x: 120 + column * 240,
-    y: 120 + row * 180
-  };
-}
-
 /**
  * 以当前视口中心为锚点计算新元素坐标（叠加数量偏移，连续添加向四周展开）。
- * 只用于用户交互式添加；加载/同步卡片仍用 nextPlacement（相机状态不可靠）。
+ * 只用于用户交互式添加。
  */
 function viewportPlacement(editor: TldrawEditor, index: number) {
   const center = editor.getViewportPageBounds().center;
@@ -1307,11 +926,6 @@ function viewportPlacement(editor: TldrawEditor, index: number) {
     x: center.x - 170 + column * 240,
     y: center.y - 110 + row * 180
   };
-}
-
-function extractSourceFileId(markdown: string) {
-  const match = markdown.match(/sourceFileId:([0-9a-fA-F-]+)/);
-  return match?.[1];
 }
 
 /** 把后端颜色映射为 tldraw 内建颜色名（tldraw arrow color 不接受 hex） */

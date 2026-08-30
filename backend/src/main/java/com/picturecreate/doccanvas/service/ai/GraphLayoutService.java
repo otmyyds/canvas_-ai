@@ -14,16 +14,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 结构图布局：为思维导图（中心辐射）/ 流程图（分层）计算卡片坐标。
+ * 结构图布局：为思维导图（中心辐射）/ 流程图（分层）计算图形节点坐标。
  * 输入：节点 id 列表 + 边（from/to）列表；输出：节点 id → (x, y)。
  */
 public final class GraphLayoutService {
 
     private static final Logger log = LoggerFactory.getLogger(GraphLayoutService.class);
 
-    /** 卡片宽高（与前端默认一致） */
-    private static final double CARD_W = 340;
-    private static final double CARD_H = 220;
     /** 节点间距 */
     private static final double GAP = 120;
     /** 原点边距 */
@@ -41,7 +38,7 @@ public final class GraphLayoutService {
         return layoutMindmap3(nodeIds, edges, levels);
     }
 
-    /** 思维导图树节点尺寸（径向布局用 shape 节点典型尺寸，而非卡片尺寸） */
+    /** 思维导图树节点尺寸（径向布局用 shape 节点典型尺寸） */
     private static final double NODE_W = 180;
     private static final double NODE_H = 72;
     /** 根到一级分支的基础半径 */
@@ -188,8 +185,8 @@ public final class GraphLayoutService {
             double layerMaxX = x;
             for (String id : byLayer.get(key)) {
                 positions.put(id, new double[] { x, y });
-                layerMaxX = Math.max(layerMaxX, x + CARD_W);
-                y += CARD_H + GAP;
+                layerMaxX = Math.max(layerMaxX, x + NODE_W);
+                y += NODE_H + GAP;
             }
             x = layerMaxX + GAP;
         }

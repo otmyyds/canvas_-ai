@@ -34,7 +34,7 @@ export default function BoardPage({ params }: BoardPageProps) {
 }
 
 function BoardEditor({ boardId }: { boardId: string }) {
-  const { board, cards, edges, shapes, tasks, files, setBoard, setCards, setEdges, setShapes, setTasks, setFiles } = useBoardStore();
+  const { board, edges, shapes, tasks, files, setBoard, setEdges, setShapes, setTasks, setFiles } = useBoardStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [canvasRevision, setCanvasRevision] = useState(0);
@@ -42,11 +42,8 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [canvasClear, setCanvasClear] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  // 当前选中的卡片/图形节点真实 id（用于「编辑选中元素」任务）
-  const [selection, setSelection] = useState<{ cardIds: string[]; shapeIds: string[] }>({
-    cardIds: [],
-    shapeIds: []
-  });
+  // 当前选中的图形节点真实 id（用于「编辑选中元素」任务）
+  const [selection, setSelection] = useState<{ shapeIds: string[] }>({ shapeIds: [] });
 
   async function renameBoard(title: string) {
     const safe = title.trim();
@@ -59,21 +56,19 @@ function BoardEditor({ boardId }: { boardId: string }) {
 
   const loadAll = useCallback(async () => {
     setError(undefined);
-    const [boardResult, cardResult, edgeResult, shapeResult, taskResult, fileResult] = await Promise.all([
+    const [boardResult, edgeResult, shapeResult, taskResult, fileResult] = await Promise.all([
       api.getBoard(boardId),
-      api.listCards(boardId),
       api.listEdges(boardId),
       api.listShapes(boardId),
       api.listTasks(boardId),
       api.listFiles(boardId)
     ]);
     setBoard(boardResult);
-    setCards(cardResult);
     setEdges(edgeResult);
     setShapes(shapeResult);
     setTasks(taskResult);
     setFiles(fileResult);
-  }, [boardId, setBoard, setCards, setEdges, setShapes, setFiles, setTasks]);
+  }, [boardId, setBoard, setEdges, setShapes, setFiles, setTasks]);
 
   useEffect(() => {
     setLoading(true);
@@ -89,22 +84,20 @@ function BoardEditor({ boardId }: { boardId: string }) {
       }
       setTasks(await api.listTasks(boardId));
       if (event.type === "task.actions" || event.type === "task.done") {
-        const [cardResult, edgeResult, shapeResult] = await Promise.all([
-          api.listCards(boardId),
+        const [edgeResult, shapeResult] = await Promise.all([
           api.listEdges(boardId),
           api.listShapes(boardId)
         ]);
-        setCards(cardResult);
         setEdges(edgeResult);
         setShapes(shapeResult);
         setCanvasRevision((value) => value + 1);
-        // 清空画布任务完成：后端已删 cards/shapes/edges 与快照，驱动白板清空残留元素
+        // 清空画布任务完成：后端已删 shapes/edges 与快照，驱动白板清空残留元素
         if (event.type === "task.done" && event.taskType === "CLEAR_CANVAS") {
           setCanvasClear((value) => value + 1);
         }
       }
     },
-    [boardId, setCards, setEdges, setTasks]
+    [boardId, setEdges, setTasks]
   );
 
   const connection = useTaskStream(boardId, onTaskEvent);
@@ -130,36 +123,6 @@ function BoardEditor({ boardId }: { boardId: string }) {
   async function deleteFile(fileId: string) {
     await api.deleteFile(boardId, fileId);
     setFiles(await api.listFiles(boardId));
-  }
-
-  async function applyTemplate(templateId: string, rootTitle: string) {
-    const { findTemplate } = await import("@/lib/whiteboard/templates");
-    const template = findTemplate(templateId);
-    if (!template) {
-      throw new Error("模板不存在");
-    }
-    const spec = template.build(rootTitle);
-    const cardIdByNode = new Map<string, string>();
-    for (const node of spec.nodes) {
-      const created = await api.createCard(boardId, {
-        title: node.kind === "card" ? node.title : node.id,
-        contentMarkdown: node.kind === "card" ? node.markdown : "",
-        cardType: node.kind === "card" ? mapCardTypeToBackend(node.cardType) : "NOTE",
-        x: node.x,
-        y: node.y,
-        width: node.width,
-        height: node.height
-      });
-      cardIdByNode.set(node.id, created.id);
-    }
-    for (const edge of spec.edges) {
-      const from = cardIdByNode.get(edge.fromId);
-      const to = cardIdByNode.get(edge.toId);
-      if (from && to) {
-        await api.createEdge(boardId, from, to, edge.label);
-      }
-    }
-    await loadAll();
   }
 
   return (
@@ -207,7 +170,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
             <p className="text-xs text-ink/50">单人私有画布 · AI 任务实时进度</p>
           </div>
         </div>
-        <div className="text-xs text-ink/50">{cards.length} 张卡片 · {edges.length} 条连线</div>
+        <div className="text-xs text-ink/50">{shapes.length} 个节点 · {edges.length} 条连线</div>
       </header>
 
       {error ? (
@@ -223,7 +186,6 @@ function BoardEditor({ boardId }: { boardId: string }) {
         <WhiteboardEditor
           boardId={boardId}
           boardTitle={board?.title}
-          cards={cards}
           edges={edges}
           shapes={shapes}
           files={files}
@@ -236,27 +198,10 @@ function BoardEditor({ boardId }: { boardId: string }) {
           onAbortTask={abortTask}
           onUploadFile={uploadFile}
           onDeleteFile={deleteFile}
-          onApplyTemplate={applyTemplate}
           onSelectionChange={setSelection}
-          selectionCount={selection.cardIds.length + selection.shapeIds.length}
+          selectionCount={selection.shapeIds.length}
         />
       )}
     </main>
   );
-}
-
-function mapCardTypeToBackend(cardType: string) {
-  switch (cardType) {
-    case "summary":
-      return "SUMMARY";
-    case "idea":
-      return "IDEA";
-    case "source":
-      return "SOURCE";
-    case "question":
-      return "QUESTION";
-    case "note":
-    default:
-      return "NOTE";
-  }
 }

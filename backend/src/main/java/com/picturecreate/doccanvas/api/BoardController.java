@@ -34,7 +34,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * - POST   /            → 新建画布
  * - GET    /{boardId}   → 单个画布详情
  * - PATCH  /{boardId}   → 重命名画布
- * - DELETE /{boardId}   → 删除画布（连带卡片/快照/连线）
+ * - DELETE /{boardId}   → 删除画布（连带图形节点/快照/连线）
  */
 @RestController
 @RequestMapping("/api/boards")

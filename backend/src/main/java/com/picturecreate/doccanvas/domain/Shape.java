@@ -8,7 +8,7 @@ import jakarta.persistence.Table;
 
 /**
  * 图形节点（shape）实体，对应 shapes 表。
- * 思维导图/流程图的节点（区别于 Card 内容卡）。
+ * 思维导图/流程图的节点，是画布唯一的内容节点类型。
  * 有类型（ellipse/rectangle/oval）+ 层级（level）+ 位置尺寸。
  * 由 AI 任务 create_shape 动作生成。
  */

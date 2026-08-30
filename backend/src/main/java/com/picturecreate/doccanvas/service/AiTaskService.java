@@ -33,14 +33,11 @@ import com.picturecreate.doccanvas.domain.AiTaskStatus;
 import com.picturecreate.doccanvas.domain.AiTaskStep;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 import com.picturecreate.doccanvas.domain.BoardEdge;
-import com.picturecreate.doccanvas.domain.Card;
-import com.picturecreate.doccanvas.domain.CardType;
 import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.repository.AiTaskRepository;
 import com.picturecreate.doccanvas.repository.AiTaskStepRepository;
 import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
 import com.picturecreate.doccanvas.repository.BoardSnapshotRepository;
-import com.picturecreate.doccanvas.repository.CardRepository;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.ai.AiGenerationService;
 import com.picturecreate.doccanvas.service.ai.AiTaskContext;
@@ -59,7 +56,7 @@ import com.picturecreate.doccanvas.service.ai.SkillLoader;
  * 1. create() 在事务内保存任务记录，注册 afterCommit 回调，异步触发 runTask()
  * 2. runTask() 按固定步骤执行：加载技能 → 收集上下文 → 规划操作 → 应用操作
  * 3. 规划操作阶段调用 aiGenerationService.generateBoardActions()（真正调用大模型）
- * 4. 应用操作阶段 applyActions() 把模型产出的 BoardAction 落库（建卡/建图形/连线）
+ * 4. 应用操作阶段 applyActions() 把模型产出的 BoardAction 落库（建图形/连线）
  *
  * 安全与约束：
  * - 每用户/每画布有并发限制（enforceConcurrency）
@@ -88,7 +85,6 @@ public class AiTaskService {
     private final BoardService boardService;
     private final AiTaskRepository taskRepository;
     private final AiTaskStepRepository stepRepository;
-    private final CardRepository cardRepository;
     private final BoardEdgeRepository edgeRepository;
     private final ShapeRepository shapeRepository;
     private final BoardSnapshotRepository snapshotRepository;
@@ -100,7 +96,7 @@ public class AiTaskService {
     private final AppProperties properties;
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
-            CardRepository cardRepository, BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
+            BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
             BoardSnapshotRepository snapshotRepository, SkillLoader skillLoader,
             TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor, StringRedisTemplate redisTemplate,
@@ -108,7 +104,6 @@ public class AiTaskService {
         this.boardService = boardService;
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
-        this.cardRepository = cardRepository;
         this.edgeRepository = edgeRepository;
         this.shapeRepository = shapeRepository;
         this.snapshotRepository = snapshotRepository;
@@ -128,19 +123,21 @@ public class AiTaskService {
      * @param user 当前用户
      * @param type 任务类型（思维导图/流程图/总结等）
      * @param prompt 用户输入
+     * @param selectedShapeIds 选中的图形节点 id（编辑类任务的目标）
+     * @param remainingPlan 多步骤计划里本任务之后的剩余任务类型（空表示单步任务）
      * @return 创建后的任务详情（含步骤）
      */
     @Transactional
     public AiTaskResponse create(UUID boardId, CurrentUser user, AiTaskType type, String prompt,
-            List<String> selectedCardIds, List<String> selectedShapeIds) {
+            List<String> selectedShapeIds, List<AiTaskType> remainingPlan) {
         boardService.getOwned(boardId, user);
         enforceConcurrency(boardId, user);
         AiTask task = new AiTask(boardId, user.id(), type, prompt);
-        task.setContextJson(selectionJson(selectedCardIds, selectedShapeIds));
+        task.setContextJson(contextJson(selectedShapeIds, remainingPlan));
         AiTask saved = taskRepository.save(task);
-        log.info("AI 任务已创建：taskId={} boardId={} type={} prompt={} 选中卡片={} 选中图形={}", saved.getId(), boardId,
-                type, prompt, selectedCardIds == null ? 0 : selectedCardIds.size(),
-                selectedShapeIds == null ? 0 : selectedShapeIds.size());
+        log.info("AI 任务已创建：taskId={} boardId={} type={} prompt={} 选中图形={} 后续步骤={}", saved.getId(),
+                boardId, type, prompt, selectedShapeIds == null ? 0 : selectedShapeIds.size(),
+                remainingPlan == null ? 0 : remainingPlan.size());
         eventPublisher.publish(boardId, saved.getId(), TaskEvent.created(saved.getId(), boardId, type.name()));
         // 事务提交后再异步执行，保证任务记录已落库
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -202,7 +199,7 @@ public class AiTaskService {
                     ? "未找到匹配技能，按通用流程执行"
                     : "已加载技能[" + skill.name() + "]，工具范围：" + String.join("、", skill.allowedTools());
             runStep(taskId, "加载技能", 15, skillStep);
-            runStep(taskId, "收集上下文", 35, "已收集画布卡片、资料文件和用户提示");
+            runStep(taskId, "收集上下文", 35, "已收集画布图形节点、资料文件和用户提示");
             runStep(taskId, "规划操作", 65, "已生成结构化画布操作方案");
             // 真正调用大模型生成动作
             BoardActionResult result = generate(taskId, skill);
@@ -229,7 +226,8 @@ public class AiTaskService {
 
     /**
      * 构建任务上下文并调用大模型生成画布动作。
-     * 注入：RAG 检索的相关资料片段、画布现有卡片（前 20 张）、匹配到的 Skill。
+     * 注入：画布现有图形节点（供 AI 参考与删除）、匹配到的 Skill。
+     * 资料检索交给模型通过 search_document_chunks 工具按需执行，服务端不预取注入。
      *
      * @param taskId 任务 id
      * @param skill 匹配到的 Skill（可为 null）
@@ -243,48 +241,36 @@ public class AiTaskService {
         if (task.getType() == AiTaskType.CLEAR_CANVAS) {
             return clearCanvas(task);
         }
-        // 资料检索交给模型通过 search_document_chunks 工具按需执行，服务端不再预取注入
         List<AiTaskContext.SourceContext> sources = List.of();
-        // 画布现有卡片（供 AI 参考已有内容，避免重复）
-        List<AiTaskContext.CardContext> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).stream()
-                .map(card -> new AiTaskContext.CardContext(card.getId().toString(), card.getTitle(),
-                        card.getCardType().name(), card.getContentMarkdown()))
-                .limit(20)
-                .toList();
         // 画布现有图形节点（思维导图/流程图节点，供 AI 参考与删除）
         List<AiTaskContext.ShapeContext> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId())
                 .stream()
                 .map(shape -> new AiTaskContext.ShapeContext(shape.getId().toString(), shape.getTitle(),
                         shape.getShape(), shape.getLevel()))
                 .toList();
-        // 选中的卡片/图形节点（编辑类任务的操作目标，按持久化的 id 列表查内容）
-        List<AiTaskContext.CardContext> selectedCards = selectedCards(task.getBoardId(), task.getContextJson());
+        // 选中的图形节点（编辑类任务的操作目标，按持久化的 id 列表查内容）
         List<AiTaskContext.ShapeContext> selectedShapes = selectedShapes(task.getBoardId(), task.getContextJson());
-        log.info("构建上下文：taskId={} 资料数={} 卡片数={} 图形数={} 选中卡片={} 选中图形={} skill={}", taskId,
-                sources.size(), cards.size(), shapes.size(), selectedCards.size(), selectedShapes.size(),
+        log.info("构建上下文：taskId={} 资料数={} 图形数={} 选中图形={} skill={}", taskId,
+                sources.size(), shapes.size(), selectedShapes.size(),
                 skill == null ? "无" : skill.slug());
         return aiGenerationService.generateBoardActions(new AiTaskContext(task.getId(), task.getBoardId(),
-                task.getOwnerId(), task.getType(), task.getPrompt(), sources, cards, shapes, skill, selectedCards,
-                selectedShapes));
+                task.getOwnerId(), task.getType(), task.getPrompt(), sources, shapes, skill, selectedShapes));
     }
 
     /**
-     * 清空画布：删除全部卡片、图形节点、连线以及 tldraw 快照（确定性操作，不依赖 LLM）。
-     * 画布渲染有两套数据源：cards/shapes/edges 表（AI 生成）+ board_snapshots 快照（手动元素），
+     * 清空画布：删除全部图形节点、连线以及 tldraw 快照（确定性操作，不依赖 LLM）。
+     * 画布渲染有两套数据源：shapes/edges 表（AI 生成）+ board_snapshots 快照（手动元素），
      * 必须同时清空，否则快照里的元素会在前端刷新后残留。
      * 供 CLEAR_CANVAS 任务调用，返回空动作，后续 finish 正常收尾并推送 done 事件。
      */
     private BoardActionResult clearCanvas(AiTask task) {
         UUID boardId = task.getBoardId();
-        List<Card> cards = cardRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        cardRepository.deleteAll(cards);
         shapeRepository.deleteAll(shapes);
         edgeRepository.deleteAll(edges);
         snapshotRepository.deleteByBoardId(boardId);
-        log.info("清空画布：boardId={} 删除卡片={} 图形={} 连线={} 快照已清空", boardId, cards.size(), shapes.size(),
-                edges.size());
+        log.info("清空画布：boardId={} 删除图形={} 连线={} 快照已清空", boardId, shapes.size(), edges.size());
         return new BoardActionResult(List.of(),
                 "{\"mode\":\"clear-canvas\",\"actionCount\":0,\"message\":\"画布已清空\"}");
     }
@@ -303,6 +289,33 @@ public class AiTaskService {
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.actions(taskId, task.getBoardId(), result.actions(), task.getType().name()));
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.done(taskId, task.getBoardId(), task.getType().name()));
+        chainNext(task);
+    }
+
+    /**
+     * 链式执行下一步：多步骤计划里，当前任务成功后自动创建并调度下一个任务。
+     * 本方法在异步执行线程内、当前任务已标记 SUCCEEDED 之后调用；该线程无事务包裹，
+     * 直接落库并调度（repository 自带事务，save 返回即已提交），无需 afterCommit。
+     * 失败只记录日志，不影响当前任务已成功的结果。
+     */
+    private void chainNext(AiTask task) {
+        List<AiTaskType> remaining = parsePlan(task.getContextJson());
+        if (remaining.isEmpty()) {
+            return;
+        }
+        try {
+            AiTaskType nextType = remaining.get(0);
+            List<AiTaskType> rest = remaining.subList(1, remaining.size());
+            AiTask next = new AiTask(task.getBoardId(), task.getOwnerId(), nextType, task.getPrompt());
+            next.setContextJson(contextJson(List.of(), rest));
+            AiTask saved = taskRepository.save(next);
+            log.info("链式创建下一步任务：taskId={} boardId={} type={}", saved.getId(), task.getBoardId(), nextType);
+            eventPublisher.publish(task.getBoardId(), saved.getId(),
+                    TaskEvent.created(saved.getId(), task.getBoardId(), nextType.name()));
+            aiTaskExecutor.execute(() -> runTask(saved.getId()));
+        } catch (Exception exception) {
+            log.warn("链式创建下一步任务失败，跳过后续步骤：taskId={} error={}", task.getId(), exception.getMessage());
+        }
     }
 
     /** 任务中断收尾：标记 ABORTED，推送 aborted 事件 */
@@ -432,7 +445,7 @@ public class AiTaskService {
      *
      * 为什么分两遍？
      * 结构图（思维导图/流程图）里 connect 会引用"本计划内新建的节点"（临时 id 如 root1/branch1）。
-     * 若先建卡建图形（第一遍），记录 临时id→真实UUID 映射；再连/改/删（第二遍），
+     * 若先建图形（第一遍），记录 临时id→真实UUID 映射；再连线/删（第二遍），
      * 就能让 connect 通过映射找到真实节点 id。
      *
      * 前置：maybeLayoutGraph 已为结构图节点重算坐标（避免重叠）。
@@ -444,39 +457,24 @@ public class AiTaskService {
         log.info("应用动作：taskId={} 动作数={}", task.getId(), actions.size());
         // 结构图任务：先用布局算法为节点计算坐标，再统一落库
         List<BoardAction> placed = maybeLayoutGraph(task, actions);
-        // 第一遍：创建所有卡片/图形，记录 临时id->真实id 映射
-        Map<String, UUID> cardIdMap = new HashMap<>();
+        // 第一遍：创建所有图形节点，记录 临时id->真实id 映射
+        Map<String, UUID> shapeIdMap = new HashMap<>();
         for (BoardAction action : placed) {
-            if (action instanceof BoardAction.CreateCard createCard) {
-                UUID created = applyCreateCard(task, createCard);
-                if (created != null && createCard.id() != null && !createCard.id().isBlank()) {
-                    cardIdMap.put(createCard.id(), created);
-                }
-            } else if (action instanceof BoardAction.CreateShape createShape) {
+            if (action instanceof BoardAction.CreateShape createShape) {
                 UUID created = applyCreateShape(task, createShape);
                 if (created != null && createShape.id() != null && !createShape.id().isBlank()) {
-                    cardIdMap.put(createShape.id(), created);
+                    shapeIdMap.put(createShape.id(), created);
                 }
             }
         }
-        // 第二遍：处理连线/更新/删除（connect 通过 cardIdMap 解析临时 id）
+        // 第二遍：处理连线/删除（connect 通过 shapeIdMap 解析临时 id）
         for (BoardAction action : placed) {
             if (action == null) {
                 continue;
             }
             switch (action) {
-                case BoardAction.UpdateCard updateCard -> applyUpdateCard(task, updateCard);
-                case BoardAction.Connect connect -> applyConnect(task, connect, cardIdMap);
-                case BoardAction.CreateGroup ignored -> {
-                    // 分组当前 MVP 无落库表，识别但不写入，避免阻塞任务
-                }
-                case BoardAction.DeleteCard deleteCard -> applyDeleteCard(task, deleteCard);
+                case BoardAction.Connect connect -> applyConnect(task, connect, shapeIdMap);
                 case BoardAction.DeleteShape deleteShape -> applyDeleteShape(task, deleteShape);
-                case BoardAction.ConvertCardToShape convert -> applyConvertCardToShape(task, convert);
-                case BoardAction.ConvertShapeToCard convert -> applyConvertShapeToCard(task, convert);
-                case BoardAction.CreateCard ignored -> {
-                    // 第一遍已创建
-                }
                 case BoardAction.CreateShape ignored -> {
                     // 第一遍已创建
                 }
@@ -516,6 +514,10 @@ public class AiTaskService {
         if (task.getType() == AiTaskType.EDIT_ELEMENT) {
             return reflowEditedTree(task, actions);
         }
+        if (task.getType() == AiTaskType.CANVAS_STRUCTURE) {
+            layoutExistingBoard(task);
+            return List.of();
+        }
         if (task.getType() != AiTaskType.GENERATE_FLOWCHART) {
             return actions;
         }
@@ -524,15 +526,13 @@ public class AiTaskService {
         for (BoardAction action : actions) {
             if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
                 nodeIds.add(shape.id());
-            } else if (action instanceof BoardAction.CreateCard card && card.id() != null) {
-                nodeIds.add(card.id());
             }
         }
         List<String[]> edges = new ArrayList<>();
         for (BoardAction action : actions) {
-            if (action instanceof BoardAction.Connect connect && connect.fromCardId() != null
-                    && connect.toCardId() != null) {
-                edges.add(new String[] { connect.fromCardId(), connect.toCardId() });
+            if (action instanceof BoardAction.Connect connect && connect.fromShapeId() != null
+                    && connect.toShapeId() != null) {
+                edges.add(new String[] { connect.fromShapeId(), connect.toShapeId() });
             }
         }
         if (nodeIds.isEmpty()) {
@@ -540,6 +540,81 @@ public class AiTaskService {
         }
         Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(nodeIds, edges);
         return rebuildWithPositions(actions, positions);
+    }
+
+    /**
+     * 整理画布：对画布所有图形节点按树重新布局（递归径向树布局），不生成/删除任何内容。
+     * 多棵树（多张导图）按各自包围盒从左到右排列、不重叠。
+     * 直接更新已有节点坐标落库，供前端重新渲染。
+     */
+    private void layoutExistingBoard(AiTask task) {
+        List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
+        if (shapes.isEmpty()) {
+            return;
+        }
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
+        Map<String, Shape> shapeById = new HashMap<>();
+        Map<String, Set<String>> undirected = new HashMap<>();
+        for (Shape shape : shapes) {
+            String id = shape.getId().toString();
+            shapeById.put(id, shape);
+            undirected.put(id, new HashSet<>());
+        }
+        for (BoardEdge edge : edges) {
+            String from = edge.getFromShapeId().toString();
+            String to = edge.getToShapeId().toString();
+            if (undirected.containsKey(from) && undirected.containsKey(to)) {
+                undirected.get(from).add(to);
+                undirected.get(to).add(from);
+            }
+        }
+        // BFS 找连通分量（每棵树一张导图）
+        List<List<String>> components = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        for (Shape shape : shapes) {
+            String start = shape.getId().toString();
+            if (!visited.add(start)) {
+                continue;
+            }
+            List<String> component = new ArrayList<>();
+            Deque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String current = queue.poll();
+                component.add(current);
+                for (String next : undirected.getOrDefault(current, Set.of())) {
+                    if (visited.add(next)) {
+                        queue.add(next);
+                    }
+                }
+            }
+            components.add(component);
+        }
+        // 每棵树分别布局，整体从左到右偏移排列
+        double cursorX = MINDMAP_MARGIN;
+        for (List<String> component : components) {
+            Set<String> nodeSet = new HashSet<>(component);
+            List<String[]> treeEdges = new ArrayList<>();
+            for (BoardEdge edge : edges) {
+                String from = edge.getFromShapeId().toString();
+                String to = edge.getToShapeId().toString();
+                if (nodeSet.contains(from) && nodeSet.contains(to)) {
+                    treeEdges.add(new String[] { from, to });
+                }
+            }
+            Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(component, treeEdges);
+            double[] box = boundingBox(positions);
+            double offsetX = cursorX - box[0];
+            double offsetY = MINDMAP_MARGIN - box[1];
+            for (Map.Entry<String, double[]> entry : positions.entrySet()) {
+                Shape shape = shapeById.get(entry.getKey());
+                if (shape != null) {
+                    shape.update(entry.getValue()[0] + offsetX, entry.getValue()[1] + offsetY);
+                    shapeRepository.save(shape);
+                }
+            }
+            cursorX += (box[2] - box[0]) + MINDMAP_GAP;
+        }
     }
 
     /**
@@ -555,9 +630,9 @@ public class AiTaskService {
         }
         List<String[]> edges = new ArrayList<>();
         for (BoardAction action : actions) {
-            if (action instanceof BoardAction.Connect connect && connect.fromCardId() != null
-                    && connect.toCardId() != null) {
-                edges.add(new String[] { connect.fromCardId(), connect.toCardId() });
+            if (action instanceof BoardAction.Connect connect && connect.fromShapeId() != null
+                    && connect.toShapeId() != null) {
+                edges.add(new String[] { connect.fromShapeId(), connect.toShapeId() });
             }
         }
         if (nodeIds.isEmpty()) {
@@ -596,9 +671,10 @@ public class AiTaskService {
         }
         List<String[]> newEdges = new ArrayList<>();
         for (BoardAction action : actions) {
-            if (action instanceof BoardAction.Connect connect && connect.fromCardId() != null
-                    && !connect.fromCardId().isBlank() && connect.toCardId() != null && !connect.toCardId().isBlank()) {
-                newEdges.add(new String[] { connect.fromCardId(), connect.toCardId() });
+            if (action instanceof BoardAction.Connect connect && connect.fromShapeId() != null
+                    && !connect.fromShapeId().isBlank() && connect.toShapeId() != null
+                    && !connect.toShapeId().isBlank()) {
+                newEdges.add(new String[] { connect.fromShapeId(), connect.toShapeId() });
             }
         }
         List<Shape> existingShapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
@@ -613,8 +689,8 @@ public class AiTaskService {
             undirected.put(shape.getId().toString(), new HashSet<>());
         }
         for (BoardEdge edge : existingEdges) {
-            String from = edge.getFromCardId().toString();
-            String to = edge.getToCardId().toString();
+            String from = edge.getFromShapeId().toString();
+            String to = edge.getToShapeId().toString();
             if (undirected.containsKey(from) && undirected.containsKey(to)) {
                 undirected.get(from).add(to);
                 undirected.get(to).add(from);
@@ -642,8 +718,8 @@ public class AiTaskService {
         List<String> allNodes = new ArrayList<>(treeNodes);
         List<String[]> treeEdges = new ArrayList<>();
         for (BoardEdge edge : existingEdges) {
-            String from = edge.getFromCardId().toString();
-            String to = edge.getToCardId().toString();
+            String from = edge.getFromShapeId().toString();
+            String to = edge.getToShapeId().toString();
             if (treeNodes.contains(from) && treeNodes.contains(to)) {
                 treeEdges.add(new String[] { from, to });
             }
@@ -665,7 +741,7 @@ public class AiTaskService {
         return rebuildWithPositions(actions, positions);
     }
 
-    /** 用布局坐标重建 CreateShape/CreateCard 动作（无坐标的节点保持原样） */
+    /** 用布局坐标重建 CreateShape 动作（无坐标的节点保持原样） */
     private List<BoardAction> rebuildWithPositions(List<BoardAction> actions, Map<String, double[]> positions) {
         return actions.stream().map(action -> {
             if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
@@ -675,14 +751,6 @@ public class AiTaskService {
                             pos[0], pos[1],
                             shape.width() <= 0 ? 140 : shape.width(),
                             shape.height() <= 0 ? 60 : shape.height());
-                }
-            } else if (action instanceof BoardAction.CreateCard createCard && createCard.id() != null) {
-                double[] pos = positions.get(createCard.id());
-                if (pos != null) {
-                    return new BoardAction.CreateCard(createCard.id(), createCard.title(), createCard.markdown(),
-                            createCard.cardType(), pos[0], pos[1],
-                            createCard.width() <= 0 ? 340 : createCard.width(),
-                            createCard.height() <= 0 ? 220 : createCard.height(), createCard.sourceFileIds());
                 }
             }
             return action;
@@ -704,20 +772,13 @@ public class AiTaskService {
         return new double[] { minX, minY, maxX, maxY };
     }
 
-    /** 计算画布现有元素（卡片 + 图形节点）的包围盒；画布为空返回 null */
+    /** 计算画布现有图形节点的包围盒；画布为空返回 null */
     private double[] existingBounds(UUID boardId) {
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
         double maxX = -Double.MAX_VALUE;
         double maxY = -Double.MAX_VALUE;
         boolean any = false;
-        for (Card card : cardRepository.findByBoardIdOrderByCreatedAtAsc(boardId)) {
-            minX = Math.min(minX, card.getX());
-            minY = Math.min(minY, card.getY());
-            maxX = Math.max(maxX, card.getX() + card.getWidth());
-            maxY = Math.max(maxY, card.getY() + card.getHeight());
-            any = true;
-        }
         for (Shape shape : shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)) {
             minX = Math.min(minX, shape.getX());
             minY = Math.min(minY, shape.getY());
@@ -728,72 +789,30 @@ public class AiTaskService {
         return any ? new double[] { minX, minY, maxX, maxY } : null;
     }
 
-    /** 创建普通卡片并落库到 cards 表，返回真实 UUID */
-    private UUID applyCreateCard(AiTask task, BoardAction.CreateCard action) {
-        CardType cardType = parseCardType(action.cardType());
-        log.info("applyCreateCard: id={} title={} type={} pos=({},{})", action.id(), action.title(), cardType,
-                action.x(), action.y());
-        Card card = new Card(task.getBoardId(),
-                action.title() == null || action.title().isBlank() ? "AI 卡片" : action.title(),
-                action.markdown() == null ? "" : action.markdown(),
-                cardType,
-                action.x(),
-                action.y(),
-                action.width() <= 0 ? 340 : action.width(),
-                action.height() <= 0 ? 220 : action.height());
-        return cardRepository.save(card).getId();
-    }
-
-    /** 更新已有卡片（只改标题/正文，保留位置尺寸） */
-    private void applyUpdateCard(AiTask task, BoardAction.UpdateCard action) {
-        if (action.cardId() == null || action.cardId().isBlank()) {
-            return;
-        }
-        UUID cardId;
-        try {
-            cardId = UUID.fromString(action.cardId());
-        } catch (IllegalArgumentException exception) {
-            return;
-        }
-        log.info("applyUpdateCard: cardId={} title={}", cardId, action.title());
-        cardRepository.findById(cardId)
-                .filter(card -> card.getBoardId().equals(task.getBoardId()))
-                .ifPresent(card -> {
-                    card.update(action.title(), action.markdown(), null, null, null, null, null);
-                    cardRepository.save(card);
-                });
-    }
-
     /**
      * 在两点之间创建连线（board_edges）。
-     * fromCardId/toCardId 可能是本计划新建节点的临时 id（如 root1），
-     * 也可能是已有节点的真实 UUID——统一通过 cardIdMap 解析。
+     * fromShapeId/toShapeId 可能是本计划新建节点的临时 id（如 root1），
+     * 也可能是已有节点的真实 UUID——统一通过 shapeIdMap 解析。
      */
-    private void applyConnect(AiTask task, BoardAction.Connect action, Map<String, UUID> cardIdMap) {
-        UUID fromCardId = resolveCardId(action.fromCardId(), cardIdMap);
-        UUID toCardId = resolveCardId(action.toCardId(), cardIdMap);
-        if (fromCardId == null || toCardId == null || fromCardId.equals(toCardId)) {
+    private void applyConnect(AiTask task, BoardAction.Connect action, Map<String, UUID> shapeIdMap) {
+        UUID fromShapeId = resolveShapeId(action.fromShapeId(), shapeIdMap);
+        UUID toShapeId = resolveShapeId(action.toShapeId(), shapeIdMap);
+        if (fromShapeId == null || toShapeId == null || fromShapeId.equals(toShapeId)) {
             return;
         }
-        // 校验起点/终点存在（卡片或图形节点均可）
-        boolean fromExists = nodeExistsInBoard(fromCardId, task.getBoardId());
-        boolean toExists = nodeExistsInBoard(toCardId, task.getBoardId());
+        // 校验起点/终点存在（图形节点）
+        boolean fromExists = nodeExistsInBoard(fromShapeId, task.getBoardId());
+        boolean toExists = nodeExistsInBoard(toShapeId, task.getBoardId());
         if (!fromExists || !toExists) {
             return;
         }
-        log.info("applyConnect: {} -> {} label={}", fromCardId, toCardId, action.label());
-        edgeRepository.save(new BoardEdge(task.getBoardId(), fromCardId, toCardId, action.label(),
+        log.info("applyConnect: {} -> {} label={}", fromShapeId, toShapeId, action.label());
+        edgeRepository.save(new BoardEdge(task.getBoardId(), fromShapeId, toShapeId, action.label(),
                 action.style(), action.color(), action.weight() == null ? 2 : action.weight()));
     }
 
-    /** 节点是否存在于当前画布（卡片或图形节点） */
+    /** 节点是否存在于当前画布（图形节点） */
     private boolean nodeExistsInBoard(UUID nodeId, UUID boardId) {
-        boolean cardExists = cardRepository.findById(nodeId)
-                .map(card -> card.getBoardId().equals(boardId))
-                .orElse(false);
-        if (cardExists) {
-            return true;
-        }
         return shapeRepository.findById(nodeId)
                 .map(shape -> shape.getBoardId().equals(boardId))
                 .orElse(false);
@@ -801,34 +820,17 @@ public class AiTaskService {
 
     /**
      * 把连线端点解析为真实 UUID。
-     * 优先查本计划新建节点的临时 id 映射（cardIdMap），否则尝试把字符串当 UUID 解析。
+     * 优先查本计划新建节点的临时 id 映射（shapeIdMap），否则尝试把字符串当 UUID 解析。
      */
-    private UUID resolveCardId(String cardId, Map<String, UUID> cardIdMap) {
-        if (cardId == null || cardId.isBlank()) {
+    private UUID resolveShapeId(String shapeId, Map<String, UUID> shapeIdMap) {
+        if (shapeId == null || shapeId.isBlank()) {
             return null;
         }
-        UUID mapped = cardIdMap.get(cardId);
+        UUID mapped = shapeIdMap.get(shapeId);
         if (mapped != null) {
             return mapped;
         }
-        return uuid(cardId);
-    }
-
-    /** 删除卡片（连带其引用的连线） */
-    private void applyDeleteCard(AiTask task, BoardAction.DeleteCard action) {
-        UUID cardId = uuid(action.cardId());
-        if (cardId == null) {
-            log.warn("applyDeleteCard: 忽略非法 cardId={}", action.cardId());
-            return;
-        }
-        cardRepository.findById(cardId)
-                .filter(card -> card.getBoardId().equals(task.getBoardId()))
-                .ifPresentOrElse(card -> {
-                    List<BoardEdge> edges = edgeRepository.findByFromCardIdOrToCardId(cardId, cardId);
-                    edgeRepository.deleteAll(edges);
-                    cardRepository.delete(card);
-                    log.info("applyDeleteCard: cardId={} title={} 已删除", cardId, card.getTitle());
-                }, () -> log.warn("applyDeleteCard: 卡片不存在 cardId={}", cardId));
+        return uuid(shapeId);
     }
 
     /** 删除图形节点（连带其引用的连线） */
@@ -841,62 +843,11 @@ public class AiTaskService {
         shapeRepository.findById(shapeId)
                 .filter(shape -> shape.getBoardId().equals(task.getBoardId()))
                 .ifPresentOrElse(shape -> {
-                    List<BoardEdge> edges = edgeRepository.findByFromCardIdOrToCardId(shapeId, shapeId);
+                    List<BoardEdge> edges = edgeRepository.findByFromShapeIdOrToShapeId(shapeId, shapeId);
                     edgeRepository.deleteAll(edges);
                     shapeRepository.delete(shape);
                     log.info("applyDeleteShape: shapeId={} title={} 已删除", shapeId, shape.getTitle());
                 }, () -> log.warn("applyDeleteShape: 图形节点不存在 shapeId={}", shapeId));
-    }
-
-    /** 把一张卡片转换为图形节点：新建同位置图形，重定向连线，删除原卡片 */
-    private void applyConvertCardToShape(AiTask task, BoardAction.ConvertCardToShape action) {
-        UUID cardId = uuid(action.cardId());
-        if (cardId == null) {
-            log.warn("applyConvertCardToShape: 忽略非法 cardId={}", action.cardId());
-            return;
-        }
-        cardRepository.findById(cardId)
-                .filter(card -> card.getBoardId().equals(task.getBoardId()))
-                .ifPresent(card -> {
-                    String shape = action.shape() == null || action.shape().isBlank() ? "oval" : action.shape();
-                    Shape newShape = new Shape(task.getBoardId(), card.getTitle(), shape, action.level(),
-                            card.getX(), card.getY(), card.getWidth(), card.getHeight());
-                    UUID newId = shapeRepository.save(newShape).getId();
-                    redirectEdges(cardId, newId);
-                    cardRepository.delete(card);
-                    log.info("applyConvertCardToShape: 卡片 {} -> 图形 {} title={}", cardId, newId, card.getTitle());
-                });
-    }
-
-    /** 把一个图形节点转换为卡片：新建同位置卡片，重定向连线，删除原图形 */
-    private void applyConvertShapeToCard(AiTask task, BoardAction.ConvertShapeToCard action) {
-        UUID shapeId = uuid(action.shapeId());
-        if (shapeId == null) {
-            log.warn("applyConvertShapeToCard: 忽略非法 shapeId={}", action.shapeId());
-            return;
-        }
-        shapeRepository.findById(shapeId)
-                .filter(shape -> shape.getBoardId().equals(task.getBoardId()))
-                .ifPresent(shape -> {
-                    CardType cardType = parseCardType(action.cardType() == null ? "IDEA" : action.cardType());
-                    Card newCard = new Card(task.getBoardId(), shape.getTitle(), shape.getTitle(), cardType,
-                            shape.getX(), shape.getY(), shape.getWidth(), shape.getHeight());
-                    UUID newId = cardRepository.save(newCard).getId();
-                    redirectEdges(shapeId, newId);
-                    shapeRepository.delete(shape);
-                    log.info("applyConvertShapeToCard: 图形 {} -> 卡片 {} title={}", shapeId, newId, shape.getTitle());
-                });
-    }
-
-    /** 把引用旧节点的所有连线端点重定向到新节点 id（卡片/图形互换用） */
-    private void redirectEdges(UUID oldId, UUID newId) {
-        List<BoardEdge> edges = edgeRepository.findByFromCardIdOrToCardId(oldId, oldId);
-        for (BoardEdge edge : edges) {
-            UUID from = oldId.equals(edge.getFromCardId()) ? newId : edge.getFromCardId();
-            UUID to = oldId.equals(edge.getToCardId()) ? newId : edge.getToCardId();
-            edge.updateEndpoints(from, to);
-            edgeRepository.save(edge);
-        }
     }
 
     /** 字符串转 UUID；非法返回 null */
@@ -911,22 +862,22 @@ public class AiTaskService {
         }
     }
 
-    /** 把选中元素 id 列表序列化为 JSON，存入任务 context_json（供异步执行时还原） */
-    private String selectionJson(List<String> cardIds, List<String> shapeIds) {
+    /** 把选中元素 id 列表 + 后续任务计划序列化为 JSON，存入任务 context_json（供异步执行时还原） */
+    private String contextJson(List<String> shapeIds, List<AiTaskType> remainingPlan) {
         Map<String, Object> payload = Map.of(
-                "selectedCardIds", cardIds == null ? List.of() : cardIds,
-                "selectedShapeIds", shapeIds == null ? List.of() : shapeIds);
+                "selectedShapeIds", shapeIds == null ? List.of() : shapeIds,
+                "plan", remainingPlan == null ? List.of() : remainingPlan.stream().map(AiTaskType::name).toList());
         try {
             return OBJECT_MAPPER.writeValueAsString(payload);
         } catch (Exception exception) {
-            log.warn("序列化选中元素失败：{}", exception.getMessage());
+            log.warn("序列化任务上下文失败：{}", exception.getMessage());
             return null;
         }
     }
 
-    /** 从 context_json 解析指定 key 的 id 列表，缺失/非法/为空返回空列表 */
+    /** 从 context_json 解析指定 key 的字符串列表，缺失/非法/为空返回空列表 */
     @SuppressWarnings("unchecked")
-    private List<String> parseSelectedIds(String contextJson, String key) {
+    private List<String> parseStringList(String contextJson, String key) {
         if (contextJson == null || contextJson.isBlank()) {
             return List.of();
         }
@@ -943,22 +894,23 @@ public class AiTaskService {
         }
     }
 
-    /** 查选中的卡片内容（过滤不属于当前画布的，避免越权） */
-    private List<AiTaskContext.CardContext> selectedCards(UUID boardId, String contextJson) {
-        return parseSelectedIds(contextJson, "selectedCardIds").stream()
-                .map(this::uuid)
-                .filter(id -> id != null)
-                .map(cardRepository::findById)
-                .flatMap(java.util.Optional::stream)
-                .filter(card -> card.getBoardId().equals(boardId))
-                .map(card -> new AiTaskContext.CardContext(card.getId().toString(), card.getTitle(),
-                        card.getCardType().name(), card.getContentMarkdown()))
+    /** 从 context_json 解析后续任务计划（有序任务类型列表），缺失/非法/为空返回空列表 */
+    private List<AiTaskType> parsePlan(String contextJson) {
+        return parseStringList(contextJson, "plan").stream()
+                .map(name -> {
+                    try {
+                        return AiTaskType.valueOf(name);
+                    } catch (IllegalArgumentException exception) {
+                        return null;
+                    }
+                })
+                .filter(java.util.Objects::nonNull)
                 .toList();
     }
 
     /** 查选中的图形节点内容（过滤不属于当前画布的，避免越权） */
     private List<AiTaskContext.ShapeContext> selectedShapes(UUID boardId, String contextJson) {
-        return parseSelectedIds(contextJson, "selectedShapeIds").stream()
+        return parseStringList(contextJson, "selectedShapeIds").stream()
                 .map(this::uuid)
                 .filter(id -> id != null)
                 .map(shapeRepository::findById)
@@ -1014,18 +966,6 @@ public class AiTaskService {
     /** Redis 取消标记的 key */
     private String cancelKey(UUID taskId) {
         return "ai-task:cancel:%s".formatted(taskId);
-    }
-
-    /** 解析卡片类型字符串，非法回退 SUMMARY */
-    private CardType parseCardType(String value) {
-        if (value == null) {
-            return CardType.SUMMARY;
-        }
-        try {
-            return CardType.valueOf(value);
-        } catch (IllegalArgumentException exception) {
-            return CardType.SUMMARY;
-        }
     }
 
     /** 中断异常：捕获后标记任务为 ABORTED（区别于普通失败） */

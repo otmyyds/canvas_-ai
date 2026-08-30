@@ -30,62 +30,27 @@ public final class BoardActionValidator {
                 problems.add("存在空动作");
                 continue;
             }
-            if (action instanceof BoardAction.CreateCard createCard) {
-                if (createCard.title() == null || createCard.title().isBlank()) {
-                    problems.add("存在标题为空的 create_card 动作");
+            if (action instanceof BoardAction.CreateShape createShape) {
+                if (createShape.title() == null || createShape.title().isBlank()) {
+                    problems.add("存在标题为空的 create_shape 动作");
                 }
             } else if (action instanceof BoardAction.Connect connect) {
-                if (connect.fromCardId() == null || connect.fromCardId().isBlank()
-                        || connect.toCardId() == null || connect.toCardId().isBlank()) {
+                if (connect.fromShapeId() == null || connect.fromShapeId().isBlank()
+                        || connect.toShapeId() == null || connect.toShapeId().isBlank()) {
                     problems.add("存在端点缺失的 connect 动作");
                     continue;
                 }
-                if (connect.fromCardId().equals(connect.toCardId())) {
-                    problems.add("存在连接同一张卡片的 connect 动作");
+                if (connect.fromShapeId().equals(connect.toShapeId())) {
+                    problems.add("存在连接同一节点的 connect 动作");
                     continue;
                 }
-                String key = connect.fromCardId() + "->" + connect.toCardId();
+                String key = connect.fromShapeId() + "->" + connect.toShapeId();
                 if (!seenEdges.add(key)) {
                     problems.add("存在重复连线：" + key);
-                }
-            } else if (action instanceof BoardAction.UpdateCard updateCard) {
-                if (updateCard.cardId() == null || updateCard.cardId().isBlank()) {
-                    problems.add("存在 cardId 缺失的 update_card 动作");
-                }
-            } else if (action instanceof BoardAction.DeleteCard deleteCard) {
-                if (deleteCard.cardId() == null || deleteCard.cardId().isBlank()) {
-                    problems.add("存在 cardId 缺失的 delete_card 动作");
                 }
             } else if (action instanceof BoardAction.DeleteShape deleteShape) {
                 if (deleteShape.shapeId() == null || deleteShape.shapeId().isBlank()) {
                     problems.add("存在 shapeId 缺失的 delete_shape 动作");
-                }
-            } else if (action instanceof BoardAction.ConvertCardToShape convert) {
-                if (convert.cardId() == null || convert.cardId().isBlank()) {
-                    problems.add("存在 cardId 缺失的 convert_card_to_shape 动作");
-                }
-            } else if (action instanceof BoardAction.ConvertShapeToCard convert) {
-                if (convert.shapeId() == null || convert.shapeId().isBlank()) {
-                    problems.add("存在 shapeId 缺失的 convert_shape_to_card 动作");
-                }
-            } else if (action instanceof BoardAction.CreateGroup group) {
-                if (group.title() == null || group.title().isBlank()) {
-                    problems.add("存在标题为空的分组动作");
-                }
-            }
-        }
-        // EDIT_ELEMENT 类型一致：选中图形节点扩展只能用 create_shape，选中卡片只能用 create_card
-        if (context != null) {
-            boolean onlyShapes = context.selectedShapes() != null && !context.selectedShapes().isEmpty()
-                    && (context.selectedCards() == null || context.selectedCards().isEmpty());
-            boolean onlyCards = context.selectedCards() != null && !context.selectedCards().isEmpty()
-                    && (context.selectedShapes() == null || context.selectedShapes().isEmpty());
-            for (BoardAction action : actions) {
-                if (onlyShapes && action instanceof BoardAction.CreateCard) {
-                    problems.add("选中图形节点扩展必须用 create_shape，禁止 create_card");
-                }
-                if (onlyCards && action instanceof BoardAction.CreateShape) {
-                    problems.add("选中卡片扩展必须用 create_card，禁止 create_shape");
                 }
             }
         }

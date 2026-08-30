@@ -30,7 +30,6 @@ const QUICK_TASK_TYPES: AiTaskType[] = [
   "GENERATE_FLOWCHART",
   "STUDY_PLAN",
   "PRODUCT_REQUIREMENT",
-  "GENERATE_IMAGE",
   "DOCUMENT_SUMMARY",
   "CANVAS_STRUCTURE"
 ];
@@ -68,10 +67,6 @@ const taskLabel: Record<AiTaskType, string> = {
   DOCUMENT_SUMMARY: "总结资料",
   CANVAS_STRUCTURE: "整理画布",
   CLEAR_CANVAS: "清空画布",
-  GENERATE_IMAGE: "生成图片",
-  EDIT_IMAGE: "编辑图片",
-  GENERATE_COVER: "生成封面",
-  GENERATE_DIAGRAM_ASSET: "生成图解",
   STUDY_PLAN: "学习计划",
   PRODUCT_REQUIREMENT: "产品需求",
   GENERATE_MINDMAP: "思维导图",

@@ -2,31 +2,23 @@ package com.picturecreate.doccanvas.domain;
 
 /**
  * AI 任务类型（决定生成方式 + prompt 约束）。
- * 前 3 个走单次调用，MINDMAP 走两段式（AI1 写文章→AI2 抽结构）。
+ * 树型任务走标题大纲 → 确定性解析图形节点树；流程图走单次 JSON；整理/清空不调 LLM。
  */
 public enum AiTaskType {
-    /** 总结资料 → 详实内容卡（单次调用） */
+    /** 总结资料 → 图形节点树（单次调用） */
     DOCUMENT_SUMMARY,
-    /** 整理画布 → 精简结构卡（单次调用） */
+    /** 整理画布 → 重新布局已有图形节点（不调 LLM） */
     CANVAS_STRUCTURE,
     /** 清空画布 → 确定性删除全部元素（不调 LLM） */
     CLEAR_CANVAS,
-    /** 生成图片 → 提示词草稿卡（未实现真实生图） */
-    GENERATE_IMAGE,
-    /** 编辑图片（未实现） */
-    EDIT_IMAGE,
-    /** 生成封面（未实现） */
-    GENERATE_COVER,
-    /** 生成图解（未实现） */
-    GENERATE_DIAGRAM_ASSET,
-    /** 学习计划 → 详实内容卡 */
+    /** 学习计划 → 图形节点树 */
     STUDY_PLAN,
-    /** 产品需求 → 详实内容卡 */
+    /** 产品需求 → 图形节点树 */
     PRODUCT_REQUIREMENT,
     /** 思维导图 → 两段式生成（图形节点 + 曲线连线） */
     GENERATE_MINDMAP,
-    /** 流程图 → 单次调用（卡片节点 + 连线） */
+    /** 流程图 → 单次调用（图形节点 + 连线） */
     GENERATE_FLOWCHART,
-    /** 编辑选中的画布元素 → 修改/丰富/添加分支/删除（单次调用，针对选中卡片或图形节点） */
+    /** 编辑选中的画布元素 → 修改/丰富/添加分支/删除（单次调用，针对选中图形节点） */
     EDIT_ELEMENT
 }

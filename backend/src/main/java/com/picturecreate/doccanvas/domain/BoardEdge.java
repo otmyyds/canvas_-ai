@@ -8,8 +8,8 @@ import jakarta.persistence.Table;
 
 /**
  * 连线（edge）实体，对应 board_edges 表。
- * 连接两个节点（卡片或图形节点），表达关系/流程/层级。
- * 连线两端不强制引用 cards（V7 迁移删了外键），可连图形节点。
+ * 连接两个图形节点，表达关系/流程/层级。
+ * 连线两端不强制外键（V7 迁移删了外键），归属由应用层校验。
  */
 @Entity
 @Table(name = "board_edges")
@@ -19,13 +19,13 @@ public class BoardEdge extends BaseEntity {
     @Column(name = "board_id", nullable = false)
     private UUID boardId;
 
-    /** 连线起点节点 id（卡片或图形节点） */
-    @Column(name = "from_card_id", nullable = false)
-    private UUID fromCardId;
+    /** 连线起点图形节点 id */
+    @Column(name = "from_shape_id", nullable = false)
+    private UUID fromShapeId;
 
-    /** 连线终点节点 id（卡片或图形节点） */
-    @Column(name = "to_card_id", nullable = false)
-    private UUID toCardId;
+    /** 连线终点图形节点 id */
+    @Column(name = "to_shape_id", nullable = false)
+    private UUID toShapeId;
 
     /** 连线标签（如"是"/"否"/"参考"） */
     @Column
@@ -46,15 +46,15 @@ public class BoardEdge extends BaseEntity {
     protected BoardEdge() {
     }
 
-    public BoardEdge(UUID boardId, UUID fromCardId, UUID toCardId, String label) {
-        this(boardId, fromCardId, toCardId, label, null, null, 2);
+    public BoardEdge(UUID boardId, UUID fromShapeId, UUID toShapeId, String label) {
+        this(boardId, fromShapeId, toShapeId, label, null, null, 2);
     }
 
-    public BoardEdge(UUID boardId, UUID fromCardId, UUID toCardId, String label, String style, String color,
+    public BoardEdge(UUID boardId, UUID fromShapeId, UUID toShapeId, String label, String style, String color,
             int weight) {
         this.boardId = boardId;
-        this.fromCardId = fromCardId;
-        this.toCardId = toCardId;
+        this.fromShapeId = fromShapeId;
+        this.toShapeId = toShapeId;
         this.label = label;
         this.style = style;
         this.color = color;
@@ -65,12 +65,12 @@ public class BoardEdge extends BaseEntity {
         return boardId;
     }
 
-    public UUID getFromCardId() {
-        return fromCardId;
+    public UUID getFromShapeId() {
+        return fromShapeId;
     }
 
-    public UUID getToCardId() {
-        return toCardId;
+    public UUID getToShapeId() {
+        return toShapeId;
     }
 
     public String getLabel() {
@@ -89,9 +89,9 @@ public class BoardEdge extends BaseEntity {
         return weight;
     }
 
-    /** 更新连线端点（卡片/图形互换后重定向连线用） */
-    public void updateEndpoints(UUID fromCardId, UUID toCardId) {
-        this.fromCardId = fromCardId;
-        this.toCardId = toCardId;
+    /** 更新连线端点（连线重定向用） */
+    public void updateEndpoints(UUID fromShapeId, UUID toShapeId) {
+        this.fromShapeId = fromShapeId;
+        this.toShapeId = toShapeId;
     }
 }

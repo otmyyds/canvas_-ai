@@ -38,7 +38,7 @@ export default function WorkspacePage() {
   }
 
   async function deleteBoard(boardId: string) {
-    if (!window.confirm("确定删除该画布？画布内卡片和连线将一并删除，不可恢复。")) {
+    if (!window.confirm("确定删除该画布？画布内图形节点和连线将一并删除，不可恢复。")) {
       return;
     }
     try {
@@ -88,7 +88,7 @@ export default function WorkspacePage() {
           <div>
             <h2 className="text-2xl font-semibold text-ink">工作台</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/60">
-              创建画布、上传资料、让 AI 生成卡片结构和图片资产。当前版本以单人私有内容为边界。
+              创建画布、上传资料、让 AI 生成图形结构。当前版本以单人私有内容为边界。
             </p>
           </div>
           <div className="flex w-full gap-2 md:w-[420px]">

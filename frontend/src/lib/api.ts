@@ -1,4 +1,4 @@
-import type { AiTask, AssistResult, Board, BoardCard, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, Board, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 
 /**
  * 后端 API 基地址（来自 .env 的 NEXT_PUBLIC_API_BASE，默认 localhost:8080）。
@@ -84,7 +84,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /**
  * 全部后端接口的封装对象。
- * 分组：画布 / 卡片 / 图形节点 / 连线 / AI 任务 / 文件 / 快照 / 聊天 / 认证
+ * 分组：画布 / 图形节点 / 连线 / AI 任务 / 文件 / 快照 / 聊天 / 认证
  */
 export const api = {
   // ===== 画布 =====
@@ -100,45 +100,14 @@ export const api = {
   }),
   deleteBoard: (boardId: string) => request<void>(`/api/boards/${boardId}`, { method: "DELETE" }),
 
-  // ===== 卡片 =====
-  deleteCard: (cardId: string) => request<void>(`/api/cards/${cardId}`, { method: "DELETE" }),
+  // ===== 快照 =====
   getBoardSnapshot: (boardId: string) => request<{ id: string; boardId: string; snapshotJson: string; version: number; createdAt: string } | null>(`/api/boards/${boardId}/snapshot`),
-  listCards: (boardId: string) => request<BoardCard[]>(`/api/boards/${boardId}/cards`),
-  /** 更新卡片（双击编辑卡片正文后的保存路径） */
-  updateCard: (cardId: string, body: Partial<Pick<BoardCard, "title" | "contentMarkdown" | "cardType">>) =>
-    request<BoardCard>(`/api/cards/${cardId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        title: body.title,
-        contentMarkdown: body.contentMarkdown,
-        cardType: body.cardType
-      })
-    }),
-  createCard: (boardId: string, body: Partial<BoardCard>) => request<BoardCard>(`/api/boards/${boardId}/cards`, {
-    method: "POST",
-    body: JSON.stringify({
-      title: body.title ?? "未命名卡片",
-      contentMarkdown: body.contentMarkdown ?? "",
-      cardType: body.cardType ?? "NOTE",
-      x: body.x ?? 120,
-      y: body.y ?? 120,
-      width: body.width ?? 320,
-      height: body.height ?? 180
-    })
-  }),
 
   // ===== 图形节点（思维导图/流程图节点） =====
   listEdges: (boardId: string) => request<BoardEdge[]>(`/api/boards/${boardId}/edges`),
   listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
   /** 删除图形节点（白板删除元素时同步调用，避免刷新复活） */
   deleteShape: (shapeId: string) => request<void>(`/api/shapes/${shapeId}`, { method: "DELETE" }),
-
-  // ===== 连线 =====
-  createEdge: (boardId: string, fromCardId: string, toCardId: string, label?: string) =>
-    request<BoardEdge>(`/api/boards/${boardId}/edges`, {
-      method: "POST",
-      body: JSON.stringify({ fromCardId, toCardId, label })
-    }),
 
   // ===== AI 任务 =====
   listTasks: (boardId: string) => request<AiTask[]>(`/api/boards/${boardId}/ai-tasks`),
@@ -183,15 +152,14 @@ export const api = {
 
   // ===== AI 助手统一入口 =====
   /**
-   * 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落卡任务。
-   * selection 携带用户当前选中的卡片/图形节点真实 id，用于「编辑选中元素」任务。
+   * 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落图形节点任务。
+   * selection 携带用户当前选中的图形节点真实 id，用于「编辑选中元素」任务。
    */
-  assist: (boardId: string, prompt: string, selection?: { cardIds: string[]; shapeIds: string[] }) =>
+  assist: (boardId: string, prompt: string, selection?: { shapeIds: string[] }) =>
     request<AssistResult>(`/api/boards/${boardId}/assist`, {
       method: "POST",
       body: JSON.stringify({
         prompt,
-        selectedCardIds: selection?.cardIds ?? [],
         selectedShapeIds: selection?.shapeIds ?? []
       })
     }),

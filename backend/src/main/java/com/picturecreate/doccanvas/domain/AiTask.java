@@ -35,7 +35,7 @@ public class AiTask extends BaseEntity {
     @Column(nullable = false, columnDefinition = "text")
     private String prompt;
 
-    /** 任务上下文 JSON（如选中的卡片/图形节点 id 列表），供异步执行时还原请求上下文 */
+    /** 任务上下文 JSON（如选中的图形节点 id 列表），供异步执行时还原请求上下文 */
     @Column(name = "context_json", columnDefinition = "text")
     private String contextJson;
 

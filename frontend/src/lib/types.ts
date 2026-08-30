@@ -13,31 +13,12 @@ export type Board = {
   updatedAt: string;
 };
 
-/** 卡片类型（AI 生成或手动创建） */
-export type CardType = "NOTE" | "SUMMARY" | "IDEA" | "SOURCE" | "QUESTION" | "IMAGE" | "PROMPT";
-
-/** 知识卡片（画布内容单元） */
-export type BoardCard = {
-  id: string;
-  boardId: string;
-  title: string;
-  /** Markdown 正文（卡片渲染为 markdown） */
-  contentMarkdown: string;
-  cardType: CardType;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  createdAt: string;
-  updatedAt: string;
-};
-
-/** 连线（连接两个卡片/图形节点） */
+/** 连线（连接两个图形节点） */
 export type BoardEdge = {
   id: string;
   boardId: string;
-  fromCardId: string;
-  toCardId: string;
+  fromShapeId: string;
+  toShapeId: string;
   label?: string;
   style?: string;
   color?: string;
@@ -62,10 +43,6 @@ export type BoardShape = {
 export type AiTaskType =
   | "DOCUMENT_SUMMARY"
   | "CANVAS_STRUCTURE"
-  | "GENERATE_IMAGE"
-  | "EDIT_IMAGE"
-  | "GENERATE_COVER"
-  | "GENERATE_DIAGRAM_ASSET"
   | "STUDY_PLAN"
   | "PRODUCT_REQUIREMENT"
   | "GENERATE_MINDMAP"
@@ -106,7 +83,7 @@ export type AiTask = {
   steps: AiTaskStep[];
 };
 
-/** AI 助手统一响应：kind=chat 返回纯文本，kind=task 返回落卡任务 */
+/** AI 助手统一响应：kind=chat 返回纯文本，kind=task 返回落图形节点任务 */
 export type AssistResult =
   | { kind: "chat"; reply: string }
   | { kind: "task"; task: AiTask };
@@ -126,36 +103,32 @@ export type SourceFile = {
 
 /**
  * AI 产出/WebSocket 推送的画布动作。
- * create_card 建卡片，update_card 更新，connect 连线，create_group 分组。
+ * create_shape 建图形节点，connect 连线，delete_shape 删节点。
  */
 export type BoardAction =
   | {
-      type: "create_card";
+      type: "create_shape";
+      id?: string;
       title: string;
-      markdown?: string;
-      cardType?: string;
+      shape?: string;
+      level?: number;
       x: number;
       y: number;
       width?: number;
       height?: number;
-      sourceFileIds?: string[];
-    }
-  | {
-      type: "update_card";
-      cardId: string;
-      title?: string;
-      markdown?: string;
     }
   | {
       type: "connect";
-      fromCardId: string;
-      toCardId: string;
+      fromShapeId: string;
+      toShapeId: string;
       label?: string;
+      style?: string;
+      color?: string;
+      weight?: number;
     }
   | {
-      type: "create_group";
-      title: string;
-      cardIds: string[];
+      type: "delete_shape";
+      shapeId: string;
     };
 
 /** WebSocket 推送的任务事件（前端 use-task-stream 消费） */
