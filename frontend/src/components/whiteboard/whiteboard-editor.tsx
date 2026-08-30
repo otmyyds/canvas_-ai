@@ -19,7 +19,6 @@ import {
   FileImage,
   FolderOpen,
   Hand,
-  LayoutGrid,
   Minus,
   MousePointer2,
   RefreshCw,
@@ -284,6 +283,22 @@ export function WhiteboardEditor({
       queueSave();
     }
   }, [boardId, canvasRevision, edges, editorReady, queueSave, shapes]);
+
+  // AI 任务完成后，把后端重算的坐标同步到已存在的图形节点（整理画布/编辑加分支的重排坐标）
+  useEffect(() => {
+    if (canvasRevision <= 0 || !editorReady || hydratedBoardRef.current !== boardId || !mountedRef.current) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const moved = syncShapePositions(editor, shapes);
+    if (moved > 0) {
+      setMessage(`已同步 ${moved} 个图形节点的新坐标`);
+      queueSave();
+    }
+  }, [canvasRevision, editorReady, shapes, boardId, queueSave]);
 
   // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
   useEffect(() => {
@@ -552,20 +567,6 @@ export function WhiteboardEditor({
     setMessage("已刷新资料和任务");
   }, [onRefresh]);
 
-  const autoArrange = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const moved = autoLayoutTldraw(editor);
-    if (moved === 0) {
-      setMessage("画布暂无可整理的元素");
-      return;
-    }
-    setMessage(`已自动整理 ${moved} 个元素`);
-    queueSave();
-  }, [queueSave]);
-
   const [shapeOpen, setShapeOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -674,10 +675,6 @@ export function WhiteboardEditor({
           <GhostButton onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
             刷新
-          </GhostButton>
-          <GhostButton onClick={autoArrange} title="按连线分层自动排列元素">
-            <LayoutGrid className="h-4 w-4" />
-            整理
           </GhostButton>
           <div className="relative">
             <GhostButton onClick={() => setExportOpen((value) => !value)} title="导出画布">
@@ -811,6 +808,29 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
     editor.deleteShapes(toDelete);
   }
   return toDelete.length;
+}
+
+/**
+ * 把后端 shapes 里已存在节点的坐标同步到 tldraw（AI 重排画布后坐标变更用）。
+ * 只处理已存在于 tldraw 的 geo 节点；新节点由 mergeMissingShapes 负责创建，这里只改位置。
+ * 返回被移动的节点数量。
+ */
+function syncShapePositions(editor: TldrawEditor, shapes: BoardShape[]): number {
+  const updates: Array<{ id: ReturnType<typeof createShapeId>; type: string; x: number; y: number }> = [];
+  for (const node of shapes) {
+    const shapeId = createShapeId(node.id);
+    const shape = editor.getShape(shapeId);
+    if (!shape || shape.type !== "geo") {
+      continue;
+    }
+    if (shape.x !== node.x || shape.y !== node.y) {
+      updates.push({ id: shape.id, type: shape.type, x: node.x, y: node.y });
+    }
+  }
+  if (updates.length > 0) {
+    editor.updateShapes(updates);
+  }
+  return updates.length;
 }
 
 function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
@@ -978,104 +998,4 @@ function saveStatusText(status: SaveStatus) {
     default:
       return "未保存";
   }
-}
-
-/** 自动整理间距与分层 */
-const ARRANGE_MARGIN = 120;
-const ARRANGE_H_GAP = 80;
-const ARRANGE_V_GAP = 100;
-const ARRANGE_W = 340;
-const ARRANGE_H = 220;
-
-/**
- * 对 tldraw 当前画布的元素做分层自动整理。
- * 依据箭头 binding 构建连接图：箭头 A 两端分别连两个端点 shape。
- * 布局：BFS 分层（入度 0 的根在最上层），每层内节点横向并排，层与层纵向堆叠，避免重叠。
- * 返回被移动的元素数量。
- */
-function autoLayoutTldraw(editor: TldrawEditor): number {
-  const shapes = editor.getCurrentPageShapes();
-  const movable = shapes.filter((shape) => shape.type !== "arrow" && shape.type !== "frame" && shape.type !== "embed");
-  if (movable.length === 0) {
-    return 0;
-  }
-  const ids = new Set(movable.map((shape) => shape.id));
-  const adj = new Map<string, Set<string>>();
-  for (const shape of movable) {
-    adj.set(shape.id, new Set());
-  }
-  for (const arrow of shapes.filter((shape) => shape.type === "arrow")) {
-    const bindings = editor.getBindingsInvolvingShape(arrow.id, "arrow");
-    // binding: fromId 是箭头 id，toId 是端点 shape id
-    const endpoints: string[] = [];
-    for (const binding of bindings) {
-      const endpoint = binding.toId === arrow.id ? binding.fromId : binding.toId;
-      if (endpoint !== arrow.id && ids.has(endpoint)) {
-        endpoints.push(endpoint);
-      }
-    }
-    // 首尾端点两两相连（无向）
-    for (let i = 0; i < endpoints.length; i++) {
-      for (let j = i + 1; j < endpoints.length; j++) {
-        adj.get(endpoints[i])!.add(endpoints[j]);
-        adj.get(endpoints[j])!.add(endpoints[i]);
-      }
-    }
-  }
-
-  // BFS 分层（入度 0 为根，最上层）
-  const inDegree = new Map<string, number>();
-  for (const id of ids) {
-    inDegree.set(id, 0);
-  }
-  for (const [, targets] of adj) {
-    for (const to of targets) {
-      inDegree.set(to, (inDegree.get(to) ?? 0) + 1);
-    }
-  }
-  const layerOf = new Map<string, number>();
-  const queue: string[] = movable.filter((s) => (inDegree.get(s.id) ?? 0) === 0).map((s) => s.id);
-  queue.forEach((id) => layerOf.set(id, 0));
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    const layer = layerOf.get(current) ?? 0;
-    for (const neighbor of adj.get(current) ?? []) {
-      if (!layerOf.has(neighbor)) {
-        layerOf.set(neighbor, layer + 1);
-        queue.push(neighbor);
-      }
-    }
-  }
-  for (const id of ids) {
-    if (!layerOf.has(id)) {
-      layerOf.set(id, 0);
-    }
-  }
-
-  // 每层内节点横向并排（按 x 原顺序稳定），层与层纵向堆叠
-  const layerKeys = [...new Set(layerOf.values())].sort((a, b) => a - b);
-  const updates: Array<{ id: ReturnType<typeof createShapeId>; type: string; x: number; y: number }> = [];
-  let y = ARRANGE_MARGIN;
-  for (const layerKey of layerKeys) {
-    const layerIds = movable.filter((s) => layerOf.get(s.id) === layerKey);
-    let x = ARRANGE_MARGIN;
-    let layerMaxY = y;
-    for (const shape of layerIds) {
-      if (shape.x !== x || shape.y !== y) {
-        updates.push({ id: shape.id, type: shape.type, x, y });
-      }
-      const props = shape.props as { w?: number; h?: number };
-      const w = props?.w ?? ARRANGE_W;
-      const h = props?.h ?? ARRANGE_H;
-      x += w + ARRANGE_H_GAP;
-      layerMaxY = Math.max(layerMaxY, y + h);
-    }
-    y = layerMaxY + ARRANGE_V_GAP;
-  }
-
-  if (updates.length === 0) {
-    return 0;
-  }
-  editor.updateShapes(updates);
-  return updates.length;
 }

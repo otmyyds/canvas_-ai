@@ -598,7 +598,7 @@ public class AiTaskService {
             }
             components.add(component);
         }
-        // 每棵树分别布局，整体从左到右偏移排列
+        // 每个连通分量分别布局，整体从左到右偏移排列
         double cursorX = MINDMAP_MARGIN;
         for (List<String> component : components) {
             Set<String> nodeSet = new HashSet<>(component);
@@ -610,7 +610,12 @@ public class AiTaskService {
                     treeEdges.add(new String[] { from, to });
                 }
             }
-            Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(component, treeEdges);
+            // 树结构（边数 == 节点数-1）且存在层级>0 的节点 → 思维导图径向布局；否则 → 流程图分层布局
+            boolean isMindmapTree = treeEdges.size() == component.size() - 1
+                    && component.stream().anyMatch(id -> shapeById.get(id).getLevel() > 0);
+            Map<String, double[]> positions = isMindmapTree
+                    ? GraphLayoutService.layoutMindmapTree(component, treeEdges)
+                    : GraphLayoutService.layoutFlowchart(component, treeEdges);
             double[] box = boundingBox(positions);
             double offsetX = cursorX - box[0];
             double offsetY = MINDMAP_MARGIN - box[1];
