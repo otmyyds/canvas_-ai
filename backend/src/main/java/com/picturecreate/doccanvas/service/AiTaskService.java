@@ -40,6 +40,7 @@ import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
 import com.picturecreate.doccanvas.repository.BoardSnapshotRepository;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.ai.AiGenerationService;
+import com.picturecreate.doccanvas.service.ai.ImageGenerationService;
 import com.picturecreate.doccanvas.service.ai.AiTaskContext;
 import com.picturecreate.doccanvas.service.ai.BoardAction;
 import com.picturecreate.doccanvas.service.ai.BoardActionResult;
@@ -94,11 +95,14 @@ public class AiTaskService {
     private final Executor aiTaskExecutor;
     private final StringRedisTemplate redisTemplate;
     private final AppProperties properties;
+    private final ImageGenerationService imageGenerationService;
+    private final AssetService assetService;
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
             BoardSnapshotRepository snapshotRepository, SkillLoader skillLoader,
             TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
+            ImageGenerationService imageGenerationService, AssetService assetService,
             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor, StringRedisTemplate redisTemplate,
             AppProperties properties) {
         this.boardService = boardService;
@@ -110,6 +114,8 @@ public class AiTaskService {
         this.skillLoader = skillLoader;
         this.eventPublisher = eventPublisher;
         this.aiGenerationService = aiGenerationService;
+        this.imageGenerationService = imageGenerationService;
+        this.assetService = assetService;
         this.aiTaskExecutor = aiTaskExecutor;
         this.redisTemplate = redisTemplate;
         this.properties = properties;
@@ -241,6 +247,10 @@ public class AiTaskService {
         if (task.getType() == AiTaskType.CLEAR_CANVAS) {
             return clearCanvas(task);
         }
+        // 文生图：调用百炼文生图接口生成图片资产（不产生图形节点动作）
+        if (task.getType() == AiTaskType.GENERATE_IMAGE) {
+            return generateImage(task);
+        }
         List<AiTaskContext.SourceContext> sources = List.of();
         // 画布现有图形节点（思维导图/流程图节点，供 AI 参考与删除）
         List<AiTaskContext.ShapeContext> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId())
@@ -255,6 +265,18 @@ public class AiTaskService {
                 skill == null ? "无" : skill.slug());
         return aiGenerationService.generateBoardActions(new AiTaskContext(task.getId(), task.getBoardId(),
                 task.getOwnerId(), task.getType(), task.getPrompt(), sources, shapes, skill, selectedShapes));
+    }
+
+    /**
+     * 文生图：调用百炼文生图接口生成图片，上传 RustFS 并落 assets 表。
+     * 图片通过 assets 接口返回前端渲染，不产生 BoardAction。
+     */
+    private BoardActionResult generateImage(AiTask task) {
+        byte[] imageBytes = imageGenerationService.generate(task.getPrompt());
+        assetService.createImageAsset(task.getBoardId(), task.getOwnerId(), task.getId(), imageBytes);
+        log.info("AI 生图完成：taskId={} boardId={} size={}", task.getId(), task.getBoardId(), imageBytes.length);
+        return new BoardActionResult(List.of(),
+                "{\"mode\":\"image\",\"size\":%d,\"message\":\"图片已生成\"}".formatted(imageBytes.length));
     }
 
     /**

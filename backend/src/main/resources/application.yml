@@ -78,6 +78,11 @@ app:
     provider: ${AI_PROVIDER:spring-ai}
     retry:
       max-attempts: ${AI_RETRY_MAX_ATTEMPTS:2}
+    image:
+      # 百炼文生图（DashScope 原生接口，非 OpenAI 兼容）
+      api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:}}}
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com}
+      model: ${AI_IMAGE_MODEL:wanx2.1-t2i-turbo}
     task:
       max-steps: ${AI_TASK_MAX_STEPS:8}
       max-model-calls: ${AI_TASK_MAX_MODEL_CALLS:3}

@@ -7,9 +7,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 /**
- * 资产实体，对应 assets 表（预留）。
- * 计划用于 AI 生成图片等媒体资产（存 RustFS + 记录元数据）。
- * 当前 MVP 未实现生图流程，此表先建后用。
+ * 资产实体，对应 assets 表。
+ * AI 生成图片等媒体资产：本体存 RustFS，这里记录元数据与归属。
  */
 @Entity
 @Table(name = "assets")
@@ -53,5 +52,50 @@ public class Asset extends BaseEntity {
     private String checksum;
 
     protected Asset() {
+    }
+
+    public Asset(UUID ownerId, UUID boardId, UUID sourceTaskId, String storageBucket, String storageKey,
+            String mimeType, long size, Integer width, Integer height) {
+        this.ownerId = ownerId;
+        this.boardId = boardId;
+        this.sourceTaskId = sourceTaskId;
+        this.storageBucket = storageBucket;
+        this.storageKey = storageKey;
+        this.mimeType = mimeType;
+        this.size = size;
+        this.width = width;
+        this.height = height;
+    }
+
+    public UUID getOwnerId() {
+        return ownerId;
+    }
+
+    public UUID getBoardId() {
+        return boardId;
+    }
+
+    public UUID getSourceTaskId() {
+        return sourceTaskId;
+    }
+
+    public String getStorageKey() {
+        return storageKey;
+    }
+
+    public String getMimeType() {
+        return mimeType;
+    }
+
+    public long getSize() {
+        return size;
+    }
+
+    public Integer getWidth() {
+        return width;
+    }
+
+    public Integer getHeight() {
+        return height;
     }
 }

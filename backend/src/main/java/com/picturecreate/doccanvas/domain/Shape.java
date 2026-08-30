@@ -100,4 +100,15 @@ public class Shape extends BaseEntity {
         this.x = x;
         this.y = y;
     }
+
+    /** 回写用户编辑：更新标题、位置与尺寸（标题为 null 时保持原值） */
+    public void applyUserEdit(String title, double x, double y, double width, double height) {
+        if (title != null) {
+            this.title = title;
+        }
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+    }
 }

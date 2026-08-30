@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { FilePlus2, Loader2, LogOut, Plus, Search, Trash2 } from "lucide-react";
-import { api, authToken } from "@/lib/api";
+import { api, authToken, clearAuthSession } from "@/lib/api";
 import type { Board } from "@/lib/types";
 import { Button, GhostButton, Input } from "@/components/ui";
 
@@ -33,7 +33,7 @@ export default function WorkspacePage() {
   }, []);
 
   function logout() {
-    authToken.set(null);
+    clearAuthSession();
     router.push("/login");
   }
 

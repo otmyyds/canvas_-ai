@@ -1,4 +1,4 @@
-import type { AiTask, AssistResult, Board, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, Board, BoardAsset, BoardEdge, BoardShape, SharedBoard, SourceFile } from "@/lib/types";
 
 /**
  * 后端 API 基地址（来自 .env 的 NEXT_PUBLIC_API_BASE，默认 localhost:8080）。
@@ -30,6 +30,49 @@ export const authToken = {
 };
 
 /**
+ * 刷新令牌 + 用户 id 存取（localStorage，key = "dc_refresh"）。
+ * 用于访问令牌过期时静默续期（POST /api/auth/refresh）。
+ */
+export const authRefresh = {
+  get: (): { refreshToken: string; userId: string } | null => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const raw = window.localStorage.getItem("dc_refresh");
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as { refreshToken: string; userId: string };
+    } catch {
+      return null;
+    }
+  },
+  set: (session: { refreshToken: string; userId: string } | null) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (session) {
+      window.localStorage.setItem("dc_refresh", JSON.stringify(session));
+    } else {
+      window.localStorage.removeItem("dc_refresh");
+    }
+  }
+};
+
+/** 登录/注册/刷新后保存完整会话（访问令牌 + 刷新令牌 + 用户 id） */
+export function saveAuthSession(result: AuthResponse) {
+  authToken.set(result.token);
+  authRefresh.set({ refreshToken: result.refreshToken, userId: result.user.id });
+}
+
+/** 清除会话（登出或续期失败） */
+export function clearAuthSession() {
+  authToken.set(null);
+  authRefresh.set(null);
+}
+
+/**
  * 构建请求认证头。
  * 已登录 → Bearer <jwt>；未登录 → 演示用户头（X-User-Email，本地兼容）。
  */
@@ -44,7 +87,7 @@ function authHeaders(): Record<string, string> {
 /**
  * 通用请求封装：
  * - 自动拼 API_BASE 前缀 + 统一认证头
- * - 401 → 清 token + 跳登录页
+ * - 401 → 用刷新令牌静默续期后重试一次，仍失败才清会话跳登录
  * - 非 2xx → 解析错误体并转中文错误信息
  * - 204 → 返回 undefined
  *
@@ -53,17 +96,15 @@ function authHeaders(): Record<string, string> {
  * @returns 后端返回的 JSON 数据
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers ?? {})
-    }
-  });
+  let response = await doRequest(path, init);
+
+  // 访问令牌过期：尝试用刷新令牌静默续期后重试一次
+  if (response.status === 401 && (await refreshAccessSession())) {
+    response = await doRequest(path, init);
+  }
 
   if (response.status === 401) {
-    authToken.set(null);
+    clearAuthSession();
     if (typeof window !== "undefined") {
       window.location.href = "/login";
     }
@@ -80,6 +121,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+/** 发送一次请求（自动拼统一认证头，重试时会重新读取刷新后的 token） */
+function doRequest(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers ?? {})
+    }
+  });
+}
+
+/** 用刷新令牌换取新访问令牌；成功返回 true，失败（无刷新令牌/接口报错）返回 false */
+async function refreshAccessSession(): Promise<boolean> {
+  const session = authRefresh.get();
+  if (!session) {
+    return false;
+  }
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: session.userId, refreshToken: session.refreshToken })
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const result = (await response.json()) as AuthResponse;
+    saveAuthSession(result);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -108,6 +184,11 @@ export const api = {
   listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
   /** 删除图形节点（白板删除元素时同步调用，避免刷新复活） */
   deleteShape: (shapeId: string) => request<void>(`/api/shapes/${shapeId}`, { method: "DELETE" }),
+  /** 回写用户手动编辑（拖动位置/改标题/改尺寸），统一 tldraw 快照与 shapes 表 */
+  updateShape: (
+    shapeId: string,
+    body: { title: string; x: number; y: number; width: number; height: number }
+  ) => request<BoardShape>(`/api/shapes/${shapeId}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   // ===== AI 任务 =====
   listTasks: (boardId: string) => request<AiTask[]>(`/api/boards/${boardId}/ai-tasks`),
@@ -163,6 +244,19 @@ export const api = {
         selectedShapeIds: selection?.shapeIds ?? []
       })
     }),
+
+  // ===== 分享 =====
+  createShareLink: (boardId: string) => request<{ token: string }>(`/api/boards/${boardId}/share`, { method: "POST" }),
+  getSharedBoard: (token: string) => request<SharedBoard>(`/api/share/${token}`),
+
+  // ===== 资产（AI 生成图片） =====
+  listAssets: (boardId: string) => request<BoardAsset[]>(`/api/boards/${boardId}/assets`),
+  /** 图片直链：<img src> 无法带 Authorization 头，用 query param 传 token */
+  assetContentUrl: (boardId: string, assetId: string) => {
+    const token = authToken.get();
+    const base = `${API_BASE}/api/boards/${boardId}/assets/${assetId}/content`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
 
   // ===== 认证 =====
   register: (email: string, displayName: string, password: string) =>

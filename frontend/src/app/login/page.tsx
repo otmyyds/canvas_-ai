@@ -3,7 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
-import { api, authToken } from "@/lib/api";
+import { api, saveAuthSession } from "@/lib/api";
 import { Button, GhostButton, Input, Label } from "@/components/ui";
 
 export default function LoginPage() {
@@ -24,7 +24,7 @@ export default function LoginPage() {
         mode === "login"
           ? await api.login(email, password)
           : await api.register(email, displayName || email.split("@")[0], password);
-      authToken.set(result.token);
+      saveAuthSession(result);
       router.push("/app");
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败，请稍后重试");

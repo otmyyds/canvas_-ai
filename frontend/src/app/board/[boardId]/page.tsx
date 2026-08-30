@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Share2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
@@ -34,7 +34,7 @@ export default function BoardPage({ params }: BoardPageProps) {
 }
 
 function BoardEditor({ boardId }: { boardId: string }) {
-  const { board, edges, shapes, tasks, files, setBoard, setEdges, setShapes, setTasks, setFiles } = useBoardStore();
+  const { board, edges, shapes, tasks, files, assets, setBoard, setEdges, setShapes, setTasks, setFiles, setAssets } = useBoardStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [canvasRevision, setCanvasRevision] = useState(0);
@@ -44,6 +44,20 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [titleDraft, setTitleDraft] = useState("");
   // 当前选中的图形节点真实 id（用于「编辑选中元素」任务）
   const [selection, setSelection] = useState<{ shapeIds: string[] }>({ shapeIds: [] });
+  // 分享链接复制状态
+  const [shareCopied, setShareCopied] = useState(false);
+
+  async function share() {
+    try {
+      const { token } = await api.createShareLink(boardId);
+      const url = `${window.location.origin}/share/${token}`;
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成分享链接失败");
+    }
+  }
 
   async function renameBoard(title: string) {
     const safe = title.trim();
@@ -56,19 +70,21 @@ function BoardEditor({ boardId }: { boardId: string }) {
 
   const loadAll = useCallback(async () => {
     setError(undefined);
-    const [boardResult, edgeResult, shapeResult, taskResult, fileResult] = await Promise.all([
+    const [boardResult, edgeResult, shapeResult, taskResult, fileResult, assetResult] = await Promise.all([
       api.getBoard(boardId),
       api.listEdges(boardId),
       api.listShapes(boardId),
       api.listTasks(boardId),
-      api.listFiles(boardId)
+      api.listFiles(boardId),
+      api.listAssets(boardId)
     ]);
     setBoard(boardResult);
     setEdges(edgeResult);
     setShapes(shapeResult);
     setTasks(taskResult);
     setFiles(fileResult);
-  }, [boardId, setBoard, setEdges, setShapes, setFiles, setTasks]);
+    setAssets(assetResult);
+  }, [boardId, setBoard, setEdges, setShapes, setFiles, setTasks, setAssets]);
 
   useEffect(() => {
     setLoading(true);
@@ -84,12 +100,14 @@ function BoardEditor({ boardId }: { boardId: string }) {
       }
       setTasks(await api.listTasks(boardId));
       if (event.type === "task.actions" || event.type === "task.done") {
-        const [edgeResult, shapeResult] = await Promise.all([
+        const [edgeResult, shapeResult, assetResult] = await Promise.all([
           api.listEdges(boardId),
-          api.listShapes(boardId)
+          api.listShapes(boardId),
+          api.listAssets(boardId)
         ]);
         setEdges(edgeResult);
         setShapes(shapeResult);
+        setAssets(assetResult);
         setCanvasRevision((value) => value + 1);
         // 清空画布任务完成：后端已删 shapes/edges 与快照，驱动白板清空残留元素
         if (event.type === "task.done" && event.taskType === "CLEAR_CANVAS") {
@@ -97,7 +115,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
         }
       }
     },
-    [boardId, setEdges, setTasks]
+    [boardId, setEdges, setTasks, setAssets]
   );
 
   const connection = useTaskStream(boardId, onTaskEvent);
@@ -170,7 +188,13 @@ function BoardEditor({ boardId }: { boardId: string }) {
             <p className="text-xs text-ink/50">单人私有画布 · AI 任务实时进度</p>
           </div>
         </div>
-        <div className="text-xs text-ink/50">{shapes.length} 个节点 · {edges.length} 条连线</div>
+        <div className="flex items-center gap-3">
+          <GhostButton onClick={() => void share()} title="生成只读分享链接">
+            <Share2 className="h-4 w-4" />
+            {shareCopied ? "已复制" : "分享"}
+          </GhostButton>
+          <div className="text-xs text-ink/50">{shapes.length} 个节点 · {edges.length} 条连线</div>
+        </div>
       </header>
 
       {error ? (
@@ -188,6 +212,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           boardTitle={board?.title}
           edges={edges}
           shapes={shapes}
+          assets={assets}
           files={files}
           tasks={tasks}
           connection={connection}

@@ -19,6 +19,8 @@ public enum AiTaskType {
     GENERATE_MINDMAP,
     /** 流程图 → 单次调用（图形节点 + 连线） */
     GENERATE_FLOWCHART,
+    /** 文生图 → 调用百炼文生图接口生成图片资产 */
+    GENERATE_IMAGE,
     /** 编辑选中的画布元素 → 修改/丰富/添加分支/删除（单次调用，针对选中图形节点） */
     EDIT_ELEMENT
 }

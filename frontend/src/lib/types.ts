@@ -39,6 +39,25 @@ export type BoardShape = {
   height: number;
 };
 
+/** 分享画布的只读数据（标题 + 图形节点 + 连线 + 快照） */
+export type SharedBoard = {
+  boardId: string;
+  title: string;
+  shapes: BoardShape[];
+  edges: BoardEdge[];
+  snapshotJson: string | null;
+};
+
+/** AI 生成图片资产（存 assets 表） */
+export type BoardAsset = {
+  id: string;
+  boardId: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+};
+
 /** AI 任务类型（决定生成方式与 prompt 约束） */
 export type AiTaskType =
   | "DOCUMENT_SUMMARY"
@@ -47,6 +66,7 @@ export type AiTaskType =
   | "PRODUCT_REQUIREMENT"
   | "GENERATE_MINDMAP"
   | "GENERATE_FLOWCHART"
+  | "GENERATE_IMAGE"
   | "EDIT_ELEMENT"
   | "CLEAR_CANVAS";
 

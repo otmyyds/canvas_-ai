@@ -20,6 +20,7 @@ public class PromptCatalog {
                 可选任务类型（plan 中每一项是以下之一）：
                 - GENERATE_MINDMAP：生成思维导图
                 - GENERATE_FLOWCHART：生成流程图
+                - GENERATE_IMAGE：生成图片（如「画一张猫的图片」，区别于流程图/思维导图）
                 - STUDY_PLAN：制定学习计划/学习路径
                 - PRODUCT_REQUIREMENT：写产品需求文档
                 - DOCUMENT_SUMMARY：总结/摘要/归纳资料

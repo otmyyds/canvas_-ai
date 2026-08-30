@@ -28,6 +28,7 @@ type ChatMessage = {
 const QUICK_TASK_TYPES: AiTaskType[] = [
   "GENERATE_MINDMAP",
   "GENERATE_FLOWCHART",
+  "GENERATE_IMAGE",
   "STUDY_PLAN",
   "PRODUCT_REQUIREMENT",
   "DOCUMENT_SUMMARY",
@@ -71,6 +72,7 @@ const taskLabel: Record<AiTaskType, string> = {
   PRODUCT_REQUIREMENT: "产品需求",
   GENERATE_MINDMAP: "思维导图",
   GENERATE_FLOWCHART: "流程图",
+  GENERATE_IMAGE: "生成图片",
   EDIT_ELEMENT: "编辑元素"
 };
 

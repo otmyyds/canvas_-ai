@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Tldraw,
-  createBindingId,
   createShapeId,
   createTLStore,
   defaultBindingUtils,
@@ -28,21 +27,28 @@ import {
   Text,
   Trash2
 } from "lucide-react";
-import type { AiTask, AssistResult, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type { AiTask, AssistResult, BoardAsset, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
 import { api } from "@/lib/api";
 import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
+import { mergeMissingShapes } from "@/lib/whiteboard/shape-render";
 
 /** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被用户改动 */
+function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
+  return JSON.stringify([x, y, width, height, title]);
+}
 
 type WhiteboardEditorProps = {
   boardId: string;
   boardTitle?: string;
   edges: BoardEdge[];
   shapes: BoardShape[];
+  assets: BoardAsset[];
   files: SourceFile[];
   tasks: AiTask[];
   connection: string;
@@ -61,6 +67,9 @@ type WhiteboardEditorProps = {
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
+
+/** 回写后端的图形节点编辑体（标题/位置/尺寸） */
+type ShapeUpdate = { title: string; x: number; y: number; width: number; height: number };
 
 const SHAPE_TYPES: Array<{ value: string; label: string; icon: string }> = [
   { value: "rectangle", label: "矩形", icon: "▭" },
@@ -102,6 +111,7 @@ export function WhiteboardEditor({
   boardTitle,
   edges,
   shapes,
+  assets,
   files,
   tasks,
   connection,
@@ -143,7 +153,9 @@ export function WhiteboardEditor({
         },
         defaultName: boardTitle ?? "文档画布"
       }),
-    [boardId, boardTitle]
+    // 只随 boardId 重建 store：boardTitle 变化（重命名）不能重建 store，否则画布内容会被清空成白板
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boardId]
   );
 
   const editorRef = useRef<TldrawEditor | null>(null);
@@ -152,13 +164,74 @@ export function WhiteboardEditor({
   const hydratedBoardRef = useRef<string | null>(null);
   const edgesRef = useRef(edges);
   const shapesRef = useRef(shapes);
+  const assetsRef = useRef(assets);
   const filesRef = useRef(files);
+  // 已回写到后端的 AI 图形节点状态指纹（原始 id -> JSON），避免首次加载误回写
+  const syncedShapeRef = useRef<Map<string, string>>(new Map());
+  // 待回写后端的节点编辑（原始 id -> 编辑体），防抖后批量提交
+  const pendingShapeSyncRef = useRef<Map<string, ShapeUpdate>>(new Map());
+  const shapeSyncTimerRef = useRef<number | null>(null);
+  // 水合完成后建立回写基线：记录当前所有 AI 图形节点的状态指纹，避免首次编辑被当成基线而丢失
+  const seedSyncedShapes = useCallback((editor: TldrawEditor) => {
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type !== "geo") {
+        continue;
+      }
+      const rawId = String(shape.id).replace(/^shape:/, "");
+      if (!UUID_PATTERN.test(rawId)) {
+        continue;
+      }
+      const props = shape.props as { w?: number; h?: number };
+      const title = editor.getShapeUtil(shape).getText(shape) ?? "";
+      syncedShapeRef.current.set(rawId,
+        shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title));
+    }
+  }, []);
+
+  // 合并 AI 生成图片资产到画布（以 image shape 渲染，id=shape:<assetId> 去重）
+  const mergeAssets = useCallback(async (editor: TldrawEditor, boardAssets: BoardAsset[]) => {
+    let added = 0;
+    for (const asset of boardAssets) {
+      const shapeId = createShapeId(asset.id);
+      if (editor.getShape(shapeId)) {
+        continue;
+      }
+      const url = api.assetContentUrl(boardId, asset.id);
+      const tldrawAsset = await editor.getAssetForExternalContent({ type: "url", url });
+      if (!tldrawAsset) {
+        continue;
+      }
+      editor.createAssets([tldrawAsset]);
+      const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
+      editor.createShape({
+        id: shapeId,
+        type: "image",
+        x: base.x,
+        y: base.y,
+        props: {
+          w: 512,
+          h: 512,
+          playing: false,
+          url,
+          assetId: tldrawAsset.id,
+          crop: null,
+          flipX: false,
+          flipY: false,
+          altText: "AI 生成图片"
+        }
+      });
+      added += 1;
+    }
+    return added;
+  }, [boardId]);
+
   const [editorReady, setEditorReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [message, setMessage] = useState("滚轮/中键拖动平移画布，滚轮缩放已改为平移；选中元素按 Delete 删除");
 
   edgesRef.current = edges;
   shapesRef.current = shapes;
+  assetsRef.current = assets;
   filesRef.current = files;
 
   const saveSnapshot = useCallback(async () => {
@@ -228,7 +301,9 @@ export function WhiteboardEditor({
           editor.selectNone();
           hydratedBoardRef.current = boardId;
           mountedRef.current = true;
-          if (shapeAdded > 0 || removed > 0) {
+          seedSyncedShapes(editor);
+          const assetAdded = await mergeAssets(editor, assetsRef.current);
+          if (shapeAdded > 0 || removed > 0 || assetAdded > 0) {
             setMessage(`已载入画布快照，同步 ${shapeAdded} 个节点，清理 ${removed} 个残留`);
             queueSave();
           } else {
@@ -244,6 +319,11 @@ export function WhiteboardEditor({
       editor.selectNone();
       hydratedBoardRef.current = boardId;
       mountedRef.current = true;
+      seedSyncedShapes(editor);
+      const assetAdded = await mergeAssets(editor, assetsRef.current);
+      if (assetAdded > 0) {
+        queueSave();
+      }
       setMessage("已载入原始内容");
     };
 
@@ -252,7 +332,7 @@ export function WhiteboardEditor({
     return () => {
       cancelled = true;
     };
-  }, [boardId, boardTitle, editorReady, queueSave]);
+  }, [boardId, boardTitle, editorReady, mergeAssets, queueSave]);
 
   // AI 任务完成后把后端图形节点增量同步进 tldraw（新增 + 清理被删除的残留）
   useEffect(() => {
@@ -283,6 +363,28 @@ export function WhiteboardEditor({
       queueSave();
     }
   }, [boardId, canvasRevision, edges, editorReady, queueSave, shapes]);
+
+  // AI 任务完成后把新生成的图片资产并入画布
+  useEffect(() => {
+    if (!editorReady || hydratedBoardRef.current !== boardId || !mountedRef.current) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const shapeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
+    const newAssets = assets.filter((a) => !shapeIds.has(createShapeId(a.id)));
+    if (newAssets.length === 0) {
+      return;
+    }
+    void mergeAssets(editor, newAssets).then((added) => {
+      if (added > 0) {
+        setMessage(`已同步 ${added} 张生成图片到画布`);
+        queueSave();
+      }
+    });
+  }, [boardId, canvasRevision, assets, editorReady, mergeAssets, queueSave]);
 
   // AI 任务完成后，把后端重算的坐标同步到已存在的图形节点（整理画布/编辑加分支的重排坐标）
   useEffect(() => {
@@ -333,6 +435,62 @@ export function WhiteboardEditor({
       }
     };
   }, [queueSave, store]);
+
+  // 用户拖动/改字/改尺寸 AI 图形节点 → 防抖回写 shapes 表（统一 tldraw 快照与 shapes 双状态源）
+  const collectUserEdits = useCallback((editor: TldrawEditor) => {
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type !== "geo") {
+        continue;
+      }
+      const rawId = String(shape.id).replace(/^shape:/, "");
+      if (!UUID_PATTERN.test(rawId)) {
+        continue;
+      }
+      const props = shape.props as { w?: number; h?: number };
+      const title = editor.getShapeUtil(shape).getText(shape) ?? "";
+      const fingerprint = shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title);
+      const prev = syncedShapeRef.current.get(rawId);
+      syncedShapeRef.current.set(rawId, fingerprint);
+      if (prev === undefined || prev === fingerprint) {
+        continue;
+      }
+      pendingShapeSyncRef.current.set(rawId, {
+        title,
+        x: shape.x,
+        y: shape.y,
+        width: props.w ?? 0,
+        height: props.h ?? 0
+      });
+    }
+    if (pendingShapeSyncRef.current.size > 0 && shapeSyncTimerRef.current == null) {
+      shapeSyncTimerRef.current = window.setTimeout(() => {
+        for (const [id, update] of pendingShapeSyncRef.current) {
+          void api.updateShape(id, update).catch(() => {
+            // 回写失败忽略，下次编辑会再次触发
+          });
+        }
+        pendingShapeSyncRef.current.clear();
+        shapeSyncTimerRef.current = null;
+      }, 500);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unlisten = store.listen(() => {
+      const editor = editorRef.current;
+      if (!editor || !mountedRef.current) {
+        return;
+      }
+      collectUserEdits(editor);
+    }, { scope: "document" });
+
+    return () => {
+      unlisten();
+      if (shapeSyncTimerRef.current != null) {
+        window.clearTimeout(shapeSyncTimerRef.current);
+      }
+    };
+  }, [collectUserEdits, store]);
 
   const onMount = useCallback((editor: TldrawEditor) => {
     editorRef.current = editor;
@@ -534,13 +692,17 @@ export function WhiteboardEditor({
   deleteRef.current = deleteSelected;
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      const tag = (event.target as HTMLElement)?.tagName;
-      // 输入框内不触发（避免编辑时误删）
-      if (tag === "INPUT" || tag === "TEXTAREA") {
+      const target = event.target as HTMLElement | null;
+      // 输入框、文本域或可编辑区域（含 tldraw 图形内文字编辑）不触发，避免编辑文字时误删图形
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
         return;
       }
       const editor = editorRef.current;
       if (!editor) {
+        return;
+      }
+      // 正在编辑图形内文字（tldraw 编辑态），Backspace 删除字符而非图形
+      if (editor.getEditingShapeId()) {
         return;
       }
       const mod = event.ctrlKey || event.metaKey;
@@ -588,6 +750,35 @@ export function WhiteboardEditor({
       setMessage("PNG 导出失败");
     }
   }, [boardTitle]);
+
+  // 把 AI 图形节点导出为 Markdown 标题大纲（标题取 tldraw 当前文字，层级用后端 level）
+  const exportMarkdown = useCallback(() => {
+    const editor = editorRef.current;
+    const lines: string[] = [];
+    for (const node of shapes) {
+      let title = node.title;
+      if (editor) {
+        const shape = editor.getShape(createShapeId(node.id));
+        if (shape && shape.type === "geo") {
+          title = editor.getShapeUtil(shape).getText(shape) ?? node.title;
+        }
+      }
+      const depth = Math.min(Math.max(node.level, 0), 5);
+      lines.push(`${"#".repeat(depth + 1)} ${title}`);
+    }
+    if (lines.length === 0) {
+      setMessage("画布暂无图形节点可导出");
+      return;
+    }
+    const blob = new Blob([lines.join("\n\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${boardTitle || "画布"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setMessage("画布已导出为 Markdown");
+  }, [boardTitle, shapes]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
@@ -693,6 +884,16 @@ export function WhiteboardEditor({
                 >
                   导出 PNG
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportOpen(false);
+                    exportMarkdown();
+                  }}
+                  className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
+                >
+                  导出 Markdown
+                </button>
               </div>
             ) : null}
           </div>
@@ -749,40 +950,6 @@ export function WhiteboardEditor({
 }
 
 /**
- * 把后端图形节点（思维导图/流程图节点）渲染为 tldraw geo shape。
- * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊，diamond→菱形。
- * 返回新增数量。
- */
-function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
-  let added = 0;
-  for (const node of shapes) {
-    const shapeId = createShapeId(node.id);
-    if (editor.getShape(shapeId)) {
-      continue;
-    }
-    try {
-      createGraphShape(editor, node, shapeId);
-      added += 1;
-    } catch (err) {
-      // 单个节点失败不阻塞其他节点
-      console.error("创建图形节点失败", node.id, err);
-    }
-  }
-  // 创建图形节点间的连线（edges 引用 shape id）
-  if (edges.length > 0) {
-    const shapeIdByNode = new Map(shapes.map((s) => [s.id, createShapeId(s.id)]));
-    for (const edge of edges) {
-      try {
-        createEdgeBinding(editor, edge, shapeIdByNode);
-      } catch (err) {
-        console.error("创建连线失败", edge.id, err);
-      }
-    }
-  }
-  return added;
-}
-
-/**
  * 清理 tldraw 里"后端已删除、但快照残留"的元素。
  * 只处理 AI 生成的元素（id 形如 shape:<uuid>）：
  * - geo 图形节点：uuid 不在后端 shapes 列表 → 删除
@@ -833,110 +1000,6 @@ function syncShapePositions(editor: TldrawEditor, shapes: BoardShape[]): number 
   return updates.length;
 }
 
-function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
-  const geoType = node.shape === "ellipse" ? "ellipse"
-    : node.shape === "oval" ? "oval"
-    : node.shape === "diamond" ? "diamond"
-    : "rectangle";
-  const isCenter = node.level === 0;
-  editor.createShape({
-    id: shapeId,
-    type: "geo",
-    x: node.x,
-    y: node.y,
-    props: {
-      geo: geoType,
-      dash: "solid",
-      url: "",
-      w: node.width,
-      h: node.height,
-      growY: 0,
-      scale: 1,
-      labelColor: "black",
-      color: isCenter ? "green" : "blue",
-      fill: isCenter ? "solid" : "semi",
-      size: "m",
-      font: "draw",
-      align: "middle",
-      verticalAlign: "middle",
-      richText: toRichText(node.title)
-    }
-  });
-}
-
-function createEdgeBinding(
-  editor: TldrawEditor,
-  edge: BoardEdge,
-  shapeIdsByNode: Map<string, ReturnType<typeof createShapeId>>
-) {
-  const fromId = shapeIdsByNode.get(edge.fromShapeId) ?? createShapeId(edge.fromShapeId);
-  const toId = shapeIdsByNode.get(edge.toShapeId) ?? createShapeId(edge.toShapeId);
-  if (!editor.getShape(fromId) || !editor.getShape(toId)) {
-    return;
-  }
-
-  const arrowId = createShapeId(edge.id);
-  if (editor.getShape(arrowId)) {
-    return;
-  }
-  // 连线样式：curve→arc 曲线（加大 bend），straight→直线（bend=0）；颜色/粗细按 edge 配置
-  const isCurve = edge.style === "curve";
-  // tldraw arrow color 只接受内建颜色名（black/blue/green...），不能是 hex 或空串
-  const color = mapEdgeColor(edge.color);
-  const weight = edge.weight ?? 2;
-
-  editor.createShape({
-    id: arrowId,
-    type: "arrow",
-    props: {
-      kind: "arc",
-      labelColor: "black",
-      color,
-      fill: "none",
-      dash: "solid",
-      size: weight >= 3 ? "l" : weight === 1 ? "s" : "m",
-      arrowheadStart: "none",
-      arrowheadEnd: "arrow",
-      font: "draw",
-      start: { x: 0, y: 0 },
-      end: { x: 160, y: 0 },
-      bend: isCurve ? 0.3 : 0,
-      text: edge.label ?? "",
-      labelPosition: 0.5,
-      scale: 1,
-      elbowMidPoint: 0.5
-    }
-  });
-  editor.createBindings([
-    {
-      id: createBindingId(),
-      type: "arrow",
-      fromId: arrowId,
-      toId: fromId,
-      props: {
-        terminal: "start",
-        normalizedAnchor: { x: 0.5, y: 0.5 },
-        isExact: false,
-        isPrecise: false,
-        snap: "none"
-      }
-    },
-    {
-      id: createBindingId(),
-      type: "arrow",
-      fromId: arrowId,
-      toId,
-      props: {
-        terminal: "end",
-        normalizedAnchor: { x: 0.5, y: 0.5 },
-        isExact: false,
-        isPrecise: false,
-        snap: "none"
-      }
-    }
-  ]);
-}
-
 /**
  * 以当前视口中心为锚点计算新元素坐标（叠加数量偏移，连续添加向四周展开）。
  * 只用于用户交互式添加。
@@ -949,41 +1012,6 @@ function viewportPlacement(editor: TldrawEditor, index: number) {
     x: center.x - 170 + column * 240,
     y: center.y - 110 + row * 180
   };
-}
-
-/** 把后端颜色映射为 tldraw 内建颜色名（tldraw arrow color 不接受 hex） */
-function mapEdgeColor(color?: string): string {
-  if (!color || color.trim() === "") {
-    return "green";
-  }
-  const trimmed = color.trim().toLowerCase();
-  // 已是内建颜色名
-  const builtin = ["black", "blue", "green", "grey", "light-blue", "light-green", "light-red", "light-violet",
-    "orange", "red", "violet", "yellow", "white"];
-  if (builtin.includes(trimmed)) {
-    return trimmed;
-  }
-  // hex → 就近映射
-  const hex = trimmed.replace("#", "");
-  if (/^[0-9a-f]{6}$/i.test(hex)) {
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    if (r > 180 && g > 180 && b > 180) {
-      return "light-green";
-    }
-    if (r > 150 && g < 120 && b < 120) {
-      return "red";
-    }
-    if (b > 150 && r < 120 && g < 120) {
-      return "blue";
-    }
-    if (r > 150 && g > 120 && b < 120) {
-      return "orange";
-    }
-    return "green";
-  }
-  return "green";
 }
 
 function saveStatusText(status: SaveStatus) {
