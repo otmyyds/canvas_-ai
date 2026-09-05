@@ -360,10 +360,14 @@ public class SpringAiGenerationService implements AiGenerationService {
      * @return system prompt 字符串
      */
     private String outlineArticleSystemPrompt(AiTaskContext context, List<String> toolNames) {
-        return promptCatalog.outlineIntro()
-                + promptCatalog.outlineRequirement(context.type().name())
-                + "当前画布 boardId：" + context.boardId() + "\n"
-                + promptCatalog.toolInstruction(toolNames);
+        StringBuilder prompt = new StringBuilder(promptCatalog.outlineIntro());
+        prompt.append(promptCatalog.outlineRequirement(context.type().name()));
+        prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
+        prompt.append(promptCatalog.toolInstruction(toolNames));
+        if (context.skill() != null) {
+            prompt.append("\n当前技能说明：\n").append(context.skill().body()).append('\n');
+        }
+        return prompt.toString();
     }
 
     /**
@@ -377,9 +381,6 @@ public class SpringAiGenerationService implements AiGenerationService {
         StringBuilder prompt = new StringBuilder(promptCatalog.boardActionInstruction());
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
         prompt.append(promptCatalog.toolInstruction(toolNames));
-        if (context.type() == AiTaskType.GENERATE_FLOWCHART) {
-            prompt.append(promptCatalog.flowchartStructure());
-        }
         if (context.type() == AiTaskType.EDIT_ELEMENT) {
             prompt.append(promptCatalog.editElementConstraint());
         }

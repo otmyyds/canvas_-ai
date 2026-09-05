@@ -56,20 +56,6 @@ public class PromptCatalog {
                 """;
     }
 
-    /** 流程图任务约束 */
-    public String flowchartStructure() {
-        return """
-                任务类型是生成流程图：
-                1. 开始节点（id=start1，shape=ellipse）一个；结束节点（shape=ellipse）可有多个。
-                2. 处理步骤用 shape=rectangle；判断/分支点用 shape=diamond，标题写成「是否…」「…选择」等。
-                3. 流程要有分支，不能是一条直线：找出原文里的判断、条件、选择、并列（「或者/或」「以及」），
-                   从判断节点用多条 connect 分出不同后续节点，每条 connect 的 label 写明分支条件
-                   （如「是」「否」「线上」「线下」「注射」「吸入式」）。
-                4. 分支各自走几步后可以汇合到同一节点（多条 connect 指向同一个 toShapeId）。
-                5. 节点数量按内容实际需要输出（一般 8-16 个），不要为了直线而合并步骤。
-                """;
-    }
-
     /** 编辑选中元素任务约束 */
     public String editElementConstraint() {
         return """
