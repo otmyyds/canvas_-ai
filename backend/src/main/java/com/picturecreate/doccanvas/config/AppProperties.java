@@ -10,7 +10,7 @@ public record AppProperties(Cors cors, Ai ai, RustFs rustfs) {
     public record Cors(List<String> allowedOrigins, List<String> allowedOriginPatterns) {
     }
 
-    public record Ai(String provider, Task task, Retry retry, Image image) {
+    public record Ai(String provider, Task task, Retry retry, Image image, WebSearch webSearch) {
     }
 
     public record Task(
@@ -26,6 +26,9 @@ public record AppProperties(Cors cors, Ai ai, RustFs rustfs) {
     }
 
     public record Image(String apiKey, String baseUrl, String model) {
+    }
+
+    public record WebSearch(String apiKey, String baseUrl) {
     }
 
     public record RustFs(String endpoint, String accessKey, String secretKey, String bucket, String region) {

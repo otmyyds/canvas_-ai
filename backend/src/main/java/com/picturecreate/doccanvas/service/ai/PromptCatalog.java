@@ -35,10 +35,11 @@ public class PromptCatalog {
                 3. 当「是否有选中元素」为是，且指令是针对选中元素的「修改/丰富/添加分支/删除」时，归类为 EDIT_ELEMENT。
                    注意：删除某个/某些选中元素是 EDIT_ELEMENT，删除全部元素才是 CLEAR_CANVAS。
                 4. 只是提问、打招呼、闲聊、咨询，归类为 CHAT。
-                5. 多步骤指令要按执行顺序拆成多个任务，例如：
+                5. 与画布内容生成（思维导图/流程图/图片/资料摘要/学习计划/产品需求）或本系统使用无关的请求，归类为 CHAT，不要强行归类为任务。
+                6. 多步骤指令要按执行顺序拆成多个任务，例如：
                    「先删除之前的流程图，再根据上述文本生成新的流程图」→ {"plan":["CLEAR_CANVAS","GENERATE_FLOWCHART"]}；
                    「总结资料并整理画布」→ {"plan":["DOCUMENT_SUMMARY","CANVAS_STRUCTURE"]}。
-                6. 只输出 JSON，格式：{"plan":["类型1","类型2",...]}。单个任务就一个元素；纯聊天输出 {"plan":["CHAT"]}。不要输出任何其他文字。
+                7. 只输出 JSON，格式：{"plan":["类型1","类型2",...]}。单个任务就一个元素；纯聊天输出 {"plan":["CHAT"]}。不要输出任何其他文字。
                 """;
     }
 
@@ -103,19 +104,20 @@ public class PromptCatalog {
     private static final Map<String, String> TOOL_DESCRIPTIONS = Map.of(
             "get_board_context", "获取画布标题与图形节点摘要",
             "list_source_files", "列出画布已上传的资料文件",
-            "search_document_chunks", "从资料向量索引检索相关片段");
+            "search_document_chunks", "从资料向量索引检索相关片段",
+            "web_search", "联网搜索最新信息（版本、日期、近期事件等时效性问题）");
 
     /** 按本次实际暴露的工具生成说明，只列出真实可用的工具，避免模型调用未暴露的工具 */
     public String toolInstruction(List<String> toolNames) {
         StringBuilder builder = new StringBuilder(
-                "当任务涉及画布现有内容或上传资料时，先调用工具检索再回答：\n");
+                "需要画布/资料上下文或最新时效信息时，先调用对应工具检索再回答：\n");
         for (String name : toolNames) {
             String description = TOOL_DESCRIPTIONS.get(name);
             if (description != null) {
                 builder.append("- ").append(name).append("：").append(description).append('\n');
             }
         }
-        builder.append("不要编造节点或资料内容，检索结果以工具返回为准。");
+        builder.append("不要编造任何内容，检索结果以工具返回为准。");
         return builder.toString();
     }
 
@@ -124,9 +126,12 @@ public class PromptCatalog {
         StringBuilder builder = new StringBuilder();
         builder.append("你是 Doc Canvas 画布 AI 助手，一个单人 AI 文档画布应用。\n");
         builder.append("你的职责：\n");
-        builder.append("- 友好地回答用户关于画布功能、AI 能力、技术问题\n");
+        builder.append("- 回答用户关于本系统的咨询（画布功能、AI 能力、使用方法、常见问题）\n");
         builder.append("- 用户上传的文档相关内容已在下方提供，回答相关问题时请依据这些内容\n");
         builder.append("- 在用户需要生成内容时给出建议（如\"需要我帮你生成思维导图吗？\"）\n");
+        builder.append("\n你的能力边界：\n");
+        builder.append("- 你只服务两类请求：① 画布上的内容生成（思维导图、流程图、图片、资料摘要、学习计划、产品需求等）；② 关于本系统的咨询。\n");
+        builder.append("- 对既不涉及画布内容生成、也不是关于本系统的请求（如写代码、写小说/作文、翻译、算数、天气预报、闲聊无关话题等），礼貌拒绝，并引导用户回到画布内容生成或本系统使用上。\n");
         builder.append("- 不要生成 JSON 或代码，用自然语言回复\n");
         builder.append("- 保持回复简洁、有帮助\n");
         if (boardTitle != null && !boardTitle.isBlank()) {

@@ -46,10 +46,12 @@ public class BoardReadTools {
     private final DocumentChunkService chunkService;
     private final BoardService boardService;
     private final UserAccountRepository userAccountRepository;
+    private final WebSearchService webSearchService;
 
     public BoardReadTools(BoardRepository boardRepository, ShapeRepository shapeRepository,
             SourceFileRepository sourceFileRepository, AiToolCallRepository toolCallRepository,
-            DocumentChunkService chunkService, BoardService boardService, UserAccountRepository userAccountRepository) {
+            DocumentChunkService chunkService, BoardService boardService, UserAccountRepository userAccountRepository,
+            WebSearchService webSearchService) {
         this.boardRepository = boardRepository;
         this.shapeRepository = shapeRepository;
         this.sourceFileRepository = sourceFileRepository;
@@ -57,6 +59,7 @@ public class BoardReadTools {
         this.chunkService = chunkService;
         this.boardService = boardService;
         this.userAccountRepository = userAccountRepository;
+        this.webSearchService = webSearchService;
     }
 
     @Tool(name = "get_board_context", description = "获取当前画布标题与图形节点摘要，供 AI 规划使用")
@@ -122,6 +125,13 @@ public class BoardReadTools {
             }
             return result.toString();
         });
+    }
+
+    @Tool(name = "web_search", description = "联网搜索最新信息。当用户问题涉及版本、日期、时间、近期事件、最新动态等时效性内容时调用，返回实时搜索结果。")
+    public String webSearch(
+            @ToolParam(description = "搜索关键词") String query,
+            ToolContext toolContext) {
+        return audit(toolContext, "web_search", query, () -> webSearchService.search(query));
     }
 
     /** 记录一次工具调用的成功/失败与耗时，返回调用结果，并打日志便于排查 */

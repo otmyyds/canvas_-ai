@@ -89,23 +89,51 @@ public final class GraphLayoutService {
         String root = nodeIds.stream().filter(id -> !hasParent.contains(id)).findFirst().orElse(nodeIds.get(0));
         Map<String, Integer> leafWeight = new HashMap<>();
         computeLeafWeight(root, children, leafWeight);
-        double radius = adaptiveRadius(leafWeight.getOrDefault(root, 1), sizes);
+        Map<String, Integer> depth = computeDepths(root, children);
+        double radius = adaptiveRadius(root, children, leafWeight, depth, sizes);
         place(root, children, leafWeight, 0, 2 * Math.PI, 0, radius, sizes, positions);
         return positions;
     }
 
-    /** 基础半径：按叶子总数自适应放大，保证最内层叶子的弧长 >= 节点宽度 + 间距 */
-    private static double adaptiveRadius(int totalLeaves, Map<String, double[]> sizes) {
-        double refWidth = DEFAULT_W;
-        if (sizes != null) {
-            for (double[] size : sizes.values()) {
-                if (size != null && size[0] > 0) {
-                    refWidth = Math.max(refWidth, size[0]);
-                }
+    /**
+     * 基础半径：保证最浅一层叶子所在圆周的弧长足以容纳节点宽度。
+     * 叶子按叶权重均分 2π（相邻叶子角间距 = 2π/总叶子数），最浅叶子所在层半径最小、约束最紧，
+     * 据此反推基础半径（浅层叶子已在其所在圆上留够弧长，深层叶子半径更大，自然更宽松）。
+     */
+    private static double adaptiveRadius(String root, Map<String, List<String>> children,
+            Map<String, Integer> leafWeight, Map<String, Integer> depth, Map<String, double[]> sizes) {
+        int totalLeaves = leafWeight.getOrDefault(root, 1);
+        double leafWidth = DEFAULT_W;
+        int minLeafDepth = Integer.MAX_VALUE;
+        for (Map.Entry<String, Integer> entry : depth.entrySet()) {
+            if (children.get(entry.getKey()).isEmpty()) {
+                leafWidth = Math.max(leafWidth, widthOf(sizes, entry.getKey()));
+                minLeafDepth = Math.min(minLeafDepth, entry.getValue());
             }
         }
-        double minRadius = totalLeaves * (refWidth + GAP) / (2 * Math.PI);
+        // 单节点树（根即叶子）没有圆周间距需求，直接用基础半径
+        if (minLeafDepth <= 0) {
+            return BASE_RADIUS;
+        }
+        double minRadius = totalLeaves * (leafWidth + GAP) / (2 * Math.PI) - (minLeafDepth - 1) * LAYER_GAP;
         return Math.max(BASE_RADIUS, minRadius);
+    }
+
+    /** BFS 计算每个节点相对根的深度（根=0，仅可达节点） */
+    private static Map<String, Integer> computeDepths(String root, Map<String, List<String>> children) {
+        Map<String, Integer> depth = new HashMap<>();
+        Deque<String> queue = new ArrayDeque<>();
+        depth.put(root, 0);
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            String node = queue.poll();
+            int d = depth.get(node);
+            for (String kid : children.getOrDefault(node, List.of())) {
+                depth.put(kid, d + 1);
+                queue.add(kid);
+            }
+        }
+        return depth;
     }
 
     /** 计算每个节点的叶子权重（子树叶子数）：叶子权重 1，内部节点为子节点权重之和 */

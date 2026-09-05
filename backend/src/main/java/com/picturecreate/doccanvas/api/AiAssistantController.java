@@ -18,6 +18,7 @@ import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.ai.IntentClassifier;
 import com.picturecreate.doccanvas.service.ai.IntentClassifier.IntentDecision;
+import com.picturecreate.doccanvas.service.ai.ScopeGuard;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -45,13 +46,15 @@ public class AiAssistantController {
     private final ChatService chatService;
     private final AiTaskService aiTaskService;
     private final CurrentUserService currentUserService;
+    private final ScopeGuard scopeGuard;
 
     public AiAssistantController(IntentClassifier intentClassifier, ChatService chatService,
-            AiTaskService aiTaskService, CurrentUserService currentUserService) {
+            AiTaskService aiTaskService, CurrentUserService currentUserService, ScopeGuard scopeGuard) {
         this.intentClassifier = intentClassifier;
         this.chatService = chatService;
         this.aiTaskService = aiTaskService;
         this.currentUserService = currentUserService;
+        this.scopeGuard = scopeGuard;
     }
 
     /**
@@ -64,6 +67,11 @@ public class AiAssistantController {
         List<String> selectedShapeIds = body.selectedShapeIds() == null ? List.of() : body.selectedShapeIds();
         log.info("AI 助手请求：boardId={} prompt={} 选中图形={}", boardId, body.prompt(),
                 selectedShapeIds.size());
+        // 能力范围硬兜底：明显越界直接拒绝，不调模型
+        String refusal = scopeGuard.refuseReason(body.prompt());
+        if (refusal != null) {
+            return AssistResponse.chat(refusal);
+        }
         boolean hasSelection = !selectedShapeIds.isEmpty();
         IntentDecision decision = intentClassifier.classify(body.prompt(), hasSelection);
         if (decision.isChat()) {

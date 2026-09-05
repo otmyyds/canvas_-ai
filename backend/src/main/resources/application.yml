@@ -83,6 +83,10 @@ app:
       api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:}}}
       base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com}
       model: ${AI_IMAGE_MODEL:wanx2.1-t2i-plus}
+    # 联网搜索（SerpAPI，用于版本/日期等时效性问题）
+    web-search:
+      api-key: ${SERPAPI_API_KEY:}
+      base-url: ${SERPAPI_BASE_URL:https://serpapi.com}
     task:
       max-steps: ${AI_TASK_MAX_STEPS:8}
       max-model-calls: ${AI_TASK_MAX_MODEL_CALLS:3}
