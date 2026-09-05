@@ -280,9 +280,9 @@ public class AiTaskService {
     }
 
     /**
-     * 清空画布：删除全部图形节点、连线以及 tldraw 快照（确定性操作，不依赖 LLM）。
-     * 画布渲染有两套数据源：shapes/edges 表（AI 生成）+ board_snapshots 快照（手动元素），
-     * 必须同时清空，否则快照里的元素会在前端刷新后残留。
+     * 清空画布：删除全部图形节点、连线、图片资产以及 tldraw 快照（确定性操作，不依赖 LLM）。
+     * 画布渲染有三套数据源：shapes/edges 表（AI 生成节点）、assets 表（AI 生成图片）+ board_snapshots 快照（手动元素），
+     * 必须同时清空，否则残留数据会在前端刷新或后续任务完成后复活。
      * 供 CLEAR_CANVAS 任务调用，返回空动作，后续 finish 正常收尾并推送 done 事件。
      */
     private BoardActionResult clearCanvas(AiTask task) {
@@ -292,7 +292,8 @@ public class AiTaskService {
         shapeRepository.deleteAll(shapes);
         edgeRepository.deleteAll(edges);
         snapshotRepository.deleteByBoardId(boardId);
-        log.info("清空画布：boardId={} 删除图形={} 连线={} 快照已清空", boardId, shapes.size(), edges.size());
+        assetService.deleteAll(boardId, task.getOwnerId());
+        log.info("清空画布：boardId={} 删除图形={} 连线={} 快照与图片资产已清空", boardId, shapes.size(), edges.size());
         return new BoardActionResult(List.of(),
                 "{\"mode\":\"clear-canvas\",\"actionCount\":0,\"message\":\"画布已清空\"}");
     }

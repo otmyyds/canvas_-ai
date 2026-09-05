@@ -82,4 +82,15 @@ public class AssetService {
         assetRepository.delete(asset);
         log.info("图片资产已删除：assetId={} boardId={} storageKey={}", assetId, boardId, asset.getStorageKey());
     }
+
+    /** 删除画布下全部资产（清空画布用）：删除 RustFS 对象 + assets 表记录 */
+    @Transactional
+    public void deleteAll(UUID boardId, UUID ownerId) {
+        List<Asset> assets = assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId, ownerId);
+        for (Asset asset : assets) {
+            objectStorageService.delete(asset.getStorageKey());
+        }
+        assetRepository.deleteAll(assets);
+        log.info("画布图片资产已清空：boardId={} 资产数={}", boardId, assets.size());
+    }
 }
