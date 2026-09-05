@@ -6,10 +6,14 @@ import java.util.UUID;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AssetDtos.AssetResponse;
 import com.picturecreate.doccanvas.service.AssetService;
@@ -27,6 +31,8 @@ import jakarta.servlet.http.HttpServletRequest;
 @RestController
 @RequestMapping("/api/boards/{boardId}/assets")
 public class AssetController {
+
+    private static final Logger log = LoggerFactory.getLogger(AssetController.class);
 
     private final AssetService assetService;
     private final CurrentUserService currentUserService;
@@ -51,5 +57,13 @@ public class AssetController {
                 .contentType(MediaType.parseMediaType(content.contentType()))
                 .cacheControl(CacheControl.noCache())
                 .body(content.bytes());
+    }
+
+    /** 删除资产：删除 RustFS 对象 + DB 记录 */
+    @DeleteMapping("/{assetId}")
+    public void delete(@PathVariable UUID boardId, @PathVariable UUID assetId, HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        log.info("删除图片资产：boardId={} assetId={}", boardId, assetId);
+        assetService.delete(boardId, assetId, user);
     }
 }

@@ -69,4 +69,17 @@ public class AssetService {
         }
         return objectStorageService.get(asset.getStorageKey());
     }
+
+    /** 删除资产：校验归属后删除 RustFS 对象 + assets 表记录 */
+    @Transactional
+    public void delete(UUID boardId, UUID assetId, CurrentUser user) {
+        Asset asset = assetRepository.findByIdAndOwnerId(assetId, user.id())
+                .orElseThrow(() -> new NotFoundException("资产不存在"));
+        if (!asset.getBoardId().equals(boardId)) {
+            throw new NotFoundException("资产不存在");
+        }
+        objectStorageService.delete(asset.getStorageKey());
+        assetRepository.delete(asset);
+        log.info("图片资产已删除：assetId={} boardId={} storageKey={}", assetId, boardId, asset.getStorageKey());
+    }
 }

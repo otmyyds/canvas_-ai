@@ -166,6 +166,8 @@ export function WhiteboardEditor({
   const shapesRef = useRef(shapes);
   const assetsRef = useRef(assets);
   const filesRef = useRef(files);
+  // 连续添加元素的累计序号：每次手动添加递增，避免用画布元素总数当偏移导致越加越远
+  const addPlacementRef = useRef(0);
   // 已回写到后端的 AI 图形节点状态指纹（原始 id -> JSON），避免首次加载误回写
   const syncedShapeRef = useRef<Map<string, string>>(new Map());
   // 待回写后端的节点编辑（原始 id -> 编辑体），防抖后批量提交
@@ -202,7 +204,7 @@ export function WhiteboardEditor({
         continue;
       }
       editor.createAssets([tldrawAsset]);
-      const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
+      const base = viewportPlacement(editor, addPlacementRef.current++);
       editor.createShape({
         id: shapeId,
         type: "image",
@@ -296,7 +298,7 @@ export function WhiteboardEditor({
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
           const shapeAdded = mergeMissingShapes(editor, currentShapes, currentEdges);
           // 快照可能残留已被后端删除的节点，清理掉避免刷新复活
-          const removed = removeOrphanShapes(editor, currentShapes, currentEdges);
+          const removed = removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
           editor.clearHistory();
           editor.selectNone();
           hydratedBoardRef.current = boardId;
@@ -314,7 +316,7 @@ export function WhiteboardEditor({
       }
 
       mergeMissingShapes(editor, currentShapes, currentEdges);
-      removeOrphanShapes(editor, currentShapes, currentEdges);
+      removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
       editor.clearHistory();
       editor.selectNone();
       hydratedBoardRef.current = boardId;
@@ -353,7 +355,7 @@ export function WhiteboardEditor({
     }
     // 后端已删除、但 tldraw 快照里还残留的图形节点/连线需一并清理，
     // 否则下次刷新时快照会把已删节点"复活"
-    const removed = removeOrphanShapes(editor, shapes, edges);
+    const removed = removeOrphanShapes(editor, shapes, edges, assets);
     if (newShapes.length > 0 || removed > 0) {
       setMessage(
         newShapes.length > 0
@@ -547,7 +549,7 @@ export function WhiteboardEditor({
       return;
     }
     const id = createShapeId();
-    const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
+    const base = viewportPlacement(editor, addPlacementRef.current++);
     editor.createShape({
       id,
       type: "text",
@@ -575,7 +577,7 @@ export function WhiteboardEditor({
         return;
       }
       const id = createShapeId();
-      const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
+      const base = viewportPlacement(editor, addPlacementRef.current++);
       editor.createShape({
         id,
         type: "geo",
@@ -627,7 +629,7 @@ export function WhiteboardEditor({
 
     editor.createAssets([asset]);
     const id = createShapeId();
-    const base = viewportPlacement(editor, editor.getCurrentPageShapes().length);
+    const base = viewportPlacement(editor, addPlacementRef.current++);
     editor.createShape({
       id,
       type: "image",
@@ -659,33 +661,43 @@ export function WhiteboardEditor({
       setMessage("请先选中要删除的元素");
       return;
     }
-    // 同步删除后端图形节点，避免刷新后 mergeMissingShapes 让已删节点复活
+    // 同步删除后端记录（图形节点 + 图片资产），避免刷新后 mergeMissingShapes/mergeAssets 让已删元素复活
     const shapeIdsToDelete: string[] = [];
+    const assetIdsToDelete: string[] = [];
     for (const id of ids) {
       const shape = editor.getShape(id);
       if (!shape) {
         continue;
       }
-      // 图形节点（思维导图/流程图节点）→ 调后端删除 shapes 表记录
+      // shape.id 是 "shape:<uuid>" 格式，去掉前缀取真实 UUID
+      const rawId = String(id).replace(/^shape:/, "");
+      if (!UUID_PATTERN.test(rawId)) {
+        continue;
+      }
+      // 图形节点（思维导图/流程图节点）→ 删 shapes 表记录
       if (shape.type === "geo") {
-        // shape.id 是 "shape:<uuid>" 格式，去掉前缀取真实 UUID
-        const rawId = String(id).replace(/^shape:/, "");
-        if (UUID_PATTERN.test(rawId)) {
-          shapeIdsToDelete.push(rawId);
-        }
+        shapeIdsToDelete.push(rawId);
+      }
+      // 图片（AI 生成资产）→ 删 assets 表记录 + RustFS 对象
+      else if (shape.type === "image") {
+        assetIdsToDelete.push(rawId);
       }
     }
     if (shapeIdsToDelete.length > 0) {
       void Promise.allSettled(shapeIdsToDelete.map((shapeId) => api.deleteShape(shapeId)));
     }
+    if (assetIdsToDelete.length > 0) {
+      void Promise.allSettled(assetIdsToDelete.map((assetId) => api.deleteAsset(boardId, assetId)));
+    }
 
     editor.deleteShapes(ids);
+    const syncedCount = shapeIdsToDelete.length + assetIdsToDelete.length;
     setMessage(
-      shapeIdsToDelete.length > 0
+      syncedCount > 0
         ? `已删除 ${ids.length} 个元素（同步后端）`
         : "已删除选中元素"
     );
-  }, []);
+  }, [boardId]);
 
   // 全局 Delete/Backspace 删除选中的元素（hideUi 移除了 tldraw 内置快捷键）
   const deleteRef = useRef(deleteSelected);
@@ -954,11 +966,14 @@ export function WhiteboardEditor({
  * 只处理 AI 生成的元素（id 形如 shape:<uuid>）：
  * - geo 图形节点：uuid 不在后端 shapes 列表 → 删除
  * - arrow 连线：uuid 不在后端 edges 列表 → 删除
+ * - image 图片：uuid 不在后端 assets 列表 → 删除
  * 手动绘制的元素（id 非 uuid）不受影响。返回清理数量。
  */
-function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
+function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[],
+    assets: BoardAsset[]): number {
   const shapeUuids = new Set(shapes.map((s) => s.id));
   const edgeUuids = new Set(edges.map((e) => e.id));
+  const assetUuids = new Set(assets.map((a) => a.id));
   const toDelete: ReturnType<typeof createShapeId>[] = [];
   for (const shape of editor.getCurrentPageShapes()) {
     const rawId = String(shape.id).replace(/^shape:/, "");
@@ -968,6 +983,8 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
     if (shape.type === "geo" && !shapeUuids.has(rawId)) {
       toDelete.push(shape.id);
     } else if (shape.type === "arrow" && !edgeUuids.has(rawId)) {
+      toDelete.push(shape.id);
+    } else if (shape.type === "image" && !assetUuids.has(rawId)) {
       toDelete.push(shape.id);
     }
   }
@@ -1007,7 +1024,7 @@ function syncShapePositions(editor: TldrawEditor, shapes: BoardShape[]): number 
 function viewportPlacement(editor: TldrawEditor, index: number) {
   const center = editor.getViewportPageBounds().center;
   const column = index % 3;
-  const row = Math.floor(index / 3);
+  const row = Math.floor(index / 3) % 3;
   return {
     x: center.x - 170 + column * 240,
     y: center.y - 110 + row * 180

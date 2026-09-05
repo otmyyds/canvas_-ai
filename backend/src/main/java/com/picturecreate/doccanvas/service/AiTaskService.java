@@ -545,9 +545,11 @@ public class AiTaskService {
         }
         // 流程图：收集节点与边，分层布局
         List<String> nodeIds = new ArrayList<>();
+        Map<String, double[]> sizes = new HashMap<>();
         for (BoardAction action : actions) {
             if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
                 nodeIds.add(shape.id());
+                sizes.put(shape.id(), new double[] { shape.width(), shape.height() });
             }
         }
         List<String[]> edges = new ArrayList<>();
@@ -560,7 +562,7 @@ public class AiTaskService {
         if (nodeIds.isEmpty()) {
             return actions;
         }
-        Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(nodeIds, edges);
+        Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(nodeIds, edges, sizes);
         return rebuildWithPositions(actions, positions);
     }
 
@@ -584,10 +586,12 @@ public class AiTaskService {
         }
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
         Map<String, Shape> shapeById = new HashMap<>();
+        Map<String, double[]> sizes = new HashMap<>();
         Map<String, Set<String>> undirected = new HashMap<>();
         for (Shape shape : shapes) {
             String id = shape.getId().toString();
             shapeById.put(id, shape);
+            sizes.put(id, new double[] { shape.getWidth(), shape.getHeight() });
             undirected.put(id, new HashSet<>());
         }
         for (BoardEdge edge : edges) {
@@ -636,8 +640,8 @@ public class AiTaskService {
             boolean isMindmapTree = treeEdges.size() == component.size() - 1
                     && component.stream().anyMatch(id -> shapeById.get(id).getLevel() > 0);
             Map<String, double[]> positions = isMindmapTree
-                    ? GraphLayoutService.layoutMindmapTree(component, treeEdges)
-                    : GraphLayoutService.layoutFlowchart(component, treeEdges);
+                    ? GraphLayoutService.layoutMindmapTree(component, treeEdges, sizes)
+                    : GraphLayoutService.layoutFlowchart(component, treeEdges, sizes);
             double[] box = boundingBox(positions);
             double offsetX = cursorX - box[0];
             double offsetY = MINDMAP_MARGIN - box[1];
@@ -658,9 +662,11 @@ public class AiTaskService {
      */
     private List<BoardAction> layoutNewMindmap(AiTask task, List<BoardAction> actions) {
         List<String> nodeIds = new ArrayList<>();
+        Map<String, double[]> sizes = new HashMap<>();
         for (BoardAction action : actions) {
             if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
                 nodeIds.add(shape.id());
+                sizes.put(shape.id(), new double[] { shape.width(), shape.height() });
             }
         }
         List<String[]> edges = new ArrayList<>();
@@ -673,7 +679,7 @@ public class AiTaskService {
         if (nodeIds.isEmpty()) {
             return actions;
         }
-        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(nodeIds, edges);
+        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(nodeIds, edges, sizes);
         double[] newBox = boundingBox(positions);
         double[] existing = existingBounds(task.getBoardId());
         double offsetX;
@@ -715,8 +721,10 @@ public class AiTaskService {
         List<Shape> existingShapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
         List<BoardEdge> existingEdges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
         Map<String, Shape> shapeById = new HashMap<>();
+        Map<String, double[]> sizes = new HashMap<>();
         for (Shape shape : existingShapes) {
             shapeById.put(shape.getId().toString(), shape);
+            sizes.put(shape.getId().toString(), new double[] { shape.getWidth(), shape.getHeight() });
         }
         // 无向邻接，用于从选中节点 BFS 找所在树
         Map<String, Set<String>> undirected = new HashMap<>();
@@ -761,9 +769,10 @@ public class AiTaskService {
         }
         for (BoardAction.CreateShape shape : newShapes) {
             allNodes.add(shape.id());
+            sizes.put(shape.id(), new double[] { shape.width(), shape.height() });
         }
         treeEdges.addAll(newEdges);
-        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(allNodes, treeEdges);
+        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(allNodes, treeEdges, sizes);
         // 更新已有节点坐标
         for (Map.Entry<String, double[]> entry : positions.entrySet()) {
             Shape shape = shapeById.get(entry.getKey());

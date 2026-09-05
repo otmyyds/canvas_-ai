@@ -251,6 +251,8 @@ export const api = {
 
   // ===== 资产（AI 生成图片） =====
   listAssets: (boardId: string) => request<BoardAsset[]>(`/api/boards/${boardId}/assets`),
+  /** 删除图片资产（白板删除图片时同步调用，避免刷新复活） */
+  deleteAsset: (boardId: string, assetId: string) => request<void>(`/api/boards/${boardId}/assets/${assetId}`, { method: "DELETE" }),
   /** 图片直链：<img src> 无法带 Authorization 头，用 query param 传 token */
   assetContentUrl: (boardId: string, assetId: string) => {
     const token = authToken.get();
