@@ -1,5 +1,6 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -121,10 +122,17 @@ public class PromptCatalog {
         return builder.toString();
     }
 
+    /** 当前日期行：让模型解析「今天/明天/去年/最新」等相对时间，避免用过期的训练截止日期 */
+    public String currentDateLine() {
+        return "当前日期：" + LocalDate.now()
+                + "。用户提到今天/明天/昨天/最近/去年/最新等相对时间时，请结合当前日期解析。\n";
+    }
+
     /** 纯文本聊天系统提示词（画布标题 + RAG 资料片段） */
     public String chatSystemPrompt(String boardTitle, List<AiTaskContext.SourceContext> sources) {
         StringBuilder builder = new StringBuilder();
         builder.append("你是 Doc Canvas 画布 AI 助手，一个单人 AI 文档画布应用。\n");
+        builder.append(currentDateLine());
         builder.append("你的职责：\n");
         builder.append("- 回答用户关于本系统的咨询（画布功能、AI 能力、使用方法、常见问题）\n");
         builder.append("- 用户上传的文档相关内容已在下方提供，回答相关问题时请依据这些内容\n");

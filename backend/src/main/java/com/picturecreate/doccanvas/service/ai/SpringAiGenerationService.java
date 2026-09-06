@@ -362,6 +362,7 @@ public class SpringAiGenerationService implements AiGenerationService {
     private String outlineArticleSystemPrompt(AiTaskContext context, List<String> toolNames) {
         StringBuilder prompt = new StringBuilder(promptCatalog.outlineIntro());
         prompt.append(promptCatalog.outlineRequirement(context.type().name()));
+        prompt.append(promptCatalog.currentDateLine());
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
         prompt.append(promptCatalog.toolInstruction(toolNames));
         if (context.skill() != null) {
@@ -379,6 +380,7 @@ public class SpringAiGenerationService implements AiGenerationService {
      */
     private String systemPrompt(AiTaskContext context, List<String> toolNames) {
         StringBuilder prompt = new StringBuilder(promptCatalog.boardActionInstruction());
+        prompt.append(promptCatalog.currentDateLine());
         prompt.append("当前画布 boardId：").append(context.boardId()).append('\n');
         prompt.append(promptCatalog.toolInstruction(toolNames));
         if (context.type() == AiTaskType.EDIT_ELEMENT) {
