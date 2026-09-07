@@ -4,9 +4,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -18,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.domain.SourceFile;
 import com.picturecreate.doccanvas.repository.SourceFileRepository;
+import com.picturecreate.doccanvas.service.async.VectorizeStreamProducer;
 import com.picturecreate.doccanvas.storage.ObjectStorageService;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObjectContent;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObject;
@@ -30,19 +29,17 @@ public class FileService {
     private final BoardService boardService;
     private final SourceFileRepository sourceFileRepository;
     private final ObjectStorageService objectStorageService;
-    private final DocumentChunkService chunkService;
     private final DocumentParseService documentParseService;
-    private final Executor vectorizeExecutor;
+    private final VectorizeStreamProducer vectorizeStreamProducer;
 
     public FileService(BoardService boardService, SourceFileRepository sourceFileRepository,
-            ObjectStorageService objectStorageService, DocumentChunkService chunkService,
-            DocumentParseService documentParseService, @Qualifier("aiTaskExecutor") Executor vectorizeExecutor) {
+            ObjectStorageService objectStorageService,
+            DocumentParseService documentParseService, VectorizeStreamProducer vectorizeStreamProducer) {
         this.boardService = boardService;
         this.sourceFileRepository = sourceFileRepository;
         this.objectStorageService = objectStorageService;
-        this.chunkService = chunkService;
         this.documentParseService = documentParseService;
-        this.vectorizeExecutor = vectorizeExecutor;
+        this.vectorizeStreamProducer = vectorizeStreamProducer;
     }
 
     @Transactional(readOnly = true)
@@ -73,12 +70,10 @@ public class FileService {
                 stored.size(), parsed, sourceFile.getParseStatus());
         if (parsed && sourceFile.getTextExcerpt() != null && !sourceFile.getTextExcerpt().isBlank()) {
             UUID fileId = sourceFile.getId();
-            UUID ownerId = user.id();
-            String text = sourceFile.getTextExcerpt();
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    vectorizeExecutor.execute(() -> chunkService.vectorize(fileId, boardId, ownerId, text));
+                    vectorizeStreamProducer.send(fileId);
                 }
             });
         }

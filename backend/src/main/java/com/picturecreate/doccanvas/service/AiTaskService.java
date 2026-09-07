@@ -11,17 +11,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -29,6 +27,8 @@ import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
 import com.picturecreate.doccanvas.api.dto.TaskEvent;
 import com.picturecreate.doccanvas.config.AppProperties;
 import com.picturecreate.doccanvas.domain.AiTask;
+import com.picturecreate.doccanvas.infrastructure.redis.RedisService;
+import com.picturecreate.doccanvas.service.async.AiTaskStreamProducer;
 import com.picturecreate.doccanvas.domain.AiTaskStatus;
 import com.picturecreate.doccanvas.domain.AiTaskStep;
 import com.picturecreate.doccanvas.domain.AiTaskType;
@@ -92,19 +92,20 @@ public class AiTaskService {
     private final SkillLoader skillLoader;
     private final TaskEventPublisher eventPublisher;
     private final AiGenerationService aiGenerationService;
-    private final Executor aiTaskExecutor;
-    private final StringRedisTemplate redisTemplate;
+    private final AiTaskStreamProducer aiTaskStreamProducer;
+    private final RedisService redisService;
     private final AppProperties properties;
     private final ImageGenerationService imageGenerationService;
     private final AssetService assetService;
+    private final TransactionTemplate transactionTemplate;
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
             BoardSnapshotRepository snapshotRepository, SkillLoader skillLoader,
             TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
             ImageGenerationService imageGenerationService, AssetService assetService,
-            @Qualifier("aiTaskExecutor") Executor aiTaskExecutor, StringRedisTemplate redisTemplate,
-            AppProperties properties) {
+            AiTaskStreamProducer aiTaskStreamProducer, RedisService redisService,
+            AppProperties properties, TransactionTemplate transactionTemplate) {
         this.boardService = boardService;
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
@@ -116,9 +117,10 @@ public class AiTaskService {
         this.aiGenerationService = aiGenerationService;
         this.imageGenerationService = imageGenerationService;
         this.assetService = assetService;
-        this.aiTaskExecutor = aiTaskExecutor;
-        this.redisTemplate = redisTemplate;
+        this.aiTaskStreamProducer = aiTaskStreamProducer;
+        this.redisService = redisService;
         this.properties = properties;
+        this.transactionTemplate = transactionTemplate;
     }
 
     /**
@@ -149,7 +151,7 @@ public class AiTaskService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                aiTaskExecutor.execute(() -> runTask(saved.getId()));
+                aiTaskStreamProducer.send(saved.getId());
             }
         });
         return get(saved.getId(), user);
@@ -181,7 +183,7 @@ public class AiTaskService {
         AiTask task = taskRepository.findByIdAndOwnerId(taskId, user.id())
                 .orElseThrow(() -> new NotFoundException("AI 任务不存在"));
         task.requestAbort();
-        redisTemplate.opsForValue().set(cancelKey(taskId), "1", Duration.ofHours(1));
+        redisService.setString(cancelKey(taskId), "1", Duration.ofHours(1));
         eventPublisher.publish(task.getBoardId(), task.getId(), TaskEvent.progress(task.getId(), task.getBoardId(),
                 task.getProgress(), "已请求中断，任务会在下一个安全检查点停止"));
         return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderByCreatedAtAsc(taskId));
@@ -192,6 +194,29 @@ public class AiTaskService {
      * 加载技能 → 收集上下文 → 规划操作 → 应用操作。
      * 任一步抛 AbortTaskException → 标记中断；其他异常 → 标记失败。
      */
+    /**
+     * 由 Stream 消费者触发执行任务。
+     * 幂等守卫：任务已处于终态（SUCCEEDED/FAILED/ABORTED）则跳过，
+     * 避免进程崩溃后残留消息被重新投递时「复活」已结束的任务。
+     */
+    public void executeTask(UUID taskId) {
+        AiTask task = taskRepository.findById(taskId).orElse(null);
+        if (task == null) {
+            log.warn("任务不存在，跳过执行：taskId={}", taskId);
+            return;
+        }
+        if (isTerminal(task.getStatus())) {
+            log.info("任务已处于终态，跳过执行：taskId={} status={}", taskId, task.getStatus());
+            return;
+        }
+        runTask(taskId);
+    }
+
+    /** 是否终态（成功/失败/中断） */
+    private boolean isTerminal(AiTaskStatus status) {
+        return status == AiTaskStatus.SUCCEEDED || status == AiTaskStatus.FAILED || status == AiTaskStatus.ABORTED;
+    }
+
     private void runTask(UUID taskId) {
         try {
             // 排队期间可能已被用户中断：启动前再检查一次，避免把已 ABORTED 的任务复活成 RUNNING
@@ -222,7 +247,7 @@ public class AiTaskService {
     @Transactional
     protected void begin(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
-        task.markRunning("本地执行器");
+        task.markRunning("redis-stream");
         task.updateProgress(3, "启动任务");
         taskRepository.save(task);
         log.info("任务标记 RUNNING：taskId={}", taskId);
@@ -238,8 +263,11 @@ public class AiTaskService {
      * @param taskId 任务 id
      * @param skill 匹配到的 Skill（可为 null）
      * @return 模型产出的动作列表
+     *
+     * 注意：本方法不加 @Transactional。内部方法（runTask → generate）是自调用，Spring 基于代理的
+     * @Transactional 不会生效（不会真的开事务）；且此处 LLM 调用是 30~90 秒的外部 I/O，本就不该占数据库连接。
+     * 上下文读取由各 repository 方法自带短事务完成，落库原子性由 finish() 里的 TransactionTemplate 显式保证。
      */
-    @Transactional
     protected BoardActionResult generate(UUID taskId, SkillDefinition skill) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
@@ -299,16 +327,25 @@ public class AiTaskService {
     }
 
     /**
-     * 任务成功收尾：应用动作 → 标记 SUCCEEDED → 推送 actions/done 事件。
+     * 任务成功收尾：在单个短事务内原子应用动作并标记 SUCCEEDED，事务提交后再推送事件、链式调度下一步。
+     *
+     * 为什么这里显式用 TransactionTemplate 开事务？
+     * 本类内部方法（runTask → finish）是自调用，Spring 基于代理的 @Transactional 不会生效（不会真的开事务）。
+     * 而 applyActions 会写入多个图形节点 + 连线，若中途失败/崩溃会产生半套结构，必须在同一事务里一起提交。
+     * 事件推送与 chainNext 放在事务提交之后，保证订阅方和下一步任务看到的是已提交的完整状态。
      */
-    @Transactional
     protected void finish(UUID taskId, BoardActionResult result) {
-        assertNotCancelled(taskId);
+        // 原子落库：应用动作 + 标记成功在同一短事务内提交（含写入前的中断检查）
+        transactionTemplate.executeWithoutResult(status -> {
+            assertNotCancelled(taskId);
+            AiTask task = taskRepository.findById(taskId).orElseThrow();
+            applyActions(task, result.actions());
+            log.info("任务成功：taskId={} 动作数={}", taskId, result.actions() == null ? 0 : result.actions().size());
+            task.markSucceeded(result.resultJson());
+            taskRepository.save(task);
+        });
+        // 事务提交后再推送事件、链式调度下一步（下一步任务读取到的是已提交的完整落库结果）
         AiTask task = taskRepository.findById(taskId).orElseThrow();
-        applyActions(task, result.actions());
-        log.info("任务成功：taskId={} 动作数={}", taskId, result.actions() == null ? 0 : result.actions().size());
-        task.markSucceeded(result.resultJson());
-        taskRepository.save(task);
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.actions(taskId, task.getBoardId(), result.actions(), task.getType().name()));
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.done(taskId, task.getBoardId(), task.getType().name()));
@@ -335,7 +372,7 @@ public class AiTaskService {
             log.info("链式创建下一步任务：taskId={} boardId={} type={}", saved.getId(), task.getBoardId(), nextType);
             eventPublisher.publish(task.getBoardId(), saved.getId(),
                     TaskEvent.created(saved.getId(), task.getBoardId(), nextType.name()));
-            aiTaskExecutor.execute(() -> runTask(saved.getId()));
+            aiTaskStreamProducer.send(saved.getId());
         } catch (Exception exception) {
             log.warn("链式创建下一步任务失败，跳过后续步骤：taskId={} error={}", task.getId(), exception.getMessage());
         }
@@ -1001,7 +1038,7 @@ public class AiTaskService {
      * 双重标记：DB abort_requested 字段 + Redis cancel key（abort 接口设置）。
      */
     private void assertNotCancelled(UUID taskId) {
-        String redisFlag = redisTemplate.opsForValue().get(cancelKey(taskId));
+        String redisFlag = redisService.getString(cancelKey(taskId));
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         if (task.isAbortRequested() || "1".equals(redisFlag)) {
             throw new AbortTaskException();
