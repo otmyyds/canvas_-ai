@@ -66,6 +66,4 @@ NEXT_PUBLIC_API_BASE=http://localhost:8080
 - **Skill 系统**：每类任务的提示词与工具范围沉淀为 `ai-skills/*/SKILL.md`，加载后按 `allowed_tools` 过滤暴露工具。
 - **RAG**：上传 → 分块 → 向量化 → 检索，检索为空不退回全量注入。
 
-更完整的方案见 [project_plan.md](project_plan.md)；项目亮点、难点与水平评估见 [项目亮点与难点.md](项目亮点与难点.md)；架构与排障见 [docs/](docs/)。
-
 
