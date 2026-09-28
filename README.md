@@ -1,101 +1,69 @@
-# Doc Canvas
+# Doc Canvas — 单人 AI 文档画布
 
-单人 AI 文档画布项目骨架。当前版本已实现 Java 后端、Next.js 前端、RustFS 文件存储入口、AI 异步任务和 WebSocket 进度展示。
+一个面向单人的 AI 文档画布应用：上传资料，在无限画布上用图形节点组织知识（思维导图/流程图），通过 AI 自动总结、生成结构图、整理与编辑，画布内容可实时保存、分享、导出。
+
+## 能力一览
+
+- 无限画布：文本、多种图形、线条、箭头、图片（tldraw 原生 geo 渲染 AI 节点）
+- 属性面板：图形类型 / 线型 / 箭头 / 颜色 / 尺寸 / 旋转
+- 快照防抖保存，刷新恢复
+- 上传 TXT / Markdown / PDF / DOCX 等 → 自动解析 + 异步向量化（pgvector），支持 RAG 检索
+- AI 任务：总结资料、整理画布、生成思维导图/流程图、学习计划、产品需求、编辑选中元素、清空画布、文生图；步骤/进度实时推送，可中断
+- AI 助手统一入口：后端意图分类（聊天 or 任务）+ 多步骤任务链 + 纯文本聊天（带 RAG）+ 联网搜索
+- 只读分享链接、PNG / Markdown 导出
+- JWT 认证（注册/登录/静默续期），数据按 owner 隔离
 
 ## 技术栈
 
-- Backend: Java 21, Spring Boot 3, Spring WebSocket/STOMP, Spring Data JPA, PostgreSQL, Redis, Spring AI
-- Frontend: Next.js App Router, React, TypeScript, Tailwind CSS, Zustand, STOMP client
-- Infra: PostgreSQL + pgvector, Redis, RustFS
-
-## AI 配置
-
-如果你已经在系统环境变量里配置了 `GPT_API_KEY`，不需要再在 `.env` 里填写 key。后端会直接读取系统环境变量：
-
-```powershell
-GPT_API_KEY=你的系统环境变量
-```
-
-请求地址已默认配置为：
-
-```powershell
-GPT_BASE_URL=https://apinebula.ai/v1
-```
-
-默认 `AI_PROVIDER=mock` 不会真正调用 AI，只用于跑通任务进度和中断流程。要调用真实 AI，改成：
-
-```powershell
-AI_PROVIDER=spring-ai
-```
-
-可以在系统环境变量里设置，也可以在项目根目录 `.env` 里设置。`run-backend.ps1` 会优先保留系统环境变量，`.env` 只补充当前进程里缺失的值，不会用空值覆盖系统变量。
-
-常用配置：
-
-```powershell
-AI_MODEL_PLANNER=gpt-4.1
-AI_MODEL_EMBEDDING=text-embedding-3-large
-```
-
-如果 `apinebula.ai` 支持的模型名不同，把上面两个模型名改成该平台实际支持的模型名即可。
+| 层 | 技术 |
+| --- | --- |
+| 前端 | Next.js 15 App Router · React 19 · TypeScript · tldraw 3 · zustand · Tailwind CSS · @stomp/stompjs + sockjs-client |
+| 后端 | Java 21 · Spring Boot 3.5 · Spring AI 1.0 · Spring Security · Spring Data JPA · WebSocket/STOMP |
+| 数据 | PostgreSQL + pgvector · Flyway · Redis（取消标记） |
+| 存储 | RustFS（S3 兼容） |
+| AI | 阿里百炼 DashScope（qwen-plus / text-embedding-v3 / wanx 文生图）· SerpAPI 联网搜索 |
 
 ## 本地启动
 
-先启动基础设施：
-
 ```powershell
+# 1. 基础设施（PostgreSQL+pgvector / Redis / RustFS）
 docker compose -f infra/docker-compose.yml up -d
-```
 
-启动后端：
-
-```powershell
+# 2. 后端（加载 .env + 系统环境变量，mvn spring-boot:run）
 .\run-backend.ps1
-```
 
-启动前端：
-
-```powershell
+# 3. 前端（npm run dev）
 .\run-frontend.ps1
 ```
 
 访问地址：
 
-- Frontend: http://localhost:3000/app
-- Backend health: http://localhost:8080/actuator/health
+- 前端：http://localhost:3000/app
+- 后端健康检查：http://localhost:8080/actuator/health
 
-## 常见问题
+## AI 配置
 
-### No plugin found for prefix 'spring-boot'
+后端优先读取百炼密钥，其次 `GPT_API_KEY` / `OPENAI_API_KEY`：
 
-不要在根目录直接运行 `mvn spring-boot:run`。真正的 Maven 项目在 `backend/pom.xml`。请使用：
-
-```powershell
-.\run-backend.ps1
+```env
+AI_PROVIDER=spring-ai          # mock | spring-ai（默认 spring-ai）
+BAILIAN_API_TOKEN=             # 百炼密钥（优先）
+AI_MODEL_PLANNER=qwen-plus     # 百炼 DashScope 兼容模式
+EMBEDDING_MODEL=text-embedding-v3
+EMBEDDING_DIMENSIONS=1024
+SERPAPI_API_KEY=               # 联网搜索（可选）
+NEXT_PUBLIC_API_BASE=http://localhost:8080
 ```
 
-或者：
+- `AI_PROVIDER=mock` 时不调真实模型，只跑通任务进度/中断链路。
+- 其余 `POSTGRES_*` / `REDIS_*` / `RUSTFS_*` 见 `application.yml` 默认值。
 
-```powershell
-mvn -f backend/pom.xml "-Dmaven.repo.local=.\.m2\repository" spring-boot:run
-```
+## 架构要点
 
-## 当前已完成的纵切
+- **AI 只提案、后端落库**：模型产出结构化 `BoardAction`（建节点/连线/删节点），后端统一校验、解析临时 id、两遍落库，模型不直接写库。
+- **树型任务确定性解析**：思维导图/总结等让模型输出 Markdown 标题大纲，后端按标题层级解析成节点树，绕开脆弱的结构化 JSON。
+- **意图分类后端化**：`POST /assist` 统一入口，后端一次 LLM 调用拆解「聊天 or 有序任务计划」，多步骤任务链式续跑。
+- **Skill 系统**：每类任务的提示词与工具范围沉淀为 `ai-skills/*/SKILL.md`，加载后按 `allowed_tools` 过滤暴露工具。
+- **RAG**：上传 → 分块 → 向量化 → 检索，检索为空不退回全量注入。
 
-- 创建和打开私有画布
-- 创建基础卡片
-- 上传文件到 RustFS 的接口
-- 创建 AI 任务
-- 后端异步执行 AI/mock AI 任务
-- AI 任务步骤落库
-- WebSocket 推送任务进度
-- 用户中断任务
-- 任务完成后后端应用受控 `create_card` 动作
 
-## 下一步
-
-- 接入 tldraw 自定义卡片 shape
-- 接入 BlockNote 富文本编辑
-- 做文件解析、chunk、embedding 和 pgvector 检索
-- 将 Spring AI 输出改成严格 JSON Schema/DTO 校验
-- 实现图片生成、RustFS asset 记录和图片卡片
