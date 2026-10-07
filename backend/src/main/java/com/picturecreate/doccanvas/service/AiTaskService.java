@@ -721,8 +721,8 @@ public class AiTaskService {
                     treeEdges.add(new String[] { from, to });
                 }
             }
-            // 树结构（边数 == 节点数-1）且存在层级>0 的节点 → 思维导图径向布局；否则 → 流程图分层布局
-            boolean isMindmapTree = treeEdges.size() == component.size() - 1
+            // 树结构且存在层级>0 的节点 → 思维导图径向布局；否则 → 流程图分层布局
+            boolean isMindmapTree = GraphLayoutService.isTree(component, treeEdges)
                     && component.stream().anyMatch(id -> shapeById.get(id).getLevel() > 0);
             Map<String, double[]> positions = isMindmapTree
                     ? GraphLayoutService.layoutMindmapTree(component, treeEdges, sizes)
@@ -764,7 +764,10 @@ public class AiTaskService {
         if (nodeIds.isEmpty()) {
             return actions;
         }
-        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(nodeIds, edges, sizes);
+        // 模型给的 Connect 动作可能连成环，径向布局要求树，非树退回流程图分层布局
+        Map<String, double[]> positions = GraphLayoutService.isTree(nodeIds, edges)
+                ? GraphLayoutService.layoutMindmapTree(nodeIds, edges, sizes)
+                : GraphLayoutService.layoutFlowchart(nodeIds, edges, sizes);
         double[] newBox = boundingBox(positions);
         double[] existing = existingBounds(task.getBoardId());
         double offsetX;
@@ -857,7 +860,10 @@ public class AiTaskService {
             sizes.put(shape.id(), new double[] { shape.width(), shape.height() });
         }
         treeEdges.addAll(newEdges);
-        Map<String, double[]> positions = GraphLayoutService.layoutMindmapTree(allNodes, treeEdges, sizes);
+        // 已有边是历次任务累积下来的，本身可能已经带环，这里同样按树/非树分派
+        Map<String, double[]> positions = GraphLayoutService.isTree(allNodes, treeEdges)
+                ? GraphLayoutService.layoutMindmapTree(allNodes, treeEdges, sizes)
+                : GraphLayoutService.layoutFlowchart(allNodes, treeEdges, sizes);
         // 更新已有节点坐标
         for (Map.Entry<String, double[]> entry : positions.entrySet()) {
             Shape shape = shapeById.get(entry.getKey());

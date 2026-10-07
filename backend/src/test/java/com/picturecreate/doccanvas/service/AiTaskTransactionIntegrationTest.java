@@ -201,6 +201,25 @@ class AiTaskTransactionIntegrationTest {
     }
 
     @Test
+    @DisplayName("思维导图 plan 连成环时任务照样成功：不再爆栈让消费线程静默死掉")
+    void cyclicMindmapPlanStillSucceeds() {
+        given(aiGenerationService.generateBoardActions(any()))
+                .willReturn(new BoardActionResult(List.of(
+                        new BoardAction.CreateShape("n1", "节点A", "ellipse", 1, 0, 0, 200, 96),
+                        new BoardAction.CreateShape("n2", "节点B", "ellipse", 1, 0, 0, 200, 96),
+                        new BoardAction.Connect("n1", "n2", null, null, null, null),
+                        new BoardAction.Connect("n2", "n1", null, null, null, null)),
+                        "{\"mode\":\"test\"}"));
+
+        UUID taskId = taskRepository.save(
+                new AiTask(boardId, ownerId, AiTaskType.GENERATE_MINDMAP, "画一张思维导图")).getId();
+        aiTaskService.executeTask(taskId);
+
+        assertThat(taskRepository.findById(taskId).orElseThrow().getStatus()).isEqualTo(AiTaskStatus.SUCCEEDED);
+        assertThat(shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)).hasSize(2);
+    }
+
+    @Test
     @DisplayName("删除资料：对象存储清理失败不回滚也不抛异常，记录保持已删除")
     void deleteFileKeepsRecordDeletedWhenStoragePurgeFails() {
         SourceFile file = saveSourceFile();

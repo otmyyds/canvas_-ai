@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,6 +58,9 @@ public final class GraphLayoutService {
      * - 每个节点的子节点按其叶子权重按比例瓜分父节点的角度扇区，叶子在圆周上均匀分布。
      * - 基础半径按叶子总数自适应放大，保证最内层叶子的弧长足以容纳节点宽度，避免深层内容重叠。
      * - 返回左上角坐标（根中心位于原点，调用方负责整体平移）。
+     *
+     * 前提：边集必须是无环的树（见 isTree）。下面三步都是沿 children 递归下探，
+     * 环会让它一直往下走到栈溢出。调用方需先判，非树时改用 layoutFlowchart（它按层 BFS，天然扛得住环）。
      */
     public static Map<String, double[]> layoutMindmapTree(List<String> nodeIds, List<String[]> edges,
             Map<String, double[]> sizes) {
@@ -66,11 +70,55 @@ public final class GraphLayoutService {
         }
         log.info("思维导图树布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
         Set<String> all = new LinkedHashSet<>(nodeIds);
+        Map<String, List<String>> children = buildChildren(all, edges);
+        Set<String> hasParent = new LinkedHashSet<>();
+        children.values().forEach(hasParent::addAll);
+        // 根：入度为 0 的节点
+        String root = nodeIds.stream().filter(id -> !hasParent.contains(id)).findFirst().orElse(nodeIds.get(0));
+        Map<String, Integer> leafWeight = new HashMap<>();
+        computeLeafWeight(root, children, leafWeight);
+        Map<String, Integer> depth = computeDepths(root, children);
+        double radius = adaptiveRadius(root, children, leafWeight, depth, sizes);
+        place(root, children, leafWeight, 0, 2 * Math.PI, 0, radius, sizes, positions);
+        return positions;
+    }
+
+    /**
+     * 边集在给定节点上是否构成一棵树（连通且无环），即能否用径向布局。
+     *
+     * 判 "节点数 n 且边数 n-1" 还不够：两棵独立的子树再挂一条回边也能凑出 n-1 条边。
+     * 所以这里真的跑一遍三色 DFS 判环——n-1 条边且无环时必然连通（森林的边数是 n-分量数），
+     * 两个条件合起来就是树。
+     *
+     * 这里和 layoutMindmapTree 共用 buildChildren，保证判的和布局用的是同一个邻接表：
+     * 两边对"哪些边算数"的过滤规则（空边/自环/端点不在节点集内）一旦走岔，判环就会漏。
+     */
+    public static boolean isTree(List<String> nodeIds, List<String[]> edges) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return false;
+        }
+        Set<String> all = new LinkedHashSet<>(nodeIds);
+        Map<String, List<String>> children = buildChildren(all, edges);
+        int edgeCount = children.values().stream().mapToInt(kids -> kids.size()).sum();
+        if (edgeCount != all.size() - 1) {
+            return false;
+        }
+        Set<String> visiting = new HashSet<>();
+        Set<String> done = new HashSet<>();
+        for (String node : all) {
+            if (hasCycle(node, children, visiting, done)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 规范化边集：丢弃空边、自环、端点不在节点集内的边，返回 from → 子节点 的邻接表（节点集内每个 id 都有键） */
+    private static Map<String, List<String>> buildChildren(Set<String> all, List<String[]> edges) {
         Map<String, List<String>> children = new HashMap<>();
-        for (String id : nodeIds) {
+        for (String id : all) {
             children.put(id, new ArrayList<>());
         }
-        Set<String> hasParent = new LinkedHashSet<>();
         if (edges != null) {
             for (String[] edge : edges) {
                 if (edge == null || edge.length < 2) {
@@ -81,18 +129,29 @@ public final class GraphLayoutService {
                 if (from == null || to == null || from.equals(to) || !all.contains(from) || !all.contains(to)) {
                     continue;
                 }
-                children.computeIfAbsent(from, k -> new ArrayList<>()).add(to);
-                hasParent.add(to);
+                children.get(from).add(to);
             }
         }
-        // 根：入度为 0 的节点
-        String root = nodeIds.stream().filter(id -> !hasParent.contains(id)).findFirst().orElse(nodeIds.get(0));
-        Map<String, Integer> leafWeight = new HashMap<>();
-        computeLeafWeight(root, children, leafWeight);
-        Map<String, Integer> depth = computeDepths(root, children);
-        double radius = adaptiveRadius(root, children, leafWeight, depth, sizes);
-        place(root, children, leafWeight, 0, 2 * Math.PI, 0, radius, sizes, positions);
-        return positions;
+        return children;
+    }
+
+    /** 三色 DFS 判环：visiting = 当前递归路径，再遇到即回边；done = 已确认无环的子树 */
+    private static boolean hasCycle(String node, Map<String, List<String>> children,
+            Set<String> visiting, Set<String> done) {
+        if (done.contains(node)) {
+            return false;
+        }
+        if (!visiting.add(node)) {
+            return true;
+        }
+        for (String kid : children.getOrDefault(node, List.of())) {
+            if (hasCycle(kid, children, visiting, done)) {
+                return true;
+            }
+        }
+        visiting.remove(node);
+        done.add(node);
+        return false;
     }
 
     /**
