@@ -25,6 +25,18 @@
 
 ## 本地启动
 
+前置：Docker Desktop 已运行，JDK 21、Maven、Node.js 已安装，根目录存在 `.env`（从 `.env.example` 复制并填好模型密钥）。
+
+一键启动（推荐）：
+
+```powershell
+.\run-all.ps1
+```
+
+它会起 compose、等 PostgreSQL 与 Redis 健康检查通过，再各开一个新窗口拉起后端和前端。
+
+也可以分开手动起：
+
 ```powershell
 # 1. 基础设施（PostgreSQL+pgvector / Redis / RustFS）
 docker compose -f infra/docker-compose.yml up -d
@@ -32,7 +44,7 @@ docker compose -f infra/docker-compose.yml up -d
 # 2. 后端（加载 .env + 系统环境变量，mvn spring-boot:run）
 .\run-backend.ps1
 
-# 3. 前端（npm run dev）
+# 3. 前端（npm run dev，缺 node_modules 会自动 npm install）
 .\run-frontend.ps1
 ```
 
@@ -40,6 +52,7 @@ docker compose -f infra/docker-compose.yml up -d
 
 - 前端：http://localhost:3000/app
 - 后端健康检查：http://localhost:8080/actuator/health
+- RustFS 控制台：http://localhost:9001
 
 ## AI 配置
 
