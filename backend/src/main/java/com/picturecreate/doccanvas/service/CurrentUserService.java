@@ -51,8 +51,11 @@ public class CurrentUserService {
         return new CurrentUser(user.getId(), user.getEmail(), user.getDisplayName());
     }
 
-    /** 从 SecurityContext 读取 JWT 认证用户（principal 为 userId） */
-    @Transactional(readOnly = true)
+    /**
+     * 从 SecurityContext 读取 JWT 认证用户（principal 为 userId）。
+     * 不加 @Transactional：private 方法上的注解不会被 Spring 代理识别（且它只被 resolve() 调用，
+     * 实际运行在 resolve() 的事务里，加在这里纯属误导）。
+     */
     private CurrentUser authenticatedUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()) {

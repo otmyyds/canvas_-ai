@@ -41,6 +41,9 @@ public class ShapeController {
     @GetMapping("/api/boards/{boardId}/shapes")
     public List<ShapeResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
+        // 必须先校验画布归属：这里直接按 boardId 查表，不校验就等于任何登录用户
+        // 传别人的 boardId 就能读到别人画布的全部节点（同类的 update/delete 都有这一步）
+        boardService.getOwned(boardId, user);
         log.info("查询图形节点列表：boardId={}", boardId);
         return shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId).stream()
                 .map(ShapeResponse::from)

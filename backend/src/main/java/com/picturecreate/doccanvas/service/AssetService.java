@@ -7,6 +7,8 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,8 +38,12 @@ public class AssetService {
         this.objectStorageService = objectStorageService;
     }
 
-    /** 存储 AI 生成图片：上传 RustFS + 落 assets 表（供 AiTaskService 生成阶段调用） */
-    @Transactional
+    /**
+     * 存储 AI 生成图片：上传 RustFS + 落 assets 表（供 AiTaskService 生成阶段调用）。
+     * 不加 @Transactional：上传是外部网络 I/O（数百毫秒级），包进事务只会白占一个数据库连接；
+     * 落库仅一次 insert，repository 的 save 自带事务。上传成功但落库失败会留一个孤儿对象，
+     * 比"记录指向一个不存在的对象"（前端 404 死图）好，不额外加补偿。
+     */
     public Asset createImageAsset(UUID boardId, UUID ownerId, UUID taskId, byte[] imageBytes) {
         String key = "users/%s/boards/%s/assets/%s.png".formatted(ownerId, boardId, UUID.randomUUID());
         StoredObject stored;
@@ -70,7 +76,7 @@ public class AssetService {
         return objectStorageService.get(asset.getStorageKey());
     }
 
-    /** 删除资产：校验归属后删除 RustFS 对象 + assets 表记录 */
+    /** 删除资产：校验归属后删 assets 表记录，事务提交后再清 RustFS 对象 */
     @Transactional
     public void delete(UUID boardId, UUID assetId, CurrentUser user) {
         Asset asset = assetRepository.findByIdAndOwnerId(assetId, user.id())
@@ -78,19 +84,40 @@ public class AssetService {
         if (!asset.getBoardId().equals(boardId)) {
             throw new NotFoundException("资产不存在");
         }
-        objectStorageService.delete(asset.getStorageKey());
+        String storageKey = asset.getStorageKey();
         assetRepository.delete(asset);
-        log.info("图片资产已删除：assetId={} boardId={} storageKey={}", assetId, boardId, asset.getStorageKey());
+        purgeObjects(List.of(storageKey));
+        log.info("图片资产已删除：assetId={} boardId={} storageKey={}", assetId, boardId, storageKey);
     }
 
-    /** 删除画布下全部资产（清空画布用）：删除 RustFS 对象 + assets 表记录 */
+    /** 删除画布下全部资产（清空画布用）：删 assets 表记录，事务提交后再清 RustFS 对象 */
     @Transactional
     public void deleteAll(UUID boardId, UUID ownerId) {
         List<Asset> assets = assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId, ownerId);
-        for (Asset asset : assets) {
-            objectStorageService.delete(asset.getStorageKey());
-        }
         assetRepository.deleteAll(assets);
+        purgeObjects(assets.stream().map(Asset::getStorageKey).toList());
         log.info("画布图片资产已清空：boardId={} 资产数={}", boardId, assets.size());
+    }
+
+    /**
+     * 事务提交后再清理对象存储里的文件。
+     *
+     * 顺序不能反：assets 记录删除并提交才是权威状态。对象删不掉只会留一个孤儿对象（浪费点存储），
+     * 而"先删对象、记录删除失败回滚"会留下指向不存在对象的记录，前端就是一张 404 死图。
+     * 这里也不能再往外抛异常——事务已经提交，抛出去只会让调用方误判成删除失败。
+     */
+    private void purgeObjects(List<String> storageKeys) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                for (String storageKey : storageKeys) {
+                    try {
+                        objectStorageService.delete(storageKey);
+                    } catch (Exception exception) {
+                        log.warn("清理对象存储失败，已留孤儿对象：key={} error={}", storageKey, exception.getMessage());
+                    }
+                }
+            }
+        });
     }
 }

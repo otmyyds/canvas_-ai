@@ -3,12 +3,14 @@ package com.picturecreate.doccanvas.service;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import org.slf4j.Logger;
@@ -31,15 +33,18 @@ public class FileService {
     private final ObjectStorageService objectStorageService;
     private final DocumentParseService documentParseService;
     private final VectorizeStreamProducer vectorizeStreamProducer;
+    private final TransactionTemplate transactionTemplate;
 
     public FileService(BoardService boardService, SourceFileRepository sourceFileRepository,
             ObjectStorageService objectStorageService,
-            DocumentParseService documentParseService, VectorizeStreamProducer vectorizeStreamProducer) {
+            DocumentParseService documentParseService, VectorizeStreamProducer vectorizeStreamProducer,
+            TransactionTemplate transactionTemplate) {
         this.boardService = boardService;
         this.sourceFileRepository = sourceFileRepository;
         this.objectStorageService = objectStorageService;
         this.documentParseService = documentParseService;
         this.vectorizeStreamProducer = vectorizeStreamProducer;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @Transactional(readOnly = true)
@@ -48,7 +53,12 @@ public class FileService {
         return sourceFileRepository.findByBoardIdAndOwnerIdOrderByCreatedAtDesc(boardId, user.id());
     }
 
-    @Transactional
+    /**
+     * 上传资料：RustFS 上传与 Tika 解析都在事务外，数据库只做一次 insert。
+     *
+     * 不加 @Transactional：S3 网络往返加大 PDF 解析合起来可达数秒，包进事务只会长时间占着数据库连接；
+     * 上传成功而落库失败会留一个孤儿对象，比"记录指向一个不存在的对象"好，不额外加补偿。
+     */
     public SourceFile upload(UUID boardId, CurrentUser user, MultipartFile file) throws IOException {
         boardService.getOwned(boardId, user);
         if (file == null || file.isEmpty()) {
@@ -62,22 +72,30 @@ public class FileService {
                 : file.getContentType();
         String key = "users/%s/boards/%s/source-files/%s/%s".formatted(user.id(), boardId, UUID.randomUUID(),
                 filename.replace("\\", "_").replace("/", "_"));
+        // 对象存储是外部网络 I/O，放在事务外
         StoredObject stored = objectStorageService.put(key, contentType, file.getSize(), file.getInputStream());
-        SourceFile sourceFile = sourceFileRepository.save(new SourceFile(boardId, user.id(), stored.key(), filename, contentType, stored.size()));
+        SourceFile sourceFile = new SourceFile(boardId, user.id(), stored.key(), filename, contentType, stored.size());
+        // 解析是 CPU 密集操作（大 PDF 数秒），同样在事务外，结果先写在内存对象上，随下面这一次 insert 一起落库
         boolean parsed = parseTextContent(sourceFile, file);
-        sourceFileRepository.save(sourceFile);
-        log.info("资料已上传：fileId={} filename={} size={} parsed={} status={}", sourceFile.getId(), filename,
-                stored.size(), parsed, sourceFile.getParseStatus());
-        if (parsed && sourceFile.getTextExcerpt() != null && !sourceFile.getTextExcerpt().isBlank()) {
-            UUID fileId = sourceFile.getId();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    vectorizeStreamProducer.send(fileId);
-                }
-            });
-        }
-        return sourceFile;
+        // execute 的返回类型被标注为 @Nullable（Spring 无从得知回调一定会返回值），
+        // 这里回调恒有返回值，requireNonNull 只是把这条不变式显式写出来
+        SourceFile saved = Objects.requireNonNull(transactionTemplate.execute(status -> {
+            SourceFile result = sourceFileRepository.save(sourceFile);
+            if (parsed && result.getTextExcerpt() != null && !result.getTextExcerpt().isBlank()) {
+                UUID fileId = result.getId();
+                // 向量化投递放在提交之后：消费方必须先看到已提交的记录行，否则查询落空
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        vectorizeStreamProducer.send(fileId);
+                    }
+                });
+            }
+            return result;
+        }));
+        log.info("资料已上传：fileId={} filename={} size={} parsed={} status={}", saved.getId(), filename,
+                stored.size(), parsed, saved.getParseStatus());
+        return saved;
     }
 
     /**
@@ -133,20 +151,37 @@ public class FileService {
         }
     }
 
-    @Transactional(readOnly = true)
-    public SourceFile getOwned(UUID fileId, CurrentUser user) {
+    /**
+     * 取本人名下的资料，不存在即 404。
+     * 只被本类的 delete / readContent 调用，故收成 private：类内自调用不走 Spring 代理，
+     * 挂在这里的 @Transactional 一次都不会生效（实际运行在调用方的事务里），加了纯属误导。
+     */
+    private SourceFile getOwned(UUID fileId, CurrentUser user) {
         return sourceFileRepository.findByIdAndOwnerId(fileId, user.id())
                 .orElseThrow(() -> new NotFoundException("文件不存在"));
     }
 
+    /** 删除资料：先删记录并提交，提交后再清 RustFS 对象 */
     @Transactional
     public void delete(UUID fileId, CurrentUser user) {
         SourceFile file = getOwned(fileId, user);
-        // 清理向量 chunk（document_chunks 有 source_file_id 外键级联删除）
-        // 删除 RustFS 对象 + DB 记录
-        objectStorageService.delete(file.getStorageKey());
+        String storageKey = file.getStorageKey();
+        // 记录删除并提交才是权威状态；向量 chunk 由 document_chunks 的 source_file_id 外键级联删除
         sourceFileRepository.delete(file);
-        log.info("资料已删除：fileId={} storageKey={}", fileId, file.getStorageKey());
+        // 提交后再清对象存储。顺序不能反：对象删不掉只会留一个孤儿对象（浪费点存储），
+        // 而"先删对象、记录删除失败回滚"会留下指向不存在对象的记录，前端就是一条 404 死链。
+        // 这里也不能再往外抛异常——事务已经提交，抛出去只会让调用方误判成删除失败。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    objectStorageService.delete(storageKey);
+                } catch (Exception exception) {
+                    log.warn("清理对象存储失败，已留孤儿对象：key={} error={}", storageKey, exception.getMessage());
+                }
+            }
+        });
+        log.info("资料已删除：fileId={} storageKey={}", fileId, storageKey);
     }
 
     @Transactional(readOnly = true)

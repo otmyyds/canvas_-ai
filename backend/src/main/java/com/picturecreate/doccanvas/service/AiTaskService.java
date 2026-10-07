@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -63,6 +64,17 @@ import com.picturecreate.doccanvas.service.ai.SkillLoader;
  * - 每用户/每画布有并发限制（enforceConcurrency）
  * - 每步开始前检查是否被中断（assertNotCancelled：DB abort 标记 + Redis cancel key）
  * - AI 只提案（BoardAction），真正落库由本服务统一校验后执行
+ *
+ * 本类的事务规则（务必遵守，否则会重蹈覆辙）：
+ * 1. 任务由 Redis Stream 消费者线程拉起（executeTask），该线程上没有任何事务包裹，
+ *    每一个数据库状态变更都必须自己保证原子性。
+ * 2. 类内自调用不走 Spring 代理：runTask → begin/generate/finish、runStep → startStep/updateStep/completeStep
+ *    全是 this.xxx()，@Transactional 对它们一次都不会生效（且默认只对 public 方法生效，本类内部方法多为 protected/private）。
+ *    因此本类内部一律不用 @Transactional，需要事务就显式用注入的 transactionTemplate。
+ * 3. 单表单行写不需要显式事务，repository 的 save 自带事务且返回时已提交。
+ * 4. 外部 I/O（RustFS 对象存储、Redis、WebSocket 推送、Stream 投递）一律放在事务提交之后：
+ *    事务只管数据库，回滚撤不掉已经发出去的 I/O。
+ * 5. 只被类内调用的方法收成 private，让"不会走代理"这件事在签名上就看得见。
  */
 @Service
 public class AiTaskService {
@@ -146,11 +158,13 @@ public class AiTaskService {
         log.info("AI 任务已创建：taskId={} boardId={} type={} prompt={} 选中图形={} 后续步骤={}", saved.getId(),
                 boardId, type, prompt, selectedShapeIds == null ? 0 : selectedShapeIds.size(),
                 remainingPlan == null ? 0 : remainingPlan.size());
-        eventPublisher.publish(boardId, saved.getId(), TaskEvent.created(saved.getId(), boardId, type.name()));
-        // 事务提交后再异步执行，保证任务记录已落库
+        // 事件推送与异步调度都放在事务提交之后：
+        // 前端收到 created 事件会立刻回查任务详情，若此时事务还没提交就会查不到；
+        // 消费方同样必须先看到已提交的任务行，否则 findById 落空。
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                eventPublisher.publish(boardId, saved.getId(), TaskEvent.created(saved.getId(), boardId, type.name()));
                 aiTaskStreamProducer.send(saved.getId());
             }
         });
@@ -183,9 +197,18 @@ public class AiTaskService {
         AiTask task = taskRepository.findByIdAndOwnerId(taskId, user.id())
                 .orElseThrow(() -> new NotFoundException("AI 任务不存在"));
         task.requestAbort();
+        // 取消标记保留在事务内：宁可多设不可漏设，回滚后残留一个标记只会让任务提前停下，不会造成数据不一致
         redisService.setString(cancelKey(taskId), "1", Duration.ofHours(1));
-        eventPublisher.publish(task.getBoardId(), task.getId(), TaskEvent.progress(task.getId(), task.getBoardId(),
-                task.getProgress(), "已请求中断，任务会在下一个安全检查点停止"));
+        UUID boardId = task.getBoardId();
+        int progress = task.getProgress();
+        // 提交后再推送，避免订阅方读到尚未提交的中断状态
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventPublisher.publish(boardId, taskId, TaskEvent.progress(taskId, boardId, progress,
+                        "已请求中断，任务会在下一个安全检查点停止"));
+            }
+        });
         return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderByCreatedAtAsc(taskId));
     }
 
@@ -243,9 +266,12 @@ public class AiTaskService {
         }
     }
 
-    /** 任务启动：标记 RUNNING，进度 3% */
-    @Transactional
-    protected void begin(UUID taskId) {
+    /**
+     * 任务启动：标记 RUNNING，进度 3%。
+     * 只有 ai_tasks 单表单行写，repository 的 save 自带事务即可，无需显式事务；
+     * 事件在 save 返回（已提交）之后推送，订阅方读到的一定是已落库的状态。
+     */
+    private void begin(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markRunning("redis-stream");
         task.updateProgress(3, "启动任务");
@@ -264,11 +290,11 @@ public class AiTaskService {
      * @param skill 匹配到的 Skill（可为 null）
      * @return 模型产出的动作列表
      *
-     * 注意：本方法不加 @Transactional。内部方法（runTask → generate）是自调用，Spring 基于代理的
-     * @Transactional 不会生效（不会真的开事务）；且此处 LLM 调用是 30~90 秒的外部 I/O，本就不该占数据库连接。
-     * 上下文读取由各 repository 方法自带短事务完成，落库原子性由 finish() 里的 TransactionTemplate 显式保证。
+     * 注意：本方法不加 @Transactional。此处 LLM 调用是 30~90 秒的外部 I/O，本就不该占数据库连接。
+     * 上下文读取由各 repository 方法自带短事务完成，落库原子性由 finish()/clearCanvas() 里的
+     * transactionTemplate 显式保证。
      */
-    protected BoardActionResult generate(UUID taskId, SkillDefinition skill) {
+    private BoardActionResult generate(UUID taskId, SkillDefinition skill) {
         assertNotCancelled(taskId);
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         // 清空画布：确定性删除全部元素，不依赖 LLM 生成动作
@@ -317,9 +343,14 @@ public class AiTaskService {
         UUID boardId = task.getBoardId();
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        shapeRepository.deleteAll(shapes);
-        edgeRepository.deleteAll(edges);
-        snapshotRepository.deleteByBoardId(boardId);
+        // 画布三张表必须在同一个事务里清空：残留任何一张，元素都会在前端刷新或后续任务完成后复活
+        transactionTemplate.executeWithoutResult(status -> {
+            shapeRepository.deleteAll(shapes);
+            edgeRepository.deleteAll(edges);
+            snapshotRepository.deleteByBoardId(boardId);
+        });
+        // 资产交给 AssetService：它自己的事务只删 assets 记录，提交后才去清 RustFS 对象。
+        // 放在上面的事务之外，避免 RustFS 网络 I/O 占着本事务的数据库连接。
         assetService.deleteAll(boardId, task.getOwnerId());
         log.info("清空画布：boardId={} 删除图形={} 连线={} 快照与图片资产已清空", boardId, shapes.size(), edges.size());
         return new BoardActionResult(List.of(),
@@ -334,7 +365,7 @@ public class AiTaskService {
      * 而 applyActions 会写入多个图形节点 + 连线，若中途失败/崩溃会产生半套结构，必须在同一事务里一起提交。
      * 事件推送与 chainNext 放在事务提交之后，保证订阅方和下一步任务看到的是已提交的完整状态。
      */
-    protected void finish(UUID taskId, BoardActionResult result) {
+    private void finish(UUID taskId, BoardActionResult result) {
         // 原子落库：应用动作 + 标记成功在同一短事务内提交（含写入前的中断检查）
         transactionTemplate.executeWithoutResult(status -> {
             assertNotCancelled(taskId);
@@ -378,9 +409,8 @@ public class AiTaskService {
         }
     }
 
-    /** 任务中断收尾：标记 ABORTED，推送 aborted 事件 */
-    @Transactional
-    protected void markAborted(UUID taskId) {
+    /** 任务中断收尾：标记 ABORTED，推送 aborted 事件（单表单行写，save 自带事务） */
+    private void markAborted(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markAborted();
         taskRepository.save(task);
@@ -435,9 +465,8 @@ public class AiTaskService {
         }
     }
 
-    /** 任务失败收尾：标记 FAILED（记录错误信息），推送 failed 事件 */
-    @Transactional
-    protected void markFailed(UUID taskId, Exception exception) {
+    /** 任务失败收尾：标记 FAILED（记录错误信息），推送 failed 事件（单表单行写，save 自带事务） */
+    private void markFailed(UUID taskId, Exception exception) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
         task.markFailed(exception.getMessage());
         taskRepository.save(task);
@@ -455,25 +484,37 @@ public class AiTaskService {
         completeStep(taskId, step.getId(), taskProgress, message);
     }
 
-    /** 步骤开始：落库 + 推送 step(running) 事件 */
-    @Transactional
-    protected AiTaskStep startStep(UUID taskId, String title, String message) {
-        assertNotCancelled(taskId);
-        AiTask task = taskRepository.findById(taskId).orElseThrow();
-        AiTaskStep step = new AiTaskStep(taskId, title);
-        step.start(message);
-        step = stepRepository.save(step);
-        task.updateProgress(task.getProgress(), title);
-        taskRepository.save(task);
+    /**
+     * 步骤开始：在同一事务内写 ai_task_steps + ai_tasks 两张表，提交后推送 step(running) 事件。
+     * 两表写必须原子：只落了步骤却没更新任务进度，前端会出现"步骤已开始但进度条不动"的错位状态。
+     */
+    private AiTaskStep startStep(UUID taskId, String title, String message) {
+        // execute 的返回类型被标注为 @Nullable（Spring 无从得知回调一定会返回值），
+        // 这里回调恒有返回值，requireNonNull 只是把这条不变式显式写出来
+        AiTaskStep step = Objects.requireNonNull(transactionTemplate.execute(status -> {
+            // 中断检查放事务内第一行：抛 AbortTaskException 时整体回滚，不会留下写了一半的步骤
+            assertNotCancelled(taskId);
+            AiTask task = taskRepository.findById(taskId).orElseThrow();
+            AiTaskStep created = new AiTaskStep(taskId, title);
+            created.start(message);
+            AiTaskStep saved = stepRepository.save(created);
+            task.updateProgress(task.getProgress(), title);
+            taskRepository.save(task);
+            return saved;
+        }));
         log.info("步骤开始：taskId={} step={} message={}", taskId, title, message);
+        // 提交后再推送，订阅方读到的一定是已落库的完整状态
+        AiTask task = taskRepository.findById(taskId).orElseThrow();
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.step(taskId, task.getBoardId(), step.getId(), title, "running", 0, message));
         return step;
     }
 
-    /** 步骤进行中更新进度：落库 + 推送 step(running) 事件 */
-    @Transactional
-    protected void updateStep(UUID taskId, UUID stepId, int progress, String message) {
+    /**
+     * 步骤进行中更新进度：只写 ai_task_steps 单表单行，save 自带事务即可；
+     * 读 ai_tasks 仅为取 boardId 拼事件，不构成一次需要保护的写。
+     */
+    private void updateStep(UUID taskId, UUID stepId, int progress, String message) {
         assertNotCancelled(taskId);
         AiTaskStep step = stepRepository.findById(stepId).orElseThrow();
         step.update(progress, message);
@@ -483,17 +524,23 @@ public class AiTaskService {
                 TaskEvent.step(taskId, task.getBoardId(), stepId, step.getTitle(), "running", progress, message));
     }
 
-    /** 步骤完成：标记 DONE + 更新任务进度 + 推送 done 事件 */
-    @Transactional
-    protected void completeStep(UUID taskId, UUID stepId, int taskProgress, String message) {
-        assertNotCancelled(taskId);
-        AiTaskStep step = stepRepository.findById(stepId).orElseThrow();
-        step.done(message);
-        AiTask task = taskRepository.findById(taskId).orElseThrow();
-        task.updateProgress(taskProgress, step.getTitle());
-        stepRepository.save(step);
-        taskRepository.save(task);
+    /**
+     * 步骤完成：在同一事务内标记 DONE 并推进任务进度，提交后推送 step(done) + progress 事件。
+     * 与 startStep 同理，两张表的写必须原子，否则步骤已 DONE 而任务进度停在上一档。
+     */
+    private void completeStep(UUID taskId, UUID stepId, int taskProgress, String message) {
+        AiTaskStep step = Objects.requireNonNull(transactionTemplate.execute(status -> {
+            assertNotCancelled(taskId);
+            AiTaskStep found = stepRepository.findById(stepId).orElseThrow();
+            found.done(message);
+            AiTask task = taskRepository.findById(taskId).orElseThrow();
+            task.updateProgress(taskProgress, found.getTitle());
+            stepRepository.save(found);
+            taskRepository.save(task);
+            return found;
+        }));
         log.info("步骤完成：taskId={} step={} progress={}", taskId, step.getTitle(), taskProgress);
+        AiTask task = taskRepository.findById(taskId).orElseThrow();
         eventPublisher.publish(task.getBoardId(), taskId,
                 TaskEvent.step(taskId, task.getBoardId(), stepId, step.getTitle(), "done", 100, message));
         eventPublisher.publish(task.getBoardId(), taskId,
