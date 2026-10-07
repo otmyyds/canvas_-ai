@@ -3,6 +3,7 @@ package com.picturecreate.doccanvas.api;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,8 +84,14 @@ public class BoardController {
         return BoardResponse.from(boardService.rename(boardId, user, body.title()));
     }
 
-    /** 删除画布（服务层删除，数据库级联清理关联数据） */
+    /**
+     * 删除画布（服务层删除，数据库级联清理关联数据）。
+     *
+     * 无返回体必须显式声明 204：Spring 对无返回值且无 @ResponseStatus 的处理器默认回 200 + 空 body，
+     * 前端 request() 只在 204 时跳过解析，200 会拿空 body 去调 response.json() 抛 SyntaxError。
+     */
     @DeleteMapping("/{boardId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("删除画布：boardId={}", boardId);

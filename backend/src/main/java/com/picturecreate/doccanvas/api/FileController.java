@@ -13,8 +13,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,8 +88,15 @@ public class FileController {
                 .body(content.bytes());
     }
 
-    /** 删除资料：删除 RustFS 对象 + DB 记录 + 向量 chunk */
+    /**
+     * 删除资料：删除 RustFS 对象 + DB 记录 + 向量 chunk。
+     *
+     * 必须显式声明 204：Spring 对无返回值且无 @ResponseStatus 的处理器默认回 200 + 空 body，
+     * 而前端 request() 只在 204 时跳过解析，200 会拿空 body 去调 response.json() 抛 SyntaxError，
+     * 用户就看到一条英文红字——此时记录其实已经删掉了，再点一次反而提示"文件不存在"。
+     */
     @DeleteMapping("/{fileId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID boardId, @PathVariable UUID fileId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("删除资料：boardId={} fileId={}", boardId, fileId);

@@ -3,11 +3,13 @@ package com.picturecreate.doccanvas.api;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +67,14 @@ public class ShapeController {
         return ShapeResponse.from(saved);
     }
 
+    /**
+     * 删除图形节点。
+     *
+     * 无返回体必须显式声明 204：Spring 对无返回值且无 @ResponseStatus 的处理器默认回 200 + 空 body，
+     * 前端 request() 只在 204 时跳过解析，200 会拿空 body 去调 response.json() 抛 SyntaxError。
+     */
     @DeleteMapping("/api/shapes/{shapeId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID shapeId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("删除图形节点：shapeId={}", shapeId);
