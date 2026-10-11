@@ -26,6 +26,7 @@ public class PromptCatalog {
     private final PromptTemplate outlineIntroTemplate;
     private final PromptTemplate outlineUserTemplate;
     private final PromptTemplate toolInstructionTemplate;
+    private final PromptTemplate webSearchPolicyTemplate;
     private final PromptTemplate currentDateTemplate;
     private final PromptTemplate chatSystemTemplate;
 
@@ -36,6 +37,7 @@ public class PromptCatalog {
             @Value("classpath:prompts/outline-intro.st") Resource outlineIntroResource,
             @Value("classpath:prompts/outline-user.st") Resource outlineUserResource,
             @Value("classpath:prompts/tool-instruction.st") Resource toolInstructionResource,
+            @Value("classpath:prompts/web-search-policy.st") Resource webSearchPolicyResource,
             @Value("classpath:prompts/current-date.st") Resource currentDateResource,
             @Value("classpath:prompts/chat-system.st") Resource chatSystemResource) {
         this.classificationTemplate = new PromptTemplate(read(classificationResource));
@@ -44,6 +46,7 @@ public class PromptCatalog {
         this.outlineIntroTemplate = new PromptTemplate(read(outlineIntroResource));
         this.outlineUserTemplate = new PromptTemplate(read(outlineUserResource));
         this.toolInstructionTemplate = new PromptTemplate(read(toolInstructionResource));
+        this.webSearchPolicyTemplate = new PromptTemplate(read(webSearchPolicyResource));
         this.currentDateTemplate = new PromptTemplate(read(currentDateResource));
         this.chatSystemTemplate = new PromptTemplate(read(chatSystemResource));
     }
@@ -107,7 +110,11 @@ public class PromptCatalog {
                 builder.append("- ").append(name).append("：").append(description).append('\n');
             }
         }
-        return toolInstructionTemplate.render(Map.of("tools", builder.toString()));
+        String rendered = toolInstructionTemplate.render(Map.of("tools", builder.toString()));
+        if (toolNames.contains("web_search")) {
+            rendered += "\n" + webSearchPolicyTemplate.render();
+        }
+        return rendered;
     }
 
     /** 当前日期行：让模型解析「今天/明天/去年/最新」等相对时间，避免用过期的训练截止日期 */

@@ -7,7 +7,6 @@ task_types:
 allowed_tools:
   - get_board_context
   - search_document_chunks
-  - web_search
 max_steps: 8
 max_model_calls: 3
 max_tool_calls: 8
