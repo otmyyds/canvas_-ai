@@ -151,6 +151,7 @@ public class AiTaskService {
     public AiTaskResponse create(UUID boardId, CurrentUser user, AiTaskType type, String prompt,
             List<String> selectedShapeIds, List<AiTaskType> remainingPlan) {
         boardService.getOwned(boardId, user);
+        // 检查任务数量是否超出并发限制
         enforceConcurrency(boardId, user);
         AiTask task = new AiTask(boardId, user.id(), type, prompt);
         task.setContextJson(contextJson(selectedShapeIds, remainingPlan));
@@ -549,12 +550,10 @@ public class AiTaskService {
 
     /**
      * 应用模型产出的所有动作到数据库。
-     *
      * 为什么分两遍？
      * 结构图（思维导图/流程图）里 connect 会引用"本计划内新建的节点"（临时 id 如 root1/branch1）。
      * 若先建图形（第一遍），记录 临时id→真实UUID 映射；再连线/删（第二遍），
      * 就能让 connect 通过映射找到真实节点 id。
-     *
      * 前置：maybeLayoutGraph 已为结构图节点重算坐标（避免重叠）。
      */
     private void applyActions(AiTask task, List<BoardAction> actions) {

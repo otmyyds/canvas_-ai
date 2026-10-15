@@ -13,6 +13,19 @@
 - 只读分享链接、PNG / Markdown 导出
 - JWT 认证（注册/登录/静默续期），数据按 owner 隔离
 
+## 界面预览
+
+| 功能 | 截图 |
+|------|------|
+| 复杂任务分步执行，全程透明可控 | ![任务完成](./assets/01-task-done.png) |
+| 资料库 RAG<br>上传 TXT/MD/PDF/DOCX，作为 AI 上下文，由AI决定何时调用 | ![资料库](./assets/02-rag-library.png) |
+| 画布编辑器<br>基于 tldraw 的无限画布，自由绘制 | ![画布编辑器](./assets/03-canvas-editor.png) |
+| 登录页<br>邮箱注册登录 | ![登录页](./assets/04-login.png) |
+| 工作台<br>画布列表管理，新建/打开/删除 | ![工作台](./assets/05-workspace.png) |
+| 实时中断任务<br>WebSocket 双向通道，随时中断 AI 长任务 | ![中断任务](./assets/06-interrupt.png) |
+| 聊天与任务区分<br>对话历史与执行进度分栏展示 | ![聊天任务区分](./assets/07-chat-task.png) |
+| 导出 PNG 结果<br>一键导出画布为高清图片 | ![导出PNG](./assets/08-export-png.png) |
+
 ## 技术栈
 
 | 层 | 技术 |
