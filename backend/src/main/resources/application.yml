@@ -94,6 +94,37 @@ app:
       max-duration-seconds: ${AI_TASK_MAX_DURATION_SECONDS:900}
       per-user-concurrency: ${AI_TASK_PER_USER_CONCURRENCY:2}
       per-board-write-concurrency: ${AI_TASK_PER_BOARD_WRITE_CONCURRENCY:1}
+      # 多用户并发：每个实例启动的消费者循环数；任务仍受每用户/每画布并发限制
+      consumer-concurrency: ${AI_TASK_CONSUMER_CONCURRENCY:4}
+    agent:
+      # 单次运行上限
+      max-steps: ${AI_AGENT_MAX_STEPS:20}
+      max-model-calls: ${AI_AGENT_MAX_MODEL_CALLS:12}
+      max-tool-calls: ${AI_AGENT_MAX_TOOL_CALLS:30}
+      max-total-tokens: ${AI_AGENT_MAX_TOTAL_TOKENS:80000}
+      max-duration-seconds: ${AI_AGENT_MAX_DURATION_SECONDS:600}
+      # 委派
+      max-branches: ${AI_AGENT_MAX_BRANCHES:8}
+      branch-parallelism: ${AI_AGENT_BRANCH_PARALLELISM:4}
+      branch-max-model-calls: ${AI_AGENT_BRANCH_MAX_MODEL_CALLS:4}
+      branch-max-tool-calls: ${AI_AGENT_BRANCH_MAX_TOOL_CALLS:8}
+      branch-max-tokens: ${AI_AGENT_BRANCH_MAX_TOKENS:20000}
+      branch-max-children: ${AI_AGENT_BRANCH_MAX_CHILDREN:5}
+      # 预检
+      preflight-max-model-calls: ${AI_AGENT_PREFLIGHT_MAX_MODEL_CALLS:4}
+      preflight-max-tool-calls: ${AI_AGENT_PREFLIGHT_MAX_TOOL_CALLS:6}
+      preflight-max-duration-seconds: ${AI_AGENT_PREFLIGHT_MAX_DURATION_SECONDS:20}
+      # 会话
+      session-window-messages: ${AI_AGENT_SESSION_WINDOW_MESSAGES:20}
+      session-summary-threshold: ${AI_AGENT_SESSION_SUMMARY_THRESHOLD:30}
+      # 审查
+      critic-enabled: ${AI_AGENT_CRITIC_ENABLED:true}
+      critic-min-nodes: ${AI_AGENT_CRITIC_MIN_NODES:30}
+      critic-max-rounds: ${AI_AGENT_CRITIC_MAX_ROUNDS:1}
+      # 规模上限
+      max-nodes-per-task: ${AI_AGENT_MAX_NODES_PER_TASK:80}
+    quota:
+      daily-tokens-per-user: ${AI_QUOTA_DAILY_TOKENS_PER_USER:200000}
   rustfs:
     endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
     access-key: ${RUSTFS_ACCESS_KEY:rustfsadmin}

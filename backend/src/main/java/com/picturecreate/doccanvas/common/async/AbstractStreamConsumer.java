@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.common.async;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -27,7 +29,7 @@ public abstract class AbstractStreamConsumer<T> {
     private final RedisService redisService;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ExecutorService executorService;
-    private String consumerName;
+    private List<String> consumerNames = List.of();
 
     protected AbstractStreamConsumer(RedisService redisService) {
         this.redisService = redisService;
@@ -35,7 +37,13 @@ public abstract class AbstractStreamConsumer<T> {
 
     @PostConstruct
     public void init() {
-        this.consumerName = consumerPrefix() + UUID.randomUUID().toString().substring(0, 8);
+        int concurrency = Math.max(1, consumerConcurrency());
+        String instanceId = UUID.randomUUID().toString().substring(0, 8);
+        List<String> names = new ArrayList<>(concurrency);
+        for (int i = 0; i < concurrency; i++) {
+            names.add(consumerPrefix() + instanceId + "-" + i);
+        }
+        this.consumerNames = List.copyOf(names);
 
         try {
             redisService.createStreamGroup(streamKey(), groupName());
@@ -43,27 +51,34 @@ public abstract class AbstractStreamConsumer<T> {
             log.warn("创建消费者组时发生异常（可能已存在）：{}", e.getMessage());
         }
 
-        this.executorService = Executors.newSingleThreadExecutor(r -> {
+        this.executorService = Executors.newFixedThreadPool(concurrency, r -> {
             Thread t = new Thread(r, threadName());
             t.setDaemon(true);
             return t;
         });
 
         running.set(true);
-        executorService.submit(this::consumeLoop);
-        log.info("{}消费者已启动：consumerName={}", taskDisplayName(), consumerName);
+        for (int i = 0; i < concurrency; i++) {
+            String consumerName = consumerNames.get(i);
+            int index = i;
+            executorService.submit(() -> {
+                Thread.currentThread().setName(threadName() + "-" + index);
+                consumeLoop(consumerName);
+            });
+        }
+        log.info("{}消费者已启动：concurrency={} consumerNames={}", taskDisplayName(), concurrency, consumerNames);
     }
 
     @PreDestroy
     public void shutdown() {
         running.set(false);
         if (executorService != null) {
-            executorService.shutdown();
+            executorService.shutdownNow();
         }
-        log.info("{}消费者已关闭：consumerName={}", taskDisplayName(), consumerName);
+        log.info("{}消费者已关闭：consumerNames={}", taskDisplayName(), consumerNames);
     }
 
-    private void consumeLoop() {
+    private void consumeLoop(String consumerName) {
         while (running.get()) {
             try {
                 redisService.streamConsumeMessages(
@@ -147,6 +162,11 @@ public abstract class AbstractStreamConsumer<T> {
     protected abstract String groupName();
 
     protected abstract String consumerPrefix();
+
+    /** 消费者循环数，默认单线程；多用户场景由子类按配置覆盖 */
+    protected int consumerConcurrency() {
+        return 1;
+    }
 
     protected abstract String threadName();
 

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import com.picturecreate.doccanvas.common.async.AbstractStreamConsumer;
 import com.picturecreate.doccanvas.common.constant.AiTaskStreamConstants;
+import com.picturecreate.doccanvas.config.AppProperties;
 import com.picturecreate.doccanvas.infrastructure.redis.RedisService;
 import com.picturecreate.doccanvas.service.AiTaskService;
 
@@ -20,10 +21,12 @@ import com.picturecreate.doccanvas.service.AiTaskService;
 public class AiTaskStreamConsumer extends AbstractStreamConsumer<UUID> {
 
     private final AiTaskService aiTaskService;
+    private final AppProperties properties;
 
-    public AiTaskStreamConsumer(RedisService redisService, AiTaskService aiTaskService) {
+    public AiTaskStreamConsumer(RedisService redisService, AiTaskService aiTaskService, AppProperties properties) {
         super(redisService);
         this.aiTaskService = aiTaskService;
+        this.properties = properties;
     }
 
     @Override
@@ -44,6 +47,11 @@ public class AiTaskStreamConsumer extends AbstractStreamConsumer<UUID> {
     @Override
     protected String consumerPrefix() {
         return AiTaskStreamConstants.AI_TASK_CONSUMER_PREFIX;
+    }
+
+    @Override
+    protected int consumerConcurrency() {
+        return properties.ai().task().consumerConcurrency();
     }
 
     @Override

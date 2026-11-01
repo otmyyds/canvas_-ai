@@ -163,13 +163,6 @@ public class AiTask extends BaseEntity {
         return finishedAt;
     }
 
-    public void markRunning(String workerId) {
-        status = AiTaskStatus.RUNNING;
-        lockedBy = workerId;
-        startedAt = startedAt == null ? Instant.now() : startedAt;
-        heartbeat();
-    }
-
     public void updateProgress(int progress, String currentStep) {
         this.progress = Math.max(0, Math.min(progress, 100));
         this.currentStep = currentStep;

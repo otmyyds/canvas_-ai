@@ -27,8 +27,13 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
 import com.picturecreate.doccanvas.api.dto.TaskEvent;
 import com.picturecreate.doccanvas.config.AppProperties;
+import com.picturecreate.doccanvas.domain.AgentRole;
+import com.picturecreate.doccanvas.domain.AgentRun;
+import com.picturecreate.doccanvas.domain.AgentRunStatus;
+import com.picturecreate.doccanvas.domain.AgentStepType;
 import com.picturecreate.doccanvas.domain.AiTask;
 import com.picturecreate.doccanvas.infrastructure.redis.RedisService;
+import com.picturecreate.doccanvas.service.ai.agent.AgentRunRecorder;
 import com.picturecreate.doccanvas.service.async.AiTaskStreamProducer;
 import com.picturecreate.doccanvas.domain.AiTaskStatus;
 import com.picturecreate.doccanvas.domain.AiTaskStep;
@@ -110,6 +115,7 @@ public class AiTaskService {
     private final ImageGenerationService imageGenerationService;
     private final AssetService assetService;
     private final TransactionTemplate transactionTemplate;
+    private final AgentRunRecorder agentRunRecorder;
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             BoardEdgeRepository edgeRepository, ShapeRepository shapeRepository,
@@ -117,7 +123,8 @@ public class AiTaskService {
             TaskEventPublisher eventPublisher, AiGenerationService aiGenerationService,
             ImageGenerationService imageGenerationService, AssetService assetService,
             AiTaskStreamProducer aiTaskStreamProducer, RedisService redisService,
-            AppProperties properties, TransactionTemplate transactionTemplate) {
+            AppProperties properties, TransactionTemplate transactionTemplate,
+            AgentRunRecorder agentRunRecorder) {
         this.boardService = boardService;
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
@@ -133,6 +140,7 @@ public class AiTaskService {
         this.redisService = redisService;
         this.properties = properties;
         this.transactionTemplate = transactionTemplate;
+        this.agentRunRecorder = agentRunRecorder;
     }
 
     /**
@@ -233,6 +241,18 @@ public class AiTaskService {
             log.info("任务已处于终态，跳过执行：taskId={} status={}", taskId, task.getStatus());
             return;
         }
+        if (task.getStatus() != AiTaskStatus.QUEUED) {
+            log.info("任务当前状态不可认领，跳过执行：taskId={} status={}", taskId, task.getStatus());
+            return;
+        }
+        Instant now = Instant.now();
+        String workerId = "redis-stream-" + Thread.currentThread().getName();
+        int claimed = taskRepository.claimQueued(taskId, AiTaskStatus.QUEUED, AiTaskStatus.RUNNING, workerId,
+                now, now.plusSeconds(90), "启动任务");
+        if (claimed == 0) {
+            log.info("任务已被其他消费者认领或状态已变化，跳过执行：taskId={}", taskId);
+            return;
+        }
         runTask(taskId);
     }
 
@@ -242,12 +262,17 @@ public class AiTaskService {
     }
 
     private void runTask(UUID taskId) {
+        UUID runId = null;
         try {
-            // 排队期间可能已被用户中断：启动前再检查一次，避免把已 ABORTED 的任务复活成 RUNNING
+            // 排队期间可能已被用户中断：启动前再检查一次，避免把已中断的任务继续执行
             assertNotCancelled(taskId);
-            begin(taskId);
             AiTask task = taskRepository.findById(taskId).orElseThrow();
-            log.info("任务开始执行：taskId={} type={} boardId={}", taskId, task.getType(), task.getBoardId());
+            AgentRun run = agentRunRecorder.startRun(task.getId(), null, null, task.getOwnerId(),
+                    task.getBoardId(), AgentRole.SUPERVISOR, null, null);
+            runId = run.getId();
+            begin(taskId);
+            log.info("任务开始执行：taskId={} type={} boardId={} runId={}", taskId, task.getType(),
+                    task.getBoardId(), runId);
             // 按任务类型匹配 Skill（SKILL.md），决定该任务可用哪些工具
             SkillDefinition skill = skillLoader.findForTask(task.getType().name()).orElse(null);
             String skillStep = skill == null
@@ -260,26 +285,53 @@ public class AiTaskService {
             BoardActionResult result = generate(taskId, skill);
             runStep(taskId, "应用操作", 90, "已应用后端校验通过的画布操作");
             finish(taskId, result);
+            recordApplyStep(runId, result);
+            finishRunQuietly(runId, AgentRunStatus.SUCCEEDED, result.resultJson(), null);
         } catch (AbortTaskException exception) {
+            finishRunQuietly(runId, AgentRunStatus.ABORTED, null, "任务被用户中断");
             markAborted(taskId);
         } catch (Exception exception) {
+            finishRunQuietly(runId, AgentRunStatus.FAILED, null, exception.getMessage());
             markFailed(taskId, exception);
         }
     }
 
     /**
-     * 任务启动：标记 RUNNING，进度 3%。
-     * 只有 ai_tasks 单表单行写，repository 的 save 自带事务即可，无需显式事务；
-     * 事件在 save 返回（已提交）之后推送，订阅方读到的一定是已落库的状态。
+     * 任务启动：状态已由原子认领更新为 RUNNING，这里只推送进度事件。
+     * 状态更新和事件分离，避免消费者重复投递时反复覆盖任务状态。
      */
     private void begin(UUID taskId) {
         AiTask task = taskRepository.findById(taskId).orElseThrow();
-        task.markRunning("redis-stream");
-        task.updateProgress(3, "启动任务");
-        taskRepository.save(task);
-        log.info("任务标记 RUNNING：taskId={}", taskId);
+        log.info("任务开始执行（已认领）：taskId={} status={}", taskId, task.getStatus());
         eventPublisher.publish(task.getBoardId(), taskId, TaskEvent.progress(taskId, task.getBoardId(), 3,
                 "任务已启动，正在准备执行"));
+    }
+
+    /** 记录最终动作落库步骤；轨迹写入失败不影响已经成功的任务 */
+    private void recordApplyStep(UUID runId, BoardActionResult result) {
+        if (runId == null) {
+            return;
+        }
+        int actionCount = result.actions() == null ? 0 : result.actions().size();
+        try {
+            agentRunRecorder.recordStep(runId, AgentStepType.APPLY, null,
+                    Map.of("actionCount", actionCount), result.resultJson(), 0, null);
+        } catch (Exception exception) {
+            log.warn("记录 Agent 应用步骤失败：runId={} error={}", runId, exception.getMessage());
+        }
+    }
+
+    /** 结束运行记录；审计写入失败只记日志，不反向覆盖任务状态 */
+    private void finishRunQuietly(UUID runId, AgentRunStatus status, String resultJson, String errorMessage) {
+        if (runId == null) {
+            return;
+        }
+        try {
+            agentRunRecorder.finishRun(runId, status, resultJson, errorMessage);
+        } catch (Exception exception) {
+            log.warn("结束 Agent 运行记录失败：runId={} status={} error={}", runId, status,
+                    exception.getMessage());
+        }
     }
 
     /**
@@ -436,6 +488,7 @@ public class AiTaskService {
             try {
                 task.markFailed("服务重启，任务已终止");
                 taskRepository.save(task);
+                agentRunRecorder.finishRunningRuns(task.getId(), AgentRunStatus.FAILED, "服务重启，任务已终止");
                 eventPublisher.publish(task.getBoardId(), task.getId(),
                         TaskEvent.failed(task.getId(), task.getBoardId(), "服务重启，任务已终止"));
             } catch (Exception exception) {
@@ -460,6 +513,8 @@ public class AiTaskService {
         for (AiTask task : aborting) {
             try {
                 markAborted(task.getId());
+                agentRunRecorder.finishRunningRuns(task.getId(), AgentRunStatus.ABORTED,
+                        "任务长时间处于中断状态，已回收");
             } catch (Exception exception) {
                 log.warn("回收中断任务失败 taskId={} error={}", task.getId(), exception.getMessage());
             }
