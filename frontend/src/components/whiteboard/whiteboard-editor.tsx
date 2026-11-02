@@ -33,18 +33,13 @@ import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
-import { mergeMissingShapes } from "@/lib/whiteboard/shape-render";
+import { mergeMissingShapes, shapeStateFingerprint, syncExistingShapes } from "@/lib/whiteboard/shape-render";
 
 /** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** 活跃任务状态：计划执行期间暂停快照保存，避免中间状态落库 */
 const ACTIVE_TASK_STATUSES = new Set(["CREATED", "QUEUED", "RUNNING", "ABORTING"]);
-
-/** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被用户改动 */
-function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
-  return JSON.stringify([x, y, width, height, title]);
-}
 
 type WhiteboardEditorProps = {
   boardId: string;
@@ -355,14 +350,16 @@ export function WhiteboardEditor({
           const shapeAdded = mergeMissingShapes(editor, currentShapes, currentEdges);
           // 快照可能残留已被后端删除的节点，清理掉避免刷新复活
           const removed = removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
+          // 快照里的标题/尺寸可能落后于后端（AI 改过标题但没重新存过快照），此处对账
+          const updated = syncExistingShapes(editor, currentShapes, syncedShapeRef.current);
           editor.clearHistory();
           editor.selectNone();
           hydratedBoardRef.current = boardId;
           mountedRef.current = true;
           seedSyncedShapes(editor);
           const assetAdded = await mergeAssets(editor, assetsRef.current);
-          if (shapeAdded > 0 || removed > 0 || assetAdded > 0) {
-            setMessage(`已载入画布快照，同步 ${shapeAdded} 个节点，清理 ${removed} 个残留`);
+          if (shapeAdded > 0 || removed > 0 || updated > 0 || assetAdded > 0) {
+            setMessage(`已载入画布快照，同步 ${shapeAdded} 个节点，更新 ${updated} 个节点，清理 ${removed} 个残留`);
             queueSave();
           } else {
             setMessage("已载入画布快照");
@@ -373,13 +370,14 @@ export function WhiteboardEditor({
 
       mergeMissingShapes(editor, currentShapes, currentEdges);
       removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
+      const updated = syncExistingShapes(editor, currentShapes, syncedShapeRef.current);
       editor.clearHistory();
       editor.selectNone();
       hydratedBoardRef.current = boardId;
       mountedRef.current = true;
       seedSyncedShapes(editor);
       const assetAdded = await mergeAssets(editor, assetsRef.current);
-      if (assetAdded > 0) {
+      if (assetAdded > 0 || updated > 0) {
         queueSave();
       }
       setMessage("已载入原始内容");
@@ -438,9 +436,10 @@ export function WhiteboardEditor({
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
         }
       }
-      // 快照与后端表对账：补齐缺失节点、清理回退后已不存在的残留
+      // 快照与后端表对账：补齐缺失节点、清理回退后已不存在的残留、恢复后端字段
       mergeMissingShapes(editor, shapesRef.current, edgesRef.current);
       removeOrphanShapes(editor, shapesRef.current, edgesRef.current, assetsRef.current);
+      syncExistingShapes(editor, shapesRef.current, syncedShapeRef.current);
       await mergeAssets(editor, assetsRef.current);
       if (cancelled) {
         return;
@@ -512,7 +511,8 @@ export function WhiteboardEditor({
     });
   }, [boardId, canvasRevision, assets, editorReady, mergeAssets, queueSave]);
 
-  // AI 任务完成后，把后端重算的坐标同步到已存在的图形节点（整理画布/编辑加分支的重排坐标）
+  // AI 任务完成后，把后端已存在节点的新坐标/标题同步回 tldraw
+  // （整理画布的重排坐标、update_shape 改写的标题都属于这条路径）
   useEffect(() => {
     if (canvasRevision <= 0 || !editorReady || hydratedBoardRef.current !== boardId || !mountedRef.current) {
       return;
@@ -521,12 +521,14 @@ export function WhiteboardEditor({
     if (!editor) {
       return;
     }
-    const moved = syncShapePositions(editor, shapes);
-    if (moved > 0) {
-      setMessage(`已同步 ${moved} 个图形节点的新坐标`);
+    const updated = syncExistingShapes(editor, shapes, syncedShapeRef.current);
+    if (updated > 0) {
+      // 同步后刷新回写基线，避免监听器把这些后端值当成用户编辑再写回去
+      seedSyncedShapes(editor);
+      setMessage(`已同步 ${updated} 个图形节点的内容`);
       queueSave();
     }
-  }, [canvasRevision, editorReady, shapes, boardId, queueSave]);
+  }, [canvasRevision, editorReady, shapes, boardId, queueSave, seedSyncedShapes]);
 
   // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
   useEffect(() => {
@@ -1116,29 +1118,6 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
     editor.deleteShapes(toDelete);
   }
   return toDelete.length;
-}
-
-/**
- * 把后端 shapes 里已存在节点的坐标同步到 tldraw（AI 重排画布后坐标变更用）。
- * 只处理已存在于 tldraw 的 geo 节点；新节点由 mergeMissingShapes 负责创建，这里只改位置。
- * 返回被移动的节点数量。
- */
-function syncShapePositions(editor: TldrawEditor, shapes: BoardShape[]): number {
-  const updates: Array<{ id: ReturnType<typeof createShapeId>; type: string; x: number; y: number }> = [];
-  for (const node of shapes) {
-    const shapeId = createShapeId(node.id);
-    const shape = editor.getShape(shapeId);
-    if (!shape || shape.type !== "geo") {
-      continue;
-    }
-    if (shape.x !== node.x || shape.y !== node.y) {
-      updates.push({ id: shape.id, type: shape.type, x: node.x, y: node.y });
-    }
-  }
-  if (updates.length > 0) {
-    editor.updateShapes(updates);
-  }
-  return updates.length;
 }
 
 /**

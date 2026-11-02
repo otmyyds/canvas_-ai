@@ -7,7 +7,7 @@ import type { Editor as TldrawEditor } from "@tldraw/editor";
 import { ArrowLeft, Loader2, Lock } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SharedBoard } from "@/lib/types";
-import { mergeMissingShapes } from "@/lib/whiteboard/shape-render";
+import { mergeMissingShapes, syncExistingShapes } from "@/lib/whiteboard/shape-render";
 import { GhostButton } from "@/components/ui";
 
 /**
@@ -85,6 +85,8 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
         }
       }
       mergeMissingShapes(editor, board.shapes, board.edges);
+      // 快照里的标题可能落后于后端（AI 改过标题但所有者还没重新保存快照），按后端数据对账
+      syncExistingShapes(editor, board.shapes);
       editor.clearHistory();
       editor.updateInstanceState({ isReadonly: true });
       editor.zoomToFit();

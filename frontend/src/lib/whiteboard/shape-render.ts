@@ -1,6 +1,11 @@
 import { createBindingId, createShapeId, toRichText } from "tldraw";
-import type { Editor as TldrawEditor } from "@tldraw/editor";
+import type { Editor as TldrawEditor, TLGeoShape, TLShapePartial } from "@tldraw/editor";
 import type { BoardEdge, BoardShape } from "@/lib/types";
+
+/** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被改动 */
+export function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
+  return JSON.stringify([x, y, width, height, title]);
+}
 
 /**
  * 把后端图形节点（思维导图/流程图节点）渲染为 tldraw geo shape。
@@ -34,6 +39,50 @@ export function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], e
     }
   }
   return added;
+}
+
+/**
+ * 把后端 shapes 里已存在节点的坐标/尺寸/标题同步到 tldraw。
+ * AI 的 update_shape 只改后端行，若不回写标题，画布会一直显示旧文案；
+ * 整理画布则只会改坐标。新节点由 mergeMissingShapes 负责创建，这里只更新已有节点。
+ * 只同步会回写后端的字段（位置、尺寸、标题），避免覆盖用户手动调整的样式。
+ * baseline 传入回写基线时，会先把新状态写进去，避免监听器把这些后端值当成用户编辑再回写一次。
+ * 返回被更新的节点数量。
+ */
+export function syncExistingShapes(editor: TldrawEditor, shapes: BoardShape[],
+    baseline?: Map<string, string>): number {
+  // 正在输入的节点跳过，避免同步打断用户编辑
+  const editingShapeId = editor.getEditingShapeId();
+  const updates: TLShapePartial<TLGeoShape>[] = [];
+  for (const node of shapes) {
+    const shapeId = createShapeId(node.id);
+    const shape = editor.getShape(shapeId);
+    if (!shape || shape.type !== "geo" || shape.id === editingShapeId) {
+      continue;
+    }
+    const props = shape.props as { w?: number; h?: number };
+    const propsUpdate: Partial<TLGeoShape["props"]> = {};
+    if (editor.getShapeUtil(shape).getText(shape) !== node.title) {
+      propsUpdate.richText = toRichText(node.title);
+    }
+    if ((props.w ?? 0) !== node.width) {
+      propsUpdate.w = node.width;
+    }
+    if ((props.h ?? 0) !== node.height) {
+      propsUpdate.h = node.height;
+    }
+    const moved = shape.x !== node.x || shape.y !== node.y;
+    if (!moved && Object.keys(propsUpdate).length === 0) {
+      continue;
+    }
+    // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写
+    baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title));
+    updates.push({ id: shape.id, type: "geo", x: node.x, y: node.y, props: propsUpdate });
+  }
+  if (updates.length > 0) {
+    editor.updateShapes(updates);
+  }
+  return updates.length;
 }
 
 function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
