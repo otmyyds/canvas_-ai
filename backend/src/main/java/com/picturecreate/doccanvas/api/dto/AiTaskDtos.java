@@ -41,17 +41,24 @@ public final class AiTaskDtos {
 
     public record AiTaskStepResponse(
             UUID id,
+            int seq,
+            AiTaskType stepType,
             String title,
+            String description,
             AiTaskStepStatus status,
             int progress,
             String message,
+            String resultMessage,
+            String errorMessage,
             Instant startedAt,
             Instant finishedAt,
             Instant createdAt) {
 
         public static AiTaskStepResponse from(AiTaskStep step) {
-            return new AiTaskStepResponse(step.getId(), step.getTitle(), step.getStatus(), step.getProgress(),
-                    step.getMessage(), step.getStartedAt(), step.getFinishedAt(), step.getCreatedAt());
+            return new AiTaskStepResponse(step.getId(), step.getSeq(), step.getStepType(), step.getTitle(),
+                    step.getDescription(), step.getStatus(), step.getProgress(), step.getMessage(),
+                    step.getResultMessage(), step.getErrorMessage(), step.getStartedAt(), step.getFinishedAt(),
+                    step.getCreatedAt());
         }
     }
 }

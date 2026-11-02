@@ -78,7 +78,7 @@ public class ShareService {
         List<BoardEdgeResponse> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(link.getBoardId()).stream()
                 .map(BoardEdgeResponse::from)
                 .toList();
-        String snapshotJson = snapshotRepository.findFirstByBoardIdOrderByVersionDesc(link.getBoardId())
+        String snapshotJson = snapshotRepository.findFirstByBoardIdOrderByCreatedAtDesc(link.getBoardId())
                 .map(BoardSnapshot::getSnapshotJson)
                 .orElse(null);
         log.info("读取分享画布：token={} 图形数={} 连线数={}", token, shapes.size(), edges.size());

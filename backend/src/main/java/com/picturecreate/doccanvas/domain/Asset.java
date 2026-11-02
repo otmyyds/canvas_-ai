@@ -79,6 +79,10 @@ public class Asset extends BaseEntity {
         return sourceTaskId;
     }
 
+    public String getStorageBucket() {
+        return storageBucket;
+    }
+
     public String getStorageKey() {
         return storageKey;
     }
@@ -97,5 +101,9 @@ public class Asset extends BaseEntity {
 
     public Integer getHeight() {
         return height;
+    }
+
+    public String getChecksum() {
+        return checksum;
     }
 }

@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -18,6 +20,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -26,6 +29,7 @@ import org.testcontainers.utility.DockerImageName;
 
 import com.picturecreate.doccanvas.domain.AiTask;
 import com.picturecreate.doccanvas.domain.AiTaskStatus;
+import com.picturecreate.doccanvas.domain.AiTaskStep;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 import com.picturecreate.doccanvas.domain.Asset;
 import com.picturecreate.doccanvas.domain.Board;
@@ -34,6 +38,7 @@ import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.domain.SourceFile;
 import com.picturecreate.doccanvas.domain.UserAccount;
 import com.picturecreate.doccanvas.repository.AiTaskRepository;
+import com.picturecreate.doccanvas.repository.AiTaskStepRepository;
 import com.picturecreate.doccanvas.repository.AssetRepository;
 import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
 import com.picturecreate.doccanvas.repository.BoardRepository;
@@ -41,10 +46,11 @@ import com.picturecreate.doccanvas.repository.BoardSnapshotRepository;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.repository.SourceFileRepository;
 import com.picturecreate.doccanvas.repository.UserAccountRepository;
-import com.picturecreate.doccanvas.service.ai.AiGenerationService;
 import com.picturecreate.doccanvas.service.ai.BoardAction;
-import com.picturecreate.doccanvas.service.ai.BoardActionResult;
 import com.picturecreate.doccanvas.service.ai.ImageGenerationService;
+import com.picturecreate.doccanvas.service.ai.agent.AgentExecutionContext;
+import com.picturecreate.doccanvas.service.ai.agent.AgentResult;
+import com.picturecreate.doccanvas.service.ai.agent.AgentRuntime;
 import com.picturecreate.doccanvas.storage.ObjectStorageService;
 
 /**
@@ -58,7 +64,7 @@ import com.picturecreate.doccanvas.storage.ObjectStorageService;
  * 依赖本机 Docker：起真实 PostgreSQL(pgvector) 与 Redis 容器（镜像与 infra/docker-compose.yml 一致）。
  * RustFS 与两处模型调用用 mock 替换——本测试断言的是数据库原子性，不是对象存储或模型的行为。
  */
-@SpringBootTest(properties = "app.ai.provider=mock")
+@SpringBootTest
 @Testcontainers
 @DisplayName("AI 任务事务边界")
 class AiTaskTransactionIntegrationTest {
@@ -87,13 +93,13 @@ class AiTaskTransactionIntegrationTest {
     @MockitoBean
     private ObjectStorageService objectStorageService;
     @MockitoBean
-    private AiGenerationService aiGenerationService;
+    private AgentRuntime agentRuntime;
     @MockitoBean
     private ImageGenerationService imageGenerationService;
 
     /**
-     * 快照仓库是 clearCanvas 事务里最后一个动作，让它失败即可验证前面对三张表的删除有没有提前落库。
-     * finish() 路径不碰快照，所以这个 mock 不影响其它用例。
+     * 快照仓库是清空步骤事务里最后一个动作，让它失败即可验证前面对三张表的删除有没有提前落库。
+     * 生成类步骤不碰快照仓库，所以这个 mock 不影响其它用例。
      */
     @MockitoBean
     private BoardSnapshotRepository snapshotRepository;
@@ -102,7 +108,8 @@ class AiTaskTransactionIntegrationTest {
     private UserAccountRepository userAccountRepository;
     @Autowired
     private BoardRepository boardRepository;
-    @Autowired
+    /** 用 spy 在第二条图形写入时注入失败，验证前面的写入会随事务一起回滚 */
+    @MockitoSpyBean
     private ShapeRepository shapeRepository;
     @Autowired
     private BoardEdgeRepository edgeRepository;
@@ -112,6 +119,8 @@ class AiTaskTransactionIntegrationTest {
     private SourceFileRepository sourceFileRepository;
     @Autowired
     private AiTaskRepository taskRepository;
+    @Autowired
+    private AiTaskStepRepository stepRepository;
     @Autowired
     private AiTaskService aiTaskService;
     @Autowired
@@ -132,6 +141,17 @@ class AiTaskTransactionIntegrationTest {
         boardId = boardRepository.save(new Board(userId, "事务测试画布")).getId();
     }
 
+    /** 创建一个 AGENT_PLAN 任务并写入指定类型的步骤（步骤序号从 1 开始） */
+    private UUID savePlan(String goal, AiTaskType... stepTypes) {
+        UUID taskId = taskRepository.save(new AiTask(boardId, ownerId, AiTaskType.AGENT_PLAN, goal)).getId();
+        for (int index = 0; index < stepTypes.length; index++) {
+            AiTaskType stepType = stepTypes[index];
+            stepRepository.save(new AiTaskStep(taskId, index + 1, stepType,
+                    stepType + " 步骤", "测试步骤", "按测试要求执行本步"));
+        }
+        return taskId;
+    }
+
     @Test
     @DisplayName("清空画布：快照删除失败时，图形与连线的删除一起回滚")
     void clearCanvasRollsBackAllThreeTables() {
@@ -142,10 +162,10 @@ class AiTaskTransactionIntegrationTest {
         willThrow(new IllegalStateException("模拟快照删除失败"))
                 .given(snapshotRepository).deleteByBoardId(boardId);
 
-        UUID taskId = taskRepository.save(new AiTask(boardId, ownerId, AiTaskType.CLEAR_CANVAS, "清空画布")).getId();
+        UUID taskId = savePlan("清空画布", AiTaskType.CLEAR_CANVAS);
         aiTaskService.executeTask(taskId);
 
-        // 三张表必须一起回滚：残留任何一张，元素都会在前端刷新后复活
+        // 事务回滚后检查点恢复把三张表原样重建：残留任何一张，元素都会在前端刷新后复活
         assertThat(shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)).hasSize(2);
         assertThat(edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)).hasSize(1);
         assertThat(taskRepository.findById(taskId).orElseThrow().getStatus()).isEqualTo(AiTaskStatus.FAILED);
@@ -154,15 +174,22 @@ class AiTaskTransactionIntegrationTest {
     @Test
     @DisplayName("任务收尾：应用动作中途失败时，已写入的图形一起回滚")
     void finishRollsBackPartiallyAppliedActions() {
-        given(aiGenerationService.generateBoardActions(any()))
-                .willReturn(new BoardActionResult(List.of(
+        given(agentRuntime.generate(any(AgentExecutionContext.class), any()))
+                .willReturn(AgentResult.modified("测试提案", List.of(
                         new BoardAction.CreateShape(null, "第一个节点", "ellipse", 0, 140, 140, 200, 96),
-                        // 标题超过 shapes.title varchar(255)，第二条写入必然被数据库拒绝
-                        new BoardAction.CreateShape(null, "超长标题".repeat(100), "ellipse", 0, 340, 140, 200, 96)),
-                        "{\"mode\":\"test\"}"));
+                        new BoardAction.CreateShape(null, "第二个节点", "ellipse", 0, 340, 140, 200, 96)),
+                        null, "test-model", 1, 2, 100));
+        // 第二条图形写入时抛错：第一条已写入的图形必须随事务一起回滚
+        // 必须用 doAnswer 打桩：given(spy).save(any()) 会先真实调用一次 save(null)
+        AtomicInteger saves = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (saves.incrementAndGet() == 2) {
+                throw new IllegalStateException("模拟第二条图形写入失败");
+            }
+            return invocation.callRealMethod();
+        }).when(shapeRepository).save(any(Shape.class));
 
-        UUID taskId = taskRepository.save(
-                new AiTask(boardId, ownerId, AiTaskType.GENERATE_MINDMAP, "画一张思维导图")).getId();
+        UUID taskId = savePlan("画一张思维导图", AiTaskType.GENERATE_MINDMAP);
         aiTaskService.executeTask(taskId);
 
         // 第一个节点不能留下来：否则任务显示失败，画布上却多了半套结构且无法回收
@@ -203,16 +230,15 @@ class AiTaskTransactionIntegrationTest {
     @Test
     @DisplayName("思维导图 plan 连成环时任务照样成功：不再爆栈让消费线程静默死掉")
     void cyclicMindmapPlanStillSucceeds() {
-        given(aiGenerationService.generateBoardActions(any()))
-                .willReturn(new BoardActionResult(List.of(
+        given(agentRuntime.generate(any(AgentExecutionContext.class), any()))
+                .willReturn(AgentResult.modified("测试提案", List.of(
                         new BoardAction.CreateShape("n1", "节点A", "ellipse", 1, 0, 0, 200, 96),
                         new BoardAction.CreateShape("n2", "节点B", "ellipse", 1, 0, 0, 200, 96),
                         new BoardAction.Connect("n1", "n2", null, null, null, null),
                         new BoardAction.Connect("n2", "n1", null, null, null, null)),
-                        "{\"mode\":\"test\"}"));
+                        null, "test-model", 1, 2, 100));
 
-        UUID taskId = taskRepository.save(
-                new AiTask(boardId, ownerId, AiTaskType.GENERATE_MINDMAP, "画一张思维导图")).getId();
+        UUID taskId = savePlan("画一张思维导图", AiTaskType.GENERATE_MINDMAP);
         aiTaskService.executeTask(taskId);
 
         assertThat(taskRepository.findById(taskId).orElseThrow().getStatus()).isEqualTo(AiTaskStatus.SUCCEEDED);

@@ -28,7 +28,7 @@ public class BoardSnapshotService {
     @Transactional(readOnly = true)
     public Optional<BoardSnapshot> latest(UUID boardId, CurrentUser user) {
         boardService.getOwned(boardId, user);
-        return snapshotRepository.findFirstByBoardIdOrderByVersionDesc(boardId);
+        return snapshotRepository.findFirstByBoardIdOrderByCreatedAtDesc(boardId);
     }
 
     @Transactional

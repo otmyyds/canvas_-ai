@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.service.NotFoundException;
+import com.picturecreate.doccanvas.service.ai.llm.ModelBusyException;
 
 @RestControllerAdvice
 public class ErrorHandler {
@@ -26,6 +27,13 @@ public class ErrorHandler {
         log.warn("资源不存在：{}", exception.getMessage());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("error", safeMessage(exception.getMessage(), "资源不存在")));
+    }
+
+    @ExceptionHandler(ModelBusyException.class)
+    ResponseEntity<Map<String, String>> modelBusy(ModelBusyException exception) {
+        log.warn("模型服务限流：{}", exception.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Map.of("error", "模型服务繁忙，请稍后重试"));
     }
 
     @ExceptionHandler(IllegalStateException.class)

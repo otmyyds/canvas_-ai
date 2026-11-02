@@ -82,18 +82,11 @@ public class SkillLoader {
             }
             String slug = str(meta.get("slug"));
             String name = str(meta.get("name"));
-            int version = intValue(meta.get("version"), 1);
-            String description = str(meta.get("description"));
             List<String> taskTypes = stringList(meta.get("task_types"));
-            List<String> allowedTools = stringList(meta.get("allowed_tools"));
-            int maxSteps = intValue(meta.get("max_steps"), 0);
-            int maxModelCalls = intValue(meta.get("max_model_calls"), 0);
-            int maxToolCalls = intValue(meta.get("max_tool_calls"), 0);
             if (slug == null || taskTypes.isEmpty()) {
                 return Optional.empty();
             }
-            return Optional.of(new SkillDefinition(slug, name, version, description, taskTypes, allowedTools,
-                    maxSteps, maxModelCalls, maxToolCalls, body));
+            return Optional.of(new SkillDefinition(slug, name, taskTypes, body));
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
@@ -101,13 +94,6 @@ public class SkillLoader {
 
     private String str(Object value) {
         return value == null ? null : value.toString();
-    }
-
-    private int intValue(Object value, int fallback) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        return fallback;
     }
 
     @SuppressWarnings("unchecked")

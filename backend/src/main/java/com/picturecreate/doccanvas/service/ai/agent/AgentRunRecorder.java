@@ -2,6 +2,8 @@ package com.picturecreate.doccanvas.service.ai.agent;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -16,6 +18,8 @@ import com.picturecreate.doccanvas.domain.AgentStep;
 import com.picturecreate.doccanvas.domain.AgentStepType;
 import com.picturecreate.doccanvas.repository.AgentRunRepository;
 import com.picturecreate.doccanvas.repository.AgentStepRepository;
+import com.picturecreate.doccanvas.service.ai.llm.ModelCallListener;
+import com.picturecreate.doccanvas.service.ai.llm.ModelCallTrace;
 
 /**
  * Agent 运行轨迹记录器。
@@ -62,11 +66,51 @@ public class AgentRunRecorder {
         return saved;
     }
 
-    /** 累加本次运行的模型调用、工具调用和 token 用量 */
+    /**
+     * 构造模型调用轨迹监听器。
+     * 每次实际 HTTP 请求都写一行 MODEL_CALL，重试和降级切换同样各占一行，
+     * 数据库里能完整还原一次生成到底调了几次模型、每次用的哪个模型。
+     */
+    public ModelCallListener modelCallListener(UUID runId) {
+        return trace -> {
+            if (runId == null) {
+                return;
+            }
+            recordStep(runId, AgentStepType.MODEL_CALL, trace.model(),
+                    modelCallInput(trace), modelCallOutput(trace), trace.latencyMs(), trace.errorMessage());
+        };
+    }
+
+    /** 模型调用的入参：保留完整提示词，排查输出问题时不用再翻日志 */
+    private Map<String, Object> modelCallInput(ModelCallTrace trace) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("operation", trace.operation().name());
+        input.put("model", trace.model());
+        input.put("degraded", trace.degraded());
+        input.put("tools", trace.tools());
+        input.put("system", trace.system());
+        input.put("user", trace.user());
+        return input;
+    }
+
+    /** 模型调用的出参：内容、结束原因和本次 token 用量 */
+    private Map<String, Object> modelCallOutput(ModelCallTrace trace) {
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("content", trace.content());
+        output.put("finishReason", trace.finishReason());
+        output.put("promptTokens", trace.promptTokens());
+        output.put("completionTokens", trace.completionTokens());
+        output.put("totalTokens", trace.promptTokens() + trace.completionTokens());
+        return output;
+    }
+
+    /** 累加本次运行的模型调用、工具调用和 token 用量，并记下实际模型 */
     @Transactional
-    public void addUsage(UUID runId, int modelCalls, int toolCalls, int promptTokens, int completionTokens) {
+    public void addUsage(UUID runId, int modelCalls, int toolCalls, int promptTokens, int completionTokens,
+            String model) {
         AgentRun run = runRepository.findById(runId)
                 .orElseThrow(() -> new IllegalArgumentException("Agent 运行不存在：" + runId));
+        run.useModel(model);
         run.addUsage(modelCalls, toolCalls, promptTokens, completionTokens);
         runRepository.save(run);
         metrics.tokens(run.getRole(), promptTokens, completionTokens);

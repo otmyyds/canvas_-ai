@@ -155,6 +155,11 @@ public class AiTask extends BaseEntity {
         return errorMessage;
     }
 
+    /** 锁过期时间：worker 存活时会随心跳刷新，回收器据此判断任务是否已无人执行 */
+    public Instant getLockExpiresAt() {
+        return lockExpiresAt;
+    }
+
     public Instant getStartedAt() {
         return startedAt;
     }
@@ -176,7 +181,14 @@ public class AiTask extends BaseEntity {
         }
     }
 
+    /**
+     * 成功：只允许 RUNNING → SUCCEEDED。
+     * worker 与回收器可能同时收尾，已经是终态时直接忽略，避免后到者覆盖先到者。
+     */
     public void markSucceeded(String resultJson) {
+        if (status != AiTaskStatus.RUNNING) {
+            return;
+        }
         status = AiTaskStatus.SUCCEEDED;
         progress = 100;
         this.resultJson = resultJson;
@@ -184,14 +196,24 @@ public class AiTask extends BaseEntity {
         heartbeat();
     }
 
+    /** 失败：允许 QUEUED/RUNNING/ABORTING → FAILED；终态保持不变 */
     public void markFailed(String errorMessage) {
+        if (status != AiTaskStatus.QUEUED && status != AiTaskStatus.RUNNING
+                && status != AiTaskStatus.ABORTING) {
+            return;
+        }
         status = AiTaskStatus.FAILED;
         this.errorMessage = errorMessage;
         finishedAt = Instant.now();
         heartbeat();
     }
 
+    /** 中断：允许 QUEUED/RUNNING/ABORTING → ABORTED；终态保持不变 */
     public void markAborted() {
+        if (status != AiTaskStatus.QUEUED && status != AiTaskStatus.RUNNING
+                && status != AiTaskStatus.ABORTING) {
+            return;
+        }
         status = AiTaskStatus.ABORTED;
         finishedAt = Instant.now();
         heartbeat();

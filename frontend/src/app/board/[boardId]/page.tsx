@@ -34,12 +34,14 @@ export default function BoardPage({ params }: BoardPageProps) {
 }
 
 function BoardEditor({ boardId }: { boardId: string }) {
-  const { board, edges, shapes, tasks, files, assets, setBoard, setEdges, setShapes, setTasks, setFiles, setAssets } = useBoardStore();
+  const { board, edges, shapes, tasks, files, assets, setBoard, setEdges, setShapes, setTasks, setFiles, setAssets, upsertTask } = useBoardStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [canvasRevision, setCanvasRevision] = useState(0);
-  // 清空画布信号：CLEAR_CANVAS 任务完成时递增，驱动白板清空 tldraw 内容
+  // 清空画布信号：CLEAR_CANVAS 步骤完成时递增，驱动白板清空 tldraw 内容
   const [canvasClear, setCanvasClear] = useState(0);
+  // 画布重载信号：任务失败/中断时后端已回退，递增后白板重新载入恢复出的快照
+  const [canvasReload, setCanvasReload] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   // 当前选中的图形节点真实 id（用于「编辑选中元素」任务）
@@ -99,7 +101,8 @@ function BoardEditor({ boardId }: { boardId: string }) {
         return;
       }
       setTasks(await api.listTasks(boardId));
-      if (event.type === "task.actions" || event.type === "task.done") {
+      // 拉取画布三张表的最新数据，供步骤完成/任务收尾时同步到白板
+      const refreshCanvas = async () => {
         const [edgeResult, shapeResult, assetResult] = await Promise.all([
           api.listEdges(boardId),
           api.listShapes(boardId),
@@ -108,11 +111,28 @@ function BoardEditor({ boardId }: { boardId: string }) {
         setEdges(edgeResult);
         setShapes(shapeResult);
         setAssets(assetResult);
-        setCanvasRevision((value) => value + 1);
-        // 清空画布任务完成：后端已删 shapes/edges 与快照，驱动白板清空残留元素
-        if (event.type === "task.done" && event.taskType === "CLEAR_CANVAS") {
-          setCanvasClear((value) => value + 1);
+      };
+      if (event.type === "task.step") {
+        // 每一步结束时立即刷新画布，让用户看到该步的真实效果
+        if (event.status === "DONE" || event.status === "FAILED") {
+          await refreshCanvas();
+          setCanvasRevision((value) => value + 1);
+          // 清空步骤完成：驱动白板清空 tldraw 中残留的元素
+          if (event.status === "DONE" && event.stepType === "CLEAR_CANVAS") {
+            setCanvasClear((value) => value + 1);
+          }
         }
+        return;
+      }
+      if (event.type === "task.actions" || event.type === "task.done") {
+        await refreshCanvas();
+        setCanvasRevision((value) => value + 1);
+        return;
+      }
+      if (event.type === "task.failed" || event.type === "task.aborted") {
+        // 失败/中断时后端已回退到计划开始前，拉取恢复后的数据并强制白板重载
+        await refreshCanvas();
+        setCanvasReload((value) => value + 1);
       }
     },
     [boardId, setEdges, setTasks, setAssets]
@@ -123,7 +143,8 @@ function BoardEditor({ boardId }: { boardId: string }) {
   async function assist(prompt: string) {
     const result = await api.assist(boardId, prompt, selection);
     if (result.kind === "task") {
-      setTasks(await api.listTasks(boardId));
+      // 立即把新计划插入任务列表，任务卡不用等下一次事件刷新才出现
+      upsertTask(result.task);
     }
     return result;
   }
@@ -218,6 +239,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           connection={connection}
           canvasRevision={canvasRevision}
           clearSignal={canvasClear}
+          reloadSignal={canvasReload}
           onRefresh={loadAll}
           onAssist={assist}
           onAbortTask={abortTask}

@@ -9,11 +9,13 @@ import org.springframework.transaction.annotation.Transactional;
 import com.picturecreate.doccanvas.domain.BoardSnapshot;
 
 /**
- * 画布快照数据访问层。findFirstByBoardIdOrderByVersionDesc 取最新快照。
+ * 画布快照数据访问层。
+ * 当前文档是每画布最新写入的一行（V10 之后 version=0 的 CURRENT 行不再保证存在），
+ * 取快照一律按 created_at 倒序，不能按 version 倒序。
  */
 public interface BoardSnapshotRepository extends JpaRepository<BoardSnapshot, UUID> {
 
-    Optional<BoardSnapshot> findFirstByBoardIdOrderByVersionDesc(UUID boardId);
+    Optional<BoardSnapshot> findFirstByBoardIdOrderByCreatedAtDesc(UUID boardId);
 
     long countByBoardId(UUID boardId);
 

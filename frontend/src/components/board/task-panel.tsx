@@ -50,7 +50,8 @@ const stepStatusText: Record<string, string> = {
   RUNNING: "执行中",
   DONE: "完成",
   FAILED: "失败",
-  ABORTED: "已中断"
+  ABORTED: "已中断",
+  SKIPPED: "未执行"
 };
 
 const connectionText: Record<string, string> = {
@@ -65,6 +66,7 @@ const activeStatuses = new Set(["CREATED", "QUEUED", "RUNNING", "ABORTING"]);
 
 /** 任务类型 → 中文标签 */
 const taskLabel: Record<AiTaskType, string> = {
+  AGENT_PLAN: "执行计划",
   DOCUMENT_SUMMARY: "总结资料",
   CANVAS_STRUCTURE: "整理画布",
   CLEAR_CANVAS: "清空画布",
@@ -101,15 +103,15 @@ function loadSession(boardId: string): ChatMessage[] {
  * 右侧 AI 助手面板（对话式交互）。
  *
  * 交互模型：
- * - 用户输入 → onAssist 统一提交后端，由后端意图分类器路由：
- *   a) 分类为任务 → 返回 kind=task，父组件刷新 tasks，TaskCard 自动追加
- *   b) 分类为聊天 → 返回 kind=chat，追加 assistant 文本气泡
+ * - 用户输入 → onAssist 统一提交后端，由预检 Agent 路由：
+ *   a) 需要执行 → 返回 kind=task，父组件刷新 tasks，TaskCard 自动追加
+ *   b) 直接回答 → 返回 kind=reply，追加 assistant 文本气泡
  * - 对话流中嵌入 TaskCard（任务进度/步骤/中断），与聊天消息混合展示
  *
  * 数据流：
  * 1. 用户输入 → submit() 调 onAssist(prompt)
- * 2. onAssist 调后端 /assist：意图分类 + 分流（聊天/任务）
- * 3. kind=chat → 追加文本气泡；kind=task → 父组件刷新 tasks
+ * 2. onAssist 调后端 /assist：预检 + 分流（回复/任务）
+ * 3. kind=reply → 追加文本气泡；kind=task → 父组件刷新 tasks
  * 4. 新任务出现（tasks[0] 变化）→ 追加一条含 TaskCard 的 assistant 消息
  *
  * 持久化：对话文本按画布隔离存 localStorage（dc_chat_{boardId}），刷新不丢；
@@ -175,12 +177,19 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
     setSubmitting(true);
     setError(undefined);
     try {
-      // 统一交给后端意图分类：chat 纯文本 / task 落卡任务
+      // 统一交给后端预检：reply 纯文本 / task 后台任务
       const result = await onAssist(text);
-      if (result.kind === "chat") {
+      if (result.kind === "reply") {
         setMessages((prev) => [...prev, { role: "assistant", content: result.reply }]);
+      } else {
+        // 立即追加计划卡，并登记 id，避免 tasks 刷新后的 useEffect 重复追加
+        shownTaskIdsRef.current.add(result.task.id);
+        setMessages((prev) =>
+          prev.some((message) => message.task?.id === result.task.id)
+            ? prev
+            : [...prev, { role: "assistant", content: result.task.prompt, task: result.task }]
+        );
       }
-      // kind=task 时父组件刷新 tasks，TaskCard 经 useEffect 自动追加，无需手动处理
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败，请稍后重试");
     } finally {
@@ -302,8 +311,10 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
 
 function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) => Promise<void> }) {
   const totalSteps = task.steps.length;
-  const currentStepIndex = task.steps.findIndex((s) => s.status === "RUNNING" || s.status === "PENDING");
-  const currentIndex = currentStepIndex >= 0 ? currentStepIndex + 1 : task.steps.filter((s) => s.status === "DONE").length;
+  const runningIndex = task.steps.findIndex((step) => step.status === "RUNNING");
+  const currentIndex = runningIndex >= 0
+    ? runningIndex + 1
+    : Math.min(task.steps.filter((step) => step.status === "DONE").length + 1, Math.max(totalSteps, 1));
 
   return (
     <div className="mt-2 rounded-md border border-ink/10 bg-mist p-3">
@@ -323,47 +334,81 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
         <div className="h-full rounded-full bg-spruce transition-all" style={{ width: `${task.progress}%` }} />
       </div>
 
-      {/* 横向流水线步骤条 */}
-      {task.steps.length > 0 ? (
-        <div className="mt-3 flex items-center gap-1 overflow-x-auto">
+      {/* 纵向计划列表：序号、标题、状态、说明与每步实际效果 */}
+      {totalSteps > 0 ? (
+        <ol className="mt-3 space-y-2.5">
           {task.steps.map((step, index) => (
-            <div key={step.id} className="flex items-center gap-1">
-              <div className="flex min-w-0 flex-col items-center gap-1">
-                <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] ${
-                    step.status === "DONE"
-                      ? "bg-spruce text-white"
-                      : step.status === "RUNNING"
-                        ? "bg-spruce/15 text-spruce"
-                        : "bg-ink/10 text-ink/40"
-                  }`}
-                >
-                  {step.status === "DONE" ? "✓" : step.status === "RUNNING" ? "…" : index + 1}
-                </span>
-                <span
-                  className={`whitespace-nowrap text-[10px] ${
-                    step.status === "RUNNING" ? "font-medium text-spruce" : "text-ink/50"
-                  }`}
-                >
-                  {step.title}
-                </span>
+            <li key={step.id} className="flex gap-2">
+              <span
+                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] ${stepDotClass(step.status)}`}
+              >
+                {step.status === "DONE" ? "✓" : step.status === "FAILED" ? "!" : index + 1}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={`text-xs ${
+                      step.status === "SKIPPED" || step.status === "ABORTED" ? "text-ink/40" : "text-ink"
+                    }`}
+                  >
+                    {step.title}
+                  </span>
+                  <span className={stepStatusClass(step.status)}>{stepStatusText[step.status] ?? step.status}</span>
+                </div>
+                {step.description ? (
+                  <p className="mt-0.5 text-[11px] leading-4 text-ink/50">{step.description}</p>
+                ) : null}
+                {step.status === "RUNNING" && step.message ? (
+                  <p className="mt-0.5 animate-pulse text-[11px] leading-4 text-spruce">{step.message}</p>
+                ) : null}
+                {step.status === "DONE" && step.resultMessage ? (
+                  <p className="mt-0.5 text-[11px] leading-4 text-spruce">{step.resultMessage}</p>
+                ) : null}
+                {step.status === "FAILED" && step.errorMessage ? (
+                  <p className="mt-0.5 text-[11px] leading-4 text-coral">{step.errorMessage}</p>
+                ) : null}
+                {step.status === "ABORTED" && step.message ? (
+                  <p className="mt-0.5 text-[11px] leading-4 text-ink/45">{step.message}</p>
+                ) : null}
               </div>
-              {index < task.steps.length - 1 ? (
-                <span className="mb-4 text-ink/20">─</span>
-              ) : null}
-            </div>
+            </li>
           ))}
-        </div>
-      ) : null}
-
-      {/* 当前步骤实时 message */}
-      {task.steps.find((s) => s.status === "RUNNING")?.message ? (
-        <p className="mt-2 animate-pulse text-[11px] leading-4 text-spruce">
-          {task.steps.find((s) => s.status === "RUNNING")?.message}
-        </p>
+        </ol>
       ) : null}
 
       {task.errorMessage ? <p className="mt-2 text-xs text-coral">{task.errorMessage}</p> : null}
     </div>
   );
+}
+
+/** 步骤序号圆点的配色 */
+function stepDotClass(status: string): string {
+  switch (status) {
+    case "DONE":
+      return "bg-spruce text-white";
+    case "RUNNING":
+      return "animate-pulse bg-spruce/15 text-spruce";
+    case "FAILED":
+      return "bg-coral/15 text-coral";
+    case "ABORTED":
+      return "bg-ink/10 text-ink/45";
+    case "SKIPPED":
+      return "bg-ink/5 text-ink/35";
+    default:
+      return "bg-ink/10 text-ink/40";
+  }
+}
+
+/** 步骤状态文字的配色 */
+function stepStatusClass(status: string): string {
+  switch (status) {
+    case "DONE":
+      return "text-[10px] text-spruce";
+    case "RUNNING":
+      return "text-[10px] font-medium text-spruce";
+    case "FAILED":
+      return "text-[10px] text-coral";
+    default:
+      return "text-[10px] text-ink/40";
+  }
 }

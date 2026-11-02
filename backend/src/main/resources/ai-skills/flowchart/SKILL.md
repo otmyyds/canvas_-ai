@@ -4,27 +4,20 @@ name: 流程图技能
 version: 1
 task_types:
   - GENERATE_FLOWCHART
-allowed_tools:
-  - get_board_context
-  - search_document_chunks
-  - web_search
-max_steps: 8
-max_model_calls: 3
-max_tool_calls: 8
 ---
 
 # 目标
 
-根据用户需求与资料，生成一张规范、可读的流程图（图形节点 + 连线）。
+根据用户需求与资料，生成一张规范、可读的流程图。
 
 # 图形元素与含义
 
-画布支持四种图形节点（shape 字段）与一种连线（connect 动作），各元素职责如下：
+画布支持四种图形节点（shape 字段）与连线，各元素职责如下：
 
 ## ellipse（椭圆）—— 开始/结束点
 
 标识流程的起点与终点。
-- 一个流程有且仅有一个开始节点（id 用 start1，shape=ellipse）。
+- 一个流程只创建一个开始节点（shape=ellipse）。
 - 结束节点（shape=ellipse）可有多个，对应不同分支的出口。
 - 标题居中，如「开始」「结束」。
 
@@ -49,10 +42,10 @@ max_tool_calls: 8
 
 # 连线规范
 
-- 连线用 connect 动作，单向箭头，从上一节点指向下一节点，指示流程方向。
+- 用 connect 动作连接两个节点，从上一节点指向下一节点，指示流程方向。
 - 流程图优先用直线（style=straight）；回连或旁支可用曲线（style=curve）。
 - 从判断节点分出的每条连线必须写 label，标明分支条件（如「是」「否」「线上」「线下」）。
-- 不同分支走几步后可汇合到同一节点（多条 connect 指向同一 toShapeId）。
+- 不同分支走几步后可汇合到同一节点（多条 connect 指向同一节点）。
 
 # 结构规范
 
@@ -64,4 +57,9 @@ max_tool_calls: 8
 
 # 输出
 
-只返回通过校验的画布动作（create_shape + connect），格式遵循 boardActionInstruction 的 JSON 规范。
+需要资料时先用 search_document_chunks 检索，再只输出一个 JSON 对象：
+
+{"actions":[{"type":"create_shape","id":"n1","title":"开始","shape":"ellipse","level":0},{"type":"create_shape","id":"n2","title":"提交订单","shape":"rectangle","level":0},{"type":"connect","fromShapeId":"n1","toShapeId":"n2","style":"straight"},{"type":"connect","fromShapeId":"n2","toShapeId":"n3","label":"是"}]}
+
+- create_shape 的 id 是本次计划内的临时 id，供 connect 引用。
+- 不要输出坐标、宽度、高度或任何解释文字。

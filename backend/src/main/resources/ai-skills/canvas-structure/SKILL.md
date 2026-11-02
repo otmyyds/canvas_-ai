@@ -4,11 +4,6 @@ name: 画布结构技能
 version: 1
 task_types:
   - CANVAS_STRUCTURE
-allowed_tools:
-  - get_board_context
-max_steps: 8
-max_model_calls: 3
-max_tool_calls: 8
 ---
 
 # 目标

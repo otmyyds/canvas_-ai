@@ -24,6 +24,10 @@ spring:
           address: "redis://${REDIS_HOST:localhost}:${REDIS_PORT:6379}"
           database: 0
   ai:
+    # 关闭 Spring AI 内置重试（默认 10 次、2s 起、5 倍退避）：
+    # 重试只保留 LlmGateway 一层，否则真实请求数成倍放大且不计入任务预算
+    retry:
+      max-attempts: 1
     openai:
       # 密钥：优先百炼 BAILIAN_API_TOKEN，其次 GPT_API_KEY
       api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:sk-placeholder}}}
@@ -74,10 +78,21 @@ app:
       - http://172.30.*:*
       - http://172.31.*:*
   ai:
-    # mock | spring-ai；真实调用请设 AI_PROVIDER=spring-ai 并配置 GPT_API_KEY
-    provider: ${AI_PROVIDER:spring-ai}
-    retry:
-      max-attempts: ${AI_RETRY_MAX_ATTEMPTS:2}
+    llm:
+      # 默认模型与降级模型；具体模型名通过请求级 OpenAiChatOptions 传入
+      default-model: ${AI_MODEL_PLANNER:qwen-plus}
+      fallback-model: ${AI_MODEL_FALLBACK:qwen-turbo}
+      operations:
+        # 预检也走 qwen-plus：当前账号 qwen-turbo 额度受限，直接 429
+        preflight: ${AI_MODEL_PREFLIGHT:qwen-plus}
+        agent: ${AI_MODEL_AGENT:qwen-plus}
+        tool: ${AI_MODEL_TOOL:qwen-plus}
+      retry:
+        # 只重试上游瞬时错误，解析/校验错误由 Agent 自己纠正
+        max-attempts: ${AI_LLM_RETRY_MAX_ATTEMPTS:3}
+        initial-backoff-ms: ${AI_LLM_RETRY_INITIAL_BACKOFF_MS:500}
+        multiplier: ${AI_LLM_RETRY_MULTIPLIER:2.0}
+        max-backoff-ms: ${AI_LLM_RETRY_MAX_BACKOFF_MS:4000}
     image:
       # 百炼文生图（DashScope 原生接口，非 OpenAI 兼容）
       api-key: ${BAILIAN_API_TOKEN:${GPT_API_KEY:${OPENAI_API_KEY:}}}
@@ -88,10 +103,6 @@ app:
       api-key: ${SERPAPI_API_KEY:}
       base-url: ${SERPAPI_BASE_URL:https://serpapi.com}
     task:
-      max-steps: ${AI_TASK_MAX_STEPS:8}
-      max-model-calls: ${AI_TASK_MAX_MODEL_CALLS:3}
-      max-tool-calls: ${AI_TASK_MAX_TOOL_CALLS:8}
-      max-duration-seconds: ${AI_TASK_MAX_DURATION_SECONDS:900}
       per-user-concurrency: ${AI_TASK_PER_USER_CONCURRENCY:2}
       per-board-write-concurrency: ${AI_TASK_PER_BOARD_WRITE_CONCURRENCY:1}
       # 多用户并发：每个实例启动的消费者循环数；任务仍受每用户/每画布并发限制
@@ -100,7 +111,8 @@ app:
       # 单次运行上限
       max-steps: ${AI_AGENT_MAX_STEPS:20}
       max-model-calls: ${AI_AGENT_MAX_MODEL_CALLS:12}
-      max-tool-calls: ${AI_AGENT_MAX_TOOL_CALLS:30}
+      # 生成阶段只用只读工具（画布摘要、资料检索、联网搜索），上限覆盖多轮资料检索
+      max-tool-calls: ${AI_AGENT_MAX_TOOL_CALLS:40}
       max-total-tokens: ${AI_AGENT_MAX_TOTAL_TOKENS:80000}
       max-duration-seconds: ${AI_AGENT_MAX_DURATION_SECONDS:600}
       # 委派

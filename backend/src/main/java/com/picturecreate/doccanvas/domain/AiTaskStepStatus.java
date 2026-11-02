@@ -2,7 +2,8 @@ package com.picturecreate.doccanvas.domain;
 
 /**
  * AI 任务步骤状态。
- * 每步流转：PENDING → RUNNING → DONE / FAILED / ABORTED
+ * 每步流转：PENDING → RUNNING → DONE / FAILED / ABORTED；
+ * 计划在某一步终止时，后续未开始的步骤统一落 SKIPPED。
  */
 public enum AiTaskStepStatus {
     /** 待执行 */
@@ -14,5 +15,7 @@ public enum AiTaskStepStatus {
     /** 失败 */
     FAILED,
     /** 中断 */
-    ABORTED
+    ABORTED,
+    /** 未执行：前序步骤失败或任务被中断 */
+    SKIPPED
 }

@@ -38,6 +38,9 @@ import { mergeMissingShapes } from "@/lib/whiteboard/shape-render";
 /** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** 活跃任务状态：计划执行期间暂停快照保存，避免中间状态落库 */
+const ACTIVE_TASK_STATUSES = new Set(["CREATED", "QUEUED", "RUNNING", "ABORTING"]);
+
 /** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被用户改动 */
 function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
   return JSON.stringify([x, y, width, height, title]);
@@ -53,8 +56,10 @@ type WhiteboardEditorProps = {
   tasks: AiTask[];
   connection: string;
   canvasRevision?: number;
-  /** 清空画布信号：CLEAR_CANVAS 任务完成时递增，触发白板清空 tldraw 元素 */
+  /** 清空画布信号：CLEAR_CANVAS 步骤完成时递增，触发白板清空 tldraw 元素 */
   clearSignal?: number;
+  /** 画布重载信号：任务失败/中断时递增，强制白板重新载入后端回退后的快照 */
+  reloadSignal?: number;
   onRefresh: () => Promise<void>;
   onAssist: (prompt: string) => Promise<AssistResult>;
   onAbortTask: (taskId: string) => Promise<void>;
@@ -117,6 +122,7 @@ export function WhiteboardEditor({
   connection,
   canvasRevision = 0,
   clearSignal = 0,
+  reloadSignal = 0,
   onRefresh,
   onAssist,
   onAbortTask,
@@ -173,6 +179,12 @@ export function WhiteboardEditor({
   // 待回写后端的节点编辑（原始 id -> 编辑体），防抖后批量提交
   const pendingShapeSyncRef = useRef<Map<string, ShapeUpdate>>(new Map());
   const shapeSyncTimerRef = useRef<number | null>(null);
+  // 计划执行期间挂起的保存标记：计划结束后再统一落盘，避免回退前的中间状态覆盖恢复出的快照
+  const pendingSaveRef = useRef(false);
+  const planActiveRef = useRef(false);
+  const prevPlanActiveRef = useRef(false);
+  // 已完成的强制重载信号值，避免同一信号重复载入（严格模式下首次被取消时可重试）
+  const completedReloadRef = useRef(0);
   // 水合完成后建立回写基线：记录当前所有 AI 图形节点的状态指纹，避免首次编辑被当成基线而丢失
   const seedSyncedShapes = useCallback((editor: TldrawEditor) => {
     for (const shape of editor.getCurrentPageShapes()) {
@@ -235,6 +247,9 @@ export function WhiteboardEditor({
   shapesRef.current = shapes;
   assetsRef.current = assets;
   filesRef.current = files;
+  // 是否存在正在执行的计划任务：渲染期同步到 ref，供保存监听即时判断
+  const planActive = tasks.some((task) => task.type === "AGENT_PLAN" && ACTIVE_TASK_STATUSES.has(task.status));
+  planActiveRef.current = planActive;
 
   const saveSnapshot = useCallback(async () => {
     const editor = editorRef.current;
@@ -245,6 +260,7 @@ export function WhiteboardEditor({
     try {
       const snapshotJson = await serializeTldrawJson(editor);
       await api.saveSnapshot(boardId, snapshotJson);
+      pendingSaveRef.current = false;
       setSaveStatus("saved");
       setMessage("画布已保存");
     } catch {
@@ -253,7 +269,38 @@ export function WhiteboardEditor({
     }
   }, [boardId]);
 
+  /**
+   * 立即落盘快照（提交 AI 任务前调用）。
+   * 与 saveSnapshot 不同：失败必须抛出，让上层中止提交，避免后端检查点抓到旧快照。
+   */
+  const flushSnapshot = useCallback(async () => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    try {
+      const snapshotJson = await serializeTldrawJson(editor);
+      await api.saveSnapshot(boardId, snapshotJson);
+      pendingSaveRef.current = false;
+      setSaveStatus("saved");
+      setMessage("画布已保存");
+    } catch (error) {
+      setSaveStatus("error");
+      setMessage("画布保存失败，无法提交 AI 任务");
+      throw error;
+    }
+  }, [boardId]);
+
   const queueSave = useCallback(() => {
+    // 计划执行期间不写服务端：回退会重建画布，中间快照落库会覆盖恢复结果
+    if (planActiveRef.current) {
+      pendingSaveRef.current = true;
+      return;
+    }
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
@@ -262,6 +309,15 @@ export function WhiteboardEditor({
       void saveSnapshot();
     }, 1000);
   }, [saveSnapshot]);
+
+  // 提交任务前先落盘快照：后端检查点依赖最新 tldraw 快照，不能拿到 1 秒防抖前的旧数据
+  const assistWithSnapshot = useCallback(
+    async (prompt: string) => {
+      await flushSnapshot();
+      return onAssist(prompt);
+    },
+    [flushSnapshot, onAssist]
+  );
 
   useEffect(() => {
     if (!editorReady) {
@@ -335,6 +391,74 @@ export function WhiteboardEditor({
       cancelled = true;
     };
   }, [boardId, boardTitle, editorReady, mergeAssets, queueSave]);
+
+  // 计划结束时处理执行期间挂起的保存：成功的计划才落盘；
+  // 失败/中断时后端已回退画布，由 reloadSignal 载入恢复后的快照，本地状态直接丢弃
+  useEffect(() => {
+    const wasActive = prevPlanActiveRef.current;
+    prevPlanActiveRef.current = planActive;
+    if (!wasActive || planActive || !pendingSaveRef.current) {
+      return;
+    }
+    pendingSaveRef.current = false;
+    const latestPlan = tasks.find((task) => task.type === "AGENT_PLAN");
+    if (latestPlan?.status === "SUCCEEDED") {
+      queueSave();
+    }
+  }, [planActive, queueSave, tasks]);
+
+  // 任务失败/中断后强制重载：丢弃失败前的本地状态，载入后端回退后的快照
+  useEffect(() => {
+    if (reloadSignal <= 0 || !editorReady || completedReloadRef.current === reloadSignal) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    let cancelled = false;
+    const reload = async () => {
+      // 停止保存并丢弃挂起标记，阻止重载过程中的 store 变更回写服务端
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      pendingSaveRef.current = false;
+      mountedRef.current = false;
+      const snapshot = await api.getBoardSnapshot(boardId).catch(() => null);
+      if (cancelled) {
+        return;
+      }
+      if (snapshot?.snapshotJson) {
+        const parsed = parseTldrawJsonFile({
+          json: snapshot.snapshotJson,
+          schema: editor.store.schema
+        });
+        if (parsed.ok) {
+          editor.loadSnapshot(parsed.value.getStoreSnapshot());
+        }
+      }
+      // 快照与后端表对账：补齐缺失节点、清理回退后已不存在的残留
+      mergeMissingShapes(editor, shapesRef.current, edgesRef.current);
+      removeOrphanShapes(editor, shapesRef.current, edgesRef.current, assetsRef.current);
+      await mergeAssets(editor, assetsRef.current);
+      if (cancelled) {
+        return;
+      }
+      editor.clearHistory();
+      editor.selectNone();
+      hydratedBoardRef.current = boardId;
+      mountedRef.current = true;
+      seedSyncedShapes(editor);
+      completedReloadRef.current = reloadSignal;
+      setMessage("画布已回退到计划开始前");
+      queueSave();
+    };
+    void reload();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadSignal, boardId, editorReady, mergeAssets, queueSave, seedSyncedShapes]);
 
   // AI 任务完成后把后端图形节点增量同步进 tldraw（新增 + 清理被删除的残留）
   useEffect(() => {
@@ -953,7 +1077,7 @@ export function WhiteboardEditor({
         boardId={boardId}
         tasks={tasks}
         connection={connection}
-        onAssist={onAssist}
+        onAssist={assistWithSnapshot}
         onAbortTask={onAbortTask}
         selectionCount={selectionCount}
       />

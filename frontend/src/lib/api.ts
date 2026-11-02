@@ -233,7 +233,7 @@ export const api = {
 
   // ===== AI 助手统一入口 =====
   /**
-   * 统一提交到后端意图分类：返回 kind=chat 纯文本 / kind=task 落图形节点任务。
+   * 统一提交到后端预检：返回 kind=reply 纯文本 / kind=task 后台任务。
    * selection 携带用户当前选中的图形节点真实 id，用于「编辑选中元素」任务。
    */
   assist: (boardId: string, prompt: string, selection?: { shapeIds: string[] }) =>

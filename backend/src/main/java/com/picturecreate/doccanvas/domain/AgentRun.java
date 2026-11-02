@@ -127,6 +127,13 @@ public class AgentRun {
         this.finishedAt = Instant.now();
     }
 
+    /** 记录实际使用的模型；重试或降级时保留最后一次真正调用的模型 */
+    public void useModel(String model) {
+        if (model != null && !model.isBlank()) {
+            this.model = model;
+        }
+    }
+
     /** 累加模型调用、工具调用和 token 用量 */
     public void addUsage(int modelCalls, int toolCalls, int promptTokens, int completionTokens) {
         this.modelCalls += modelCalls;

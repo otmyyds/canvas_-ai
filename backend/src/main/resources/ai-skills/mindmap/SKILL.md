@@ -4,13 +4,6 @@ name: 思维导图技能
 version: 1
 task_types:
   - GENERATE_MINDMAP
-allowed_tools:
-  - get_board_context
-  - search_document_chunks
-  - web_search
-max_steps: 8
-max_model_calls: 3
-max_tool_calls: 8
 ---
 
 # 目标
@@ -19,12 +12,12 @@ max_tool_calls: 8
 
 # 结构模型
 
-思维导图是一棵以中心主题为根、逐层展开的知识树。本阶段只输出标题大纲（# 到 ##### 标题行），后端会按标题层级确定性生成图形节点与连线：
+思维导图是一棵以中心主题为根、逐层展开的知识树，层级由 Markdown 标题的井号数量表达：
 
-- `#` → 中心主题（ellipse）
-- `##` → 一级分支（rectangle）
-- `###` 及以下 → 子分支与叶子（oval）
-- 父到子连线统一为曲线（curve），呈放射状布局
+- 中心主题：`#`，唯一根节点
+- 一级分支：`##`，5-8 个
+- 二级及以下：`###`、`####`、`#####`，逐层展开，最多五层
+- 节点类型与父子连线由后端按标题层级自动生成，不用写 shape、parentRef 或坐标
 
 # 内容规范
 
@@ -37,4 +30,4 @@ max_tool_calls: 8
 
 # 输出
 
-只输出 # 到 ##### 标题行（Markdown 标题大纲），不要输出任何正文、列表、前言、解释或代码围栏。
+需要资料时先用 search_document_chunks 检索，再输出 Markdown 标题大纲。只输出 # 到 ##### 标题行，不要输出正文、列表、JSON 或坐标。

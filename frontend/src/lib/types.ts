@@ -58,8 +58,9 @@ export type BoardAsset = {
   createdAt: string;
 };
 
-/** AI 任务类型（决定生成方式与 prompt 约束） */
+/** AI 任务类型（决定生成方式与 prompt 约束；AGENT_PLAN 是由多条步骤组成的计划任务） */
 export type AiTaskType =
+  | "AGENT_PLAN"
   | "DOCUMENT_SUMMARY"
   | "CANVAS_STRUCTURE"
   | "STUDY_PLAN"
@@ -73,13 +74,26 @@ export type AiTaskType =
 /** AI 任务状态机：创建→排队→执行→成功/失败/中断 */
 export type AiTaskStatus = "CREATED" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "ABORTING" | "ABORTED";
 
-/** 任务步骤（加载技能/收集上下文/规划操作/应用操作） */
+/** 步骤状态：SKIPPED 表示因前序步骤失败而未执行 */
+export type AiTaskStepStatus = "PENDING" | "RUNNING" | "DONE" | "FAILED" | "ABORTED" | "SKIPPED";
+
+/** 任务步骤（计划中的一步：类型、顺序、用户可读说明、执行结果） */
 export type AiTaskStep = {
   id: string;
+  /** 步骤序号，从 1 开始 */
+  seq: number;
+  /** 步骤类型，复用 AiTaskType */
+  stepType?: AiTaskType;
   title: string;
-  status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "ABORTED";
+  /** 给用户看的本步说明 */
+  description?: string;
+  status: AiTaskStepStatus;
   progress: number;
   message?: string;
+  /** 完成后的实际效果说明 */
+  resultMessage?: string;
+  /** 失败原因 */
+  errorMessage?: string;
   startedAt?: string;
   finishedAt?: string;
   createdAt: string;
@@ -103,9 +117,9 @@ export type AiTask = {
   steps: AiTaskStep[];
 };
 
-/** AI 助手统一响应：kind=chat 返回纯文本，kind=task 返回落图形节点任务 */
+/** AI 助手统一响应：kind=reply 返回纯文本，kind=task 返回后台执行的任务 */
 export type AssistResult =
-  | { kind: "chat"; reply: string }
+  | { kind: "reply"; reply: string }
   | { kind: "task"; task: AiTask };
 
 /** 上传资料文件（TXT/MD 等自动解析为可检索文本） */
@@ -123,7 +137,7 @@ export type SourceFile = {
 
 /**
  * AI 产出/WebSocket 推送的画布动作。
- * create_shape 建图形节点，connect 连线，delete_shape 删节点。
+ * create_shape 建图形节点，connect 连线，update_shape 修改节点，delete_shape 删节点。
  */
 export type BoardAction =
   | {
@@ -147,6 +161,13 @@ export type BoardAction =
       weight?: number;
     }
   | {
+      type: "update_shape";
+      shapeId: string;
+      title?: string;
+      shape?: string;
+      level?: number;
+    }
+  | {
       type: "delete_shape";
       shapeId: string;
     };
@@ -164,6 +185,10 @@ export type TaskEvent = {
   actions?: BoardAction[];
   /** 任务类型（AiTaskType），清空画布等前端需据此响应（如 CLEAR_CANVAS） */
   taskType?: string;
+  /** 步骤类型（任务级事件为空） */
+  stepType?: AiTaskType;
+  /** 步骤序号（任务级事件为空） */
+  seq?: number;
   error?: string;
   emittedAt: string;
 };

@@ -100,6 +100,30 @@ public class AssetService {
     }
 
     /**
+     * 只删 assets 表记录并返回 storageKey，不做任何外部 I/O。
+     * 计划清空步骤用：对象是否清理取决于计划最终成功还是回退，必须延后决定。
+     */
+    @Transactional
+    public List<String> deleteAllRecords(UUID boardId, UUID ownerId) {
+        List<Asset> assets = assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId, ownerId);
+        List<String> storageKeys = assets.stream().map(Asset::getStorageKey).toList();
+        assetRepository.deleteAll(assets);
+        log.info("画布图片资产记录已删除：boardId={} 资产数={}", boardId, assets.size());
+        return storageKeys;
+    }
+
+    /** 同步清理对象存储；单个失败只记日志，不影响其它对象与任务状态 */
+    public void purgeObjectsNow(List<String> storageKeys) {
+        for (String storageKey : storageKeys) {
+            try {
+                objectStorageService.delete(storageKey);
+            } catch (Exception exception) {
+                log.warn("清理对象存储失败，已留孤儿对象：key={} error={}", storageKey, exception.getMessage());
+            }
+        }
+    }
+
+    /**
      * 事务提交后再清理对象存储里的文件。
      *
      * 顺序不能反：assets 记录删除并提交才是权威状态。对象删不掉只会留一个孤儿对象（浪费点存储），

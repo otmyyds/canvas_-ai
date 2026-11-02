@@ -111,4 +111,17 @@ public class Shape extends BaseEntity {
         this.width = width;
         this.height = height;
     }
+
+    /** Agent 修改：只更新传入的非空字段，保留坐标和尺寸 */
+    public void applyAgentEdit(String title, String shape, Integer level) {
+        if (title != null && !title.isBlank()) {
+            this.title = title;
+        }
+        if (shape != null && !shape.isBlank()) {
+            this.shape = shape;
+        }
+        if (level != null) {
+            this.level = level;
+        }
+    }
 }
