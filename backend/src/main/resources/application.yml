@@ -110,7 +110,8 @@ app:
     agent:
       # 单次运行上限
       max-steps: ${AI_AGENT_MAX_STEPS:20}
-      max-model-calls: ${AI_AGENT_MAX_MODEL_CALLS:12}
+      # 一次计划包含多步骤、分支并行与语义审查；每个 HTTP 尝试都计数，默认值需覆盖两轮分支重试
+      max-model-calls: ${AI_AGENT_MAX_MODEL_CALLS:24}
       # 生成阶段只用只读工具（画布摘要、资料检索、联网搜索），上限覆盖多轮资料检索
       max-tool-calls: ${AI_AGENT_MAX_TOOL_CALLS:40}
       max-total-tokens: ${AI_AGENT_MAX_TOTAL_TOKENS:80000}

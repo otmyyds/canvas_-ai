@@ -68,6 +68,7 @@ public class AgentPlanExecutor {
     private final BoardCheckpointService checkpointService;
     private final AgentRuntime agentRuntime;
     private final BranchDelegator branchDelegator;
+    private final MapCriticAgent criticAgent;
     private final AgentRunRecorder recorder;
     private final AgentSessionService sessionService;
     private final SkillLoader skillLoader;
@@ -83,7 +84,8 @@ public class AgentPlanExecutor {
             ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
             AssetRepository assetRepository, BoardSnapshotRepository snapshotRepository,
             BoardCheckpointService checkpointService, AgentRuntime agentRuntime, BranchDelegator branchDelegator,
-            AgentRunRecorder recorder, AgentSessionService sessionService, SkillLoader skillLoader,
+            MapCriticAgent criticAgent, AgentRunRecorder recorder, AgentSessionService sessionService,
+            SkillLoader skillLoader,
             BoardActionApplier actionApplier, AssetService assetService,
             ImageGenerationService imageGenerationService, TaskEventPublisher eventPublisher,
             AiTaskCancellation cancellation, TransactionTemplate transactionTemplate, AppProperties properties) {
@@ -96,6 +98,7 @@ public class AgentPlanExecutor {
         this.checkpointService = checkpointService;
         this.agentRuntime = agentRuntime;
         this.branchDelegator = branchDelegator;
+        this.criticAgent = criticAgent;
         this.recorder = recorder;
         this.sessionService = sessionService;
         this.skillLoader = skillLoader;
@@ -215,12 +218,11 @@ public class AgentPlanExecutor {
                 sessionId, runId, AgentRole.SUPERVISOR, stepType, prompt, selectedShapeIds, runtime,
                 sessionContext);
         // 树型大图由 Supervisor 拆分支、Worker 并行展开；其余类型仍走单 Agent 一次生成
-        List<BoardAction> actions = branchDelegator.supports(stepType)
-                ? branchDelegator.generate(context, skill)
-                : generatedActions(context, skill);
+        List<BoardAction> actions = generateActions(context, stepType, skill);
+        ReviewedActions reviewed = review(task, context, stepType, skill, actions, runtime);
         int shapesBefore = countShapes(task.getBoardId());
         int edgesBefore = countEdges(task.getBoardId());
-        ApplyReport report = applyGenerationStep(task, step, actions, planProgress);
+        ApplyReport report = applyGenerationStep(task, step, reviewed.actions(), planProgress, reviewed.note());
         int shapesAfter = countShapes(task.getBoardId());
         int edgesAfter = countEdges(task.getBoardId());
         int expectedShapes = report.createdShapes() - report.deletedShapes();
@@ -234,14 +236,65 @@ public class AgentPlanExecutor {
         return report;
     }
 
+    /** 生成动作：树型大图走分支委派，其余类型单 Agent 一次生成 */
+    private List<BoardAction> generateActions(AgentExecutionContext context, AiTaskType stepType,
+            SkillDefinition skill) {
+        return branchDelegator.supports(stepType)
+                ? branchDelegator.generate(context, skill)
+                : generatedActions(context, skill);
+    }
+
     /** 单 Agent 生成路径：一次模型调用产出全部动作 */
     private List<BoardAction> generatedActions(AgentExecutionContext context, SkillDefinition skill) {
         AgentResult result = agentRuntime.generate(context, skill);
         return result.actions() == null ? List.of() : result.actions();
     }
 
+    /**
+     * 可选语义审查：大图或用户明确要求时审查一次；存在 HIGH 问题时把审查意见回填给 Supervisor
+     * 重新生成一轮，修正后不再复审，避免 Worker 与 Critic 反复打回。
+     * MEDIUM/LOW 问题只写进步骤结果，不额外消耗模型调用。
+     */
+    private ReviewedActions review(AiTask task, AgentExecutionContext context, AiTaskType stepType,
+            SkillDefinition skill, List<BoardAction> actions, TaskRuntime runtime) {
+        if (!criticAgent.shouldReview(stepType, actions, task.getPrompt())) {
+            return new ReviewedActions(actions, null);
+        }
+        // 审查是可选步骤：计划预算已经用尽时直接跳过，不能因为审查失败回退已生成的结果
+        int usedCalls = runtime.modelCalls();
+        int limitCalls = properties.ai().agent().maxModelCalls();
+        if (usedCalls >= limitCalls) {
+            log.warn("模型调用预算已用尽，跳过语义审查：taskId={} 已用={} 上限={}", task.getId(), usedCalls,
+                    limitCalls);
+            return new ReviewedActions(actions, "；模型预算已用尽，未执行语义审查");
+        }
+        CriticResult result = criticAgent.review(context, actions);
+        if (result.issues().isEmpty()) {
+            return new ReviewedActions(actions, null);
+        }
+        if (!result.hasBlockingIssues()) {
+            return new ReviewedActions(actions, result.describe());
+        }
+        // 修正大致重复一次首轮生成的开销；剩余预算不够时不启动，避免修正到一半预算超限
+        usedCalls = runtime.modelCalls();
+        if (usedCalls * 2 > limitCalls) {
+            log.warn("审查发现问题但剩余模型预算不足以修正：taskId={} 已用={} 上限={}", task.getId(), usedCalls,
+                    limitCalls);
+            return new ReviewedActions(actions, result.describe() + "，剩余预算不足，保留原结果");
+        }
+        runtime.report("审查发现高优先级问题，正在修正", 75);
+        AgentExecutionContext repairContext = new AgentExecutionContext(context.taskId(), context.boardId(),
+                context.user(), context.sessionId(), context.runId(), context.role(), stepType,
+                context.prompt() + result.renderForRepair(), context.selectedShapeIds(), runtime,
+                context.sessionContext());
+        List<BoardAction> repaired = generateActions(repairContext, stepType, skill);
+        log.info("语义审查后已修正一轮：taskId={} 问题数={} 高优先级={}", task.getId(), result.issues().size(),
+                result.issues().stream().filter(issue -> issue.severity() == CriticIssue.Severity.HIGH).count());
+        return new ReviewedActions(repaired, result.describe() + "，已完成一轮修正");
+    }
+
     private ApplyReport applyGenerationStep(AiTask task, AiTaskStep step, List<BoardAction> actions,
-            int planProgress) {
+            int planProgress, String note) {
         return transactionTemplate.execute(status -> {
             cancellation.assertNotCancelled(task.getId());
             String error = BoardActionValidator.validate(actions, properties.ai().agent().maxNodesPerTask());
@@ -256,11 +309,15 @@ public class AgentPlanExecutor {
             if (report.changedShapes() == 0) {
                 throw new IllegalStateException("本步没有产生任何画布变化");
             }
-            step.done(describe(report));
+            step.done(note == null ? describe(report) : describe(report) + note);
             stepRepository.save(step);
             updateTaskProgress(task.getId(), planProgress, "步骤 " + step.getSeq() + " 完成：" + step.getTitle());
             return report;
         });
+    }
+
+    /** 审查后的动作与步骤结果附注 */
+    private record ReviewedActions(List<BoardAction> actions, String note) {
     }
 
     /** 清空步骤：三张表同一事务删除，资产对象延后到计划成功后清理 */

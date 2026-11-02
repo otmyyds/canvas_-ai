@@ -26,18 +26,21 @@ public class PromptCatalog {
     private final PromptTemplate agentPreflightTemplate;
     private final PromptTemplate branchOutlineTemplate;
     private final PromptTemplate branchWorkerTemplate;
+    private final PromptTemplate criticTemplate;
 
     public PromptCatalog(
             @Value("classpath:prompts/generation-outline.st") Resource outlineResource,
             @Value("classpath:prompts/generation-actions.st") Resource actionsResource,
             @Value("classpath:prompts/agent-preflight.st") Resource preflightResource,
             @Value("classpath:prompts/agent-branch-outline.st") Resource branchOutlineResource,
-            @Value("classpath:prompts/agent-branch-worker.st") Resource branchWorkerResource) {
+            @Value("classpath:prompts/agent-branch-worker.st") Resource branchWorkerResource,
+            @Value("classpath:prompts/agent-critic.st") Resource criticResource) {
         this.generationOutlineTemplate = new PromptTemplate(read(outlineResource));
         this.generationActionsTemplate = new PromptTemplate(read(actionsResource));
         this.agentPreflightTemplate = new PromptTemplate(read(preflightResource));
         this.branchOutlineTemplate = new PromptTemplate(read(branchOutlineResource));
         this.branchWorkerTemplate = new PromptTemplate(read(branchWorkerResource));
+        this.criticTemplate = new PromptTemplate(read(criticResource));
     }
 
     private static String read(Resource resource) {
@@ -122,6 +125,14 @@ public class PromptCatalog {
                 "branchTitle", branchTitle,
                 "branchGoal", branchGoal,
                 "maxChildren", String.valueOf(maxChildren)));
+    }
+
+    /** 语义审查：紧凑快照 + 问题 schema，只输出问题列表 */
+    public String criticPrompt(AiTaskType taskType, int nodeCount, String snapshot) {
+        return criticTemplate.render(Map.of(
+                "taskHint", taskType.name(),
+                "nodeCount", String.valueOf(nodeCount),
+                "snapshot", snapshot == null || snapshot.isBlank() ? "无" : snapshot));
     }
 
     /** 按任务类型给出一句产出要求 */
