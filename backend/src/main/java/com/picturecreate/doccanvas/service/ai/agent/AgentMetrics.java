@@ -56,4 +56,17 @@ public class AgentMetrics {
                     .increment(completionTokens);
         }
     }
+
+    /** 一次委派及其分支数，用于观察大图任务的拆分规模 */
+    public void delegation(int branchCount) {
+        registry.counter("ai.agent.delegations").increment();
+        if (branchCount > 0) {
+            registry.counter("ai.agent.delegation.branches").increment(branchCount);
+        }
+    }
+
+    /** 配额拒绝次数：reason 取 tasks / tokens */
+    public void quotaRejected(String reason) {
+        registry.counter("ai.agent.quota.rejected", "reason", reason).increment();
+    }
 }

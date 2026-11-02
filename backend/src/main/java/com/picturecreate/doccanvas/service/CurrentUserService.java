@@ -45,12 +45,6 @@ public class CurrentUserService {
         return new CurrentUser(user.getId(), user.getEmail(), user.getDisplayName());
     }
 
-    public CurrentUser demoUser() {
-        UserAccount user = userAccountRepository.findByEmail("demo@example.com")
-                .orElseGet(() -> userAccountRepository.save(new UserAccount("demo@example.com", "演示用户")));
-        return new CurrentUser(user.getId(), user.getEmail(), user.getDisplayName());
-    }
-
     /**
      * 从 SecurityContext 读取 JWT 认证用户（principal 为 userId）。
      * 不加 @Transactional：private 方法上的注解不会被 Spring 代理识别（且它只被 resolve() 调用，

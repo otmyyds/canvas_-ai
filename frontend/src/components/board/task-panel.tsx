@@ -315,6 +315,7 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
   const currentIndex = runningIndex >= 0
     ? runningIndex + 1
     : Math.min(task.steps.filter((step) => step.status === "DONE").length + 1, Math.max(totalSteps, 1));
+  const usage = usageParts(task);
 
   return (
     <div className="mt-2 rounded-md border border-ink/10 bg-mist p-3">
@@ -377,8 +378,28 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
       ) : null}
 
       {task.errorMessage ? <p className="mt-2 text-xs text-coral">{task.errorMessage}</p> : null}
+
+      {/* 成本信息：模型调用、token 与分支数，便于用户理解大图任务的消耗 */}
+      {usage.length > 0 ? (
+        <p className="mt-2 text-[11px] text-ink/45">{usage.join(" · ")}</p>
+      ) : null}
     </div>
   );
+}
+
+/** 任务成本摘要；没有用量的旧任务不显示 */
+function usageParts(task: AiTask): string[] {
+  const parts: string[] = [];
+  if (task.modelCalls > 0) {
+    parts.push(`模型 ${task.modelCalls} 次`);
+  }
+  if (task.totalTokens > 0) {
+    parts.push(`token ${task.totalTokens.toLocaleString("zh-CN")}`);
+  }
+  if (task.branchCount > 0) {
+    parts.push(`分支 ${task.branchCount}`);
+  }
+  return parts;
 }
 
 /** 步骤序号圆点的配色 */

@@ -6,6 +6,7 @@ import java.util.UUID;
 import com.picturecreate.doccanvas.domain.AgentRole;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 import com.picturecreate.doccanvas.service.CurrentUser;
+import com.picturecreate.doccanvas.service.QuotaExceededException;
 import com.picturecreate.doccanvas.service.ai.llm.TaskRuntime;
 
 /**
@@ -31,6 +32,8 @@ public final class AgentExecutionContext {
     private volatile UUID startedTaskId;
     private volatile AiTaskType startedTaskType;
     private volatile String planError;
+    /** 创建任务时配额用尽：工具调用层会把它转成工具错误，这里保留原始异常供预检直接返回 429 */
+    private volatile QuotaExceededException quotaError;
 
     public AgentExecutionContext(UUID taskId, UUID boardId, CurrentUser user, UUID sessionId, UUID runId,
             AgentRole role, AiTaskType taskTypeHint, String prompt, List<String> selectedShapeIds,
@@ -129,5 +132,15 @@ public final class AgentExecutionContext {
     /** 记录计划校验失败原因：模型重试后仍失败时，由预检把它作为可见回复返回 */
     public void recordPlanError(String error) {
         this.planError = error;
+    }
+
+    public QuotaExceededException quotaError() {
+        return quotaError;
+    }
+
+    /** 记录配额异常，由预检在模型返回后原样抛出，映射为 HTTP 429 */
+    public void recordQuotaError(QuotaExceededException error) {
+        this.quotaError = error;
+        this.finished = true;
     }
 }

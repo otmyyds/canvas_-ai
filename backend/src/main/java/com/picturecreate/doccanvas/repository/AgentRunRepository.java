@@ -18,6 +18,9 @@ public interface AgentRunRepository extends JpaRepository<AgentRun, UUID> {
     /** 任务下的运行记录（按创建时间升序，便于还原执行顺序） */
     List<AgentRun> findByTaskIdOrderByCreatedAtAsc(UUID taskId);
 
+    /** 任务下的运行记录（校验 owner，任务详情统计成本用） */
+    List<AgentRun> findByTaskIdAndOwnerId(UUID taskId, UUID ownerId);
+
     /** 单个运行记录（校验 owner） */
     Optional<AgentRun> findByIdAndOwnerId(UUID id, UUID ownerId);
 

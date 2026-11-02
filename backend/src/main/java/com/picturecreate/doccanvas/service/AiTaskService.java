@@ -21,12 +21,15 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
 import com.picturecreate.doccanvas.api.dto.TaskEvent;
 import com.picturecreate.doccanvas.config.AppProperties;
+import com.picturecreate.doccanvas.domain.AgentRole;
+import com.picturecreate.doccanvas.domain.AgentRun;
 import com.picturecreate.doccanvas.domain.AgentRunStatus;
 import com.picturecreate.doccanvas.domain.AiTask;
 import com.picturecreate.doccanvas.domain.AiTaskStatus;
 import com.picturecreate.doccanvas.domain.AiTaskStep;
 import com.picturecreate.doccanvas.domain.AiTaskType;
 import com.picturecreate.doccanvas.domain.UserAccount;
+import com.picturecreate.doccanvas.repository.AgentRunRepository;
 import com.picturecreate.doccanvas.repository.AiTaskRepository;
 import com.picturecreate.doccanvas.repository.AiTaskStepRepository;
 import com.picturecreate.doccanvas.repository.UserAccountRepository;
@@ -65,6 +68,8 @@ public class AiTaskService {
     private final BoardService boardService;
     private final AiTaskRepository taskRepository;
     private final AiTaskStepRepository stepRepository;
+    private final AgentRunRepository agentRunRepository;
+    private final QuotaService quotaService;
     private final UserAccountRepository userAccountRepository;
     private final TaskEventPublisher eventPublisher;
     private final AiTaskStreamProducer aiTaskStreamProducer;
@@ -76,7 +81,8 @@ public class AiTaskService {
     private final BoardCheckpointService checkpointService;
 
     public AiTaskService(BoardService boardService, AiTaskRepository taskRepository,
-            AiTaskStepRepository stepRepository, UserAccountRepository userAccountRepository,
+            AiTaskStepRepository stepRepository, AgentRunRepository agentRunRepository,
+            QuotaService quotaService, UserAccountRepository userAccountRepository,
             TaskEventPublisher eventPublisher, AiTaskStreamProducer aiTaskStreamProducer,
             AppProperties properties, TransactionTemplate transactionTemplate, AgentRunRecorder agentRunRecorder,
             AgentPlanExecutor planExecutor, AiTaskCancellation cancellation,
@@ -84,6 +90,8 @@ public class AiTaskService {
         this.boardService = boardService;
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
+        this.agentRunRepository = agentRunRepository;
+        this.quotaService = quotaService;
         this.userAccountRepository = userAccountRepository;
         this.eventPublisher = eventPublisher;
         this.aiTaskStreamProducer = aiTaskStreamProducer;
@@ -107,6 +115,8 @@ public class AiTaskService {
             List<String> selectedShapeIds, UUID sessionId) {
         boardService.getOwned(boardId, user);
         enforceConcurrency(boardId, user);
+        // 与任务创建同一事务：超限抛 429，回滚本次任务名额
+        quotaService.reserveTask(user);
         AiTask task = new AiTask(boardId, user.id(), AiTaskType.AGENT_PLAN, goal);
         task.setContextJson(contextJson(selectedShapeIds, sessionId));
         AiTask saved = taskRepository.save(task);
@@ -135,7 +145,7 @@ public class AiTaskService {
     public List<AiTaskResponse> list(UUID boardId, CurrentUser user) {
         boardService.getOwned(boardId, user);
         return taskRepository.findByBoardIdAndOwnerIdOrderByCreatedAtDesc(boardId, user.id()).stream()
-                .map(task -> AiTaskResponse.from(task, stepRepository.findByTaskIdOrderBySeqAsc(task.getId())))
+                .map(task -> response(task, user))
                 .toList();
     }
 
@@ -144,7 +154,7 @@ public class AiTaskService {
     public AiTaskResponse get(UUID taskId, CurrentUser user) {
         AiTask task = taskRepository.findByIdAndOwnerId(taskId, user.id())
                 .orElseThrow(() -> new NotFoundException("AI 任务不存在"));
-        return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderBySeqAsc(taskId));
+        return response(task, user);
     }
 
     /**
@@ -167,7 +177,7 @@ public class AiTaskService {
                         "已请求中断，任务会在下一个安全检查点停止"));
             }
         });
-        return AiTaskResponse.from(task, stepRepository.findByTaskIdOrderBySeqAsc(taskId));
+        return response(task, user);
     }
 
     /**
@@ -394,6 +404,27 @@ public class AiTaskService {
             log.warn("解析任务上下文 JSON 失败：{}", exception.getMessage());
             return List.of();
         }
+    }
+
+    /** 任务响应：步骤 + 按运行记录汇总的成本信息 */
+    private AiTaskResponse response(AiTask task, CurrentUser user) {
+        List<AiTaskStep> steps = stepRepository.findByTaskIdOrderBySeqAsc(task.getId());
+        long modelCalls = 0;
+        long toolCalls = 0;
+        long totalTokens = 0;
+        long branchCount = 0;
+        for (AgentRun run : agentRunRepository.findByTaskIdAndOwnerId(task.getId(), user.id())) {
+            if (run.getRole() == AgentRole.BRANCH_WORKER) {
+                branchCount++;
+            }
+            // 分支与审查运行会把用量同时记到父运行，只汇总顶层运行避免重复计数
+            if (run.getParentRunId() == null) {
+                modelCalls += run.getModelCalls();
+                toolCalls += run.getToolCalls();
+                totalTokens += run.getTotalTokens();
+            }
+        }
+        return AiTaskResponse.from(task, steps, modelCalls, toolCalls, totalTokens, branchCount);
     }
 
     /** 并发控制：每用户最多 N 个活跃任务、每画布最多 M 个写入型任务 */

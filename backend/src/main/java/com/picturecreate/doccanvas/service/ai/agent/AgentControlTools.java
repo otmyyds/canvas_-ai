@@ -17,6 +17,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
 import com.picturecreate.doccanvas.domain.AiTaskType;
+import com.picturecreate.doccanvas.service.QuotaExceededException;
 
 /**
  * 预检的收尾工具：reply 直接回答，start_plan 制定有序计划并创建后台任务。
@@ -95,6 +96,10 @@ public class AgentControlTools {
             payload.put("type", AiTaskType.AGENT_PLAN.name());
             payload.put("stepCount", steps.size());
             return json(payload);
+        } catch (QuotaExceededException exception) {
+            // 工具异常可能被 Spring AI 转成工具错误文本，先在上下文里留底，预检拿到模型返回后原样抛出
+            context.recordQuotaError(exception);
+            return error(exception.getMessage());
         } catch (RuntimeException exception) {
             log.warn("预检创建计划失败：error={}", exception.getMessage());
             return planError(context, "创建计划失败：" + exception.getMessage());

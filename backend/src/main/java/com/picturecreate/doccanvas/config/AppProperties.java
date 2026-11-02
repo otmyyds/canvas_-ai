@@ -51,11 +51,12 @@ public record AppProperties(Cors cors, Ai ai, RustFs rustfs) {
             int maxNodesPerTask,
             boolean delegationEnabled,
             int branchMaxDurationSeconds,
-            boolean delegateAllowPartial) {
+            boolean delegateAllowPartial,
+            int branchPerUserParallelism) {
     }
 
     /** 每用户配额 */
-    public record Quota(long dailyTokensPerUser) {
+    public record Quota(long dailyTokensPerUser, long dailyTasksPerUser) {
     }
 
     public record Image(String apiKey, String baseUrl, String model) {

@@ -119,6 +119,8 @@ app:
       # 委派
       max-branches: ${AI_AGENT_MAX_BRANCHES:8}
       branch-parallelism: ${AI_AGENT_BRANCH_PARALLELISM:4}
+      # 每用户同时展开的分支数：小于全局池，避免一个用户的大图占满 Worker
+      branch-per-user-parallelism: ${AI_AGENT_BRANCH_PER_USER_PARALLELISM:2}
       branch-max-model-calls: ${AI_AGENT_BRANCH_MAX_MODEL_CALLS:4}
       branch-max-tool-calls: ${AI_AGENT_BRANCH_MAX_TOOL_CALLS:8}
       branch-max-tokens: ${AI_AGENT_BRANCH_MAX_TOKENS:20000}
@@ -143,6 +145,7 @@ app:
       max-nodes-per-task: ${AI_AGENT_MAX_NODES_PER_TASK:80}
     quota:
       daily-tokens-per-user: ${AI_QUOTA_DAILY_TOKENS_PER_USER:200000}
+      daily-tasks-per-user: ${AI_QUOTA_DAILY_TASKS_PER_USER:30}
   rustfs:
     endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
     access-key: ${RUSTFS_ACCESS_KEY:rustfsadmin}

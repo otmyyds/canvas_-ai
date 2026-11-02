@@ -115,6 +115,12 @@ export type AiTask = {
   finishedAt?: string;
   createdAt: string;
   steps: AiTaskStep[];
+  /** 顶层运行的模型调用次数（分支/审查用量已计入父运行） */
+  modelCalls: number;
+  toolCalls: number;
+  totalTokens: number;
+  /** 分支 Worker 数量 */
+  branchCount: number;
 };
 
 /** AI 助手统一响应：kind=reply 返回纯文本，kind=task 返回后台执行的任务；sessionId 用于多轮会话 */

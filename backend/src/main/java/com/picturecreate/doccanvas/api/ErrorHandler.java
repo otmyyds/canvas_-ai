@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.service.NotFoundException;
+import com.picturecreate.doccanvas.service.QuotaExceededException;
 import com.picturecreate.doccanvas.service.ai.llm.ModelBusyException;
 
 @RestControllerAdvice
@@ -34,6 +35,13 @@ public class ErrorHandler {
         log.warn("模型服务限流：{}", exception.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(Map.of("error", "模型服务繁忙，请稍后重试"));
+    }
+
+    @ExceptionHandler(QuotaExceededException.class)
+    ResponseEntity<Map<String, String>> quotaExceeded(QuotaExceededException exception) {
+        log.warn("AI 配额用尽：{}", exception.getMessage());
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(Map.of("error", safeMessage(exception.getMessage(), "今日 AI 配额已用尽，请明天再试")));
     }
 
     @ExceptionHandler(IllegalStateException.class)

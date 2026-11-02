@@ -29,13 +29,24 @@ public final class AiTaskDtos {
             Instant startedAt,
             Instant finishedAt,
             Instant createdAt,
-            List<AiTaskStepResponse> steps) {
+            List<AiTaskStepResponse> steps,
+            long modelCalls,
+            long toolCalls,
+            long totalTokens,
+            long branchCount) {
 
         public static AiTaskResponse from(AiTask task, List<AiTaskStep> steps) {
+            return from(task, steps, 0, 0, 0, 0);
+        }
+
+        /** 带成本信息的任务详情：模型调用与 token 只汇总顶层运行，分支数按 Worker 运行计数 */
+        public static AiTaskResponse from(AiTask task, List<AiTaskStep> steps, long modelCalls, long toolCalls,
+                long totalTokens, long branchCount) {
             return new AiTaskResponse(task.getId(), task.getBoardId(), task.getType(), task.getPrompt(),
                     task.getStatus(), task.getProgress(), task.getCurrentStep(), task.isAbortRequested(),
                     task.getResultJson(), task.getErrorMessage(), task.getStartedAt(), task.getFinishedAt(),
-                    task.getCreatedAt(), steps.stream().map(AiTaskStepResponse::from).toList());
+                    task.getCreatedAt(), steps.stream().map(AiTaskStepResponse::from).toList(), modelCalls,
+                    toolCalls, totalTokens, branchCount);
         }
     }
 

@@ -6,11 +6,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -56,25 +59,33 @@ public class BranchDelegator {
     private final AgentToolRegistry toolRegistry;
     private final AgentRunRecorder recorder;
     private final BranchWorkerAgent worker;
+    private final AgentMetrics metrics;
     private final AppProperties properties;
     private final ExecutorService branchPool;
     private final AtomicInteger threadSeq = new AtomicInteger();
+    /** 每用户分支并发额度：同一用户的任务共享，防止一个大图占满全局池 */
+    private final ConcurrentHashMap<UUID, Semaphore> userBranchSlots = new ConcurrentHashMap<>();
+    private final int perUserParallelism;
 
     public BranchDelegator(LlmGateway gateway, PromptCatalog promptCatalog, AgentToolRegistry toolRegistry,
-            AgentRunRecorder recorder, BranchWorkerAgent worker, AppProperties properties) {
+            AgentRunRecorder recorder, BranchWorkerAgent worker, AgentMetrics metrics, AppProperties properties) {
         this.gateway = gateway;
         this.promptCatalog = promptCatalog;
         this.toolRegistry = toolRegistry;
         this.recorder = recorder;
         this.worker = worker;
+        this.metrics = metrics;
         this.properties = properties;
         int parallelism = Math.max(1, properties.ai().agent().branchParallelism());
+        // 每用户额度不能超过全局池，否则限制没有意义
+        this.perUserParallelism = Math.max(1,
+                Math.min(properties.ai().agent().branchPerUserParallelism(), parallelism));
         this.branchPool = Executors.newFixedThreadPool(parallelism, task -> {
             Thread thread = new Thread(task, "agent-branch-worker-" + threadSeq.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         });
-        log.info("分支委派线程池已创建：并发={}", parallelism);
+        log.info("分支委派线程池已创建：全局并发={} 每用户并发={}", parallelism, perUserParallelism);
     }
 
     @PreDestroy
@@ -97,6 +108,7 @@ public class BranchDelegator {
         runtime.report("AI 正在拆解大图分支", 20);
         long start = System.nanoTime();
         BranchPlan plan = planBranches(context, skill, config);
+        metrics.delegation(plan.branches().size());
         log.info("分支计划：taskId={} 根节点={} 分支数={} keys={}", context.taskId(), plan.rootTitle(),
                 plan.branches().size(), plan.branches().stream().map(BranchSpec::key).toList());
         runtime.report("已拆分为 " + plan.branches().size() + " 个分支，正在并行展开", 30);
@@ -149,15 +161,21 @@ public class BranchDelegator {
         throw new IllegalStateException("分支计划未通过校验：" + previousError);
     }
 
-    /** 提交分支任务并按完成顺序收结果；每个分支完成即上报计划进度 */
+    /**
+     * 提交分支任务并按完成顺序收结果；提交前先占用该用户的分支并发额度。
+     *
+     * 额度在提交线程里等待，而不是在 Worker 线程里阻塞：一个用户的分支最多占满自己的并发额度，
+     * 不会把全局池的线程都卡在等锁上，其他用户的任务仍然可以被调度。
+     */
     private List<BranchResult> runBranches(AgentExecutionContext context, BranchPlan plan,
             SkillDefinition skill, TaskRuntime runtime) {
         int total = plan.branches().size();
+        Semaphore slots = userBranchSlots.computeIfAbsent(context.user().id(),
+                id -> new Semaphore(perUserParallelism, true));
         ExecutorCompletionService<BranchResult> completion = new ExecutorCompletionService<>(branchPool);
-        List<Future<BranchResult>> futures = new ArrayList<>();
+        List<BranchTask> tasks = new ArrayList<>();
         for (BranchSpec branch : plan.branches()) {
-            futures.add(completion.submit(
-                    () -> worker.run(context, branch, plan.rootTitle(), context.prompt(), skill)));
+            tasks.add(submitBranch(completion, slots, context, branch, plan.rootTitle(), skill, tasks));
         }
         List<BranchResult> results = new ArrayList<>();
         for (int completed = 1; completed <= total; completed++) {
@@ -168,10 +186,10 @@ public class BranchDelegator {
                 result = future.get();
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                cancelRemaining(futures);
+                cancelRemaining(tasks);
                 throw new IllegalStateException("等待分支结果时被中断");
             } catch (ExecutionException exception) {
-                cancelRemaining(futures);
+                cancelRemaining(tasks);
                 throw new IllegalStateException("分支执行异常：" + message(exception.getCause()));
             }
             results.add(result);
@@ -181,6 +199,39 @@ public class BranchDelegator {
             runtime.report(progress, 30 + completed * 50 / total);
         }
         return results;
+    }
+
+    /** 先取用户额度再提交；等待被中断时取消已提交的分支，额度由任务收尾释放 */
+    private BranchTask submitBranch(ExecutorCompletionService<BranchResult> completion, Semaphore slots,
+            AgentExecutionContext context, BranchSpec branch, String rootTitle, SkillDefinition skill,
+            List<BranchTask> submitted) {
+        try {
+            slots.acquire();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            cancelRemaining(submitted);
+            throw new IllegalStateException("等待分支并发额度时被中断");
+        }
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable release = () -> {
+            if (released.compareAndSet(false, true)) {
+                slots.release();
+            }
+        };
+        try {
+            Future<BranchResult> future = completion.submit(() -> {
+                try {
+                    return worker.run(context, branch, rootTitle, context.prompt(), skill);
+                } finally {
+                    release.run();
+                }
+            });
+            return new BranchTask(future, release);
+        } catch (RuntimeException exception) {
+            // 提交失败（例如线程池已关闭）必须归还刚占用的额度
+            release.run();
+            throw exception;
+        }
     }
 
     /** 合并成功分支：根节点 + 一级分支 + 子节点；同一父节点下标题归一化后重复的跳过 */
@@ -215,10 +266,20 @@ public class BranchDelegator {
     }
 
     /** 异常退出时取消仍在排队或执行的分支，避免后台线程在计划结束后继续写运行记录 */
-    private void cancelRemaining(List<Future<BranchResult>> futures) {
-        for (Future<BranchResult> future : futures) {
-            if (!future.isDone()) {
-                future.cancel(true);
+    private void cancelRemaining(List<BranchTask> tasks) {
+        for (BranchTask task : tasks) {
+            if (!task.future().isDone()) {
+                task.cancel();
+            }
+        }
+    }
+
+    /** 已提交的分支：取消时若任务尚未开始执行，主动归还用户额度，避免额度泄漏 */
+    private record BranchTask(Future<BranchResult> future, Runnable release) {
+
+        void cancel() {
+            if (future.cancel(true)) {
+                release.run();
             }
         }
     }

@@ -17,6 +17,8 @@ import com.picturecreate.doccanvas.domain.AgentSession;
 import com.picturecreate.doccanvas.service.AiTaskService;
 import com.picturecreate.doccanvas.service.BoardService;
 import com.picturecreate.doccanvas.service.CurrentUser;
+import com.picturecreate.doccanvas.service.QuotaExceededException;
+import com.picturecreate.doccanvas.service.QuotaService;
 import com.picturecreate.doccanvas.service.ai.PromptCatalog;
 import com.picturecreate.doccanvas.service.ai.agent.AgentSessionService.SessionMemory;
 import com.picturecreate.doccanvas.service.ai.llm.LlmGateway;
@@ -44,11 +46,12 @@ public class AgentAssistService {
     private final AiTaskService aiTaskService;
     private final BoardService boardService;
     private final AgentSessionService sessionService;
+    private final QuotaService quotaService;
     private final AppProperties properties;
 
     public AgentAssistService(LlmGateway gateway, PromptCatalog promptCatalog, AgentToolRegistry toolRegistry,
             AgentRunRecorder recorder, AiTaskService aiTaskService, BoardService boardService,
-            AgentSessionService sessionService, AppProperties properties) {
+            AgentSessionService sessionService, QuotaService quotaService, AppProperties properties) {
         this.gateway = gateway;
         this.promptCatalog = promptCatalog;
         this.toolRegistry = toolRegistry;
@@ -56,6 +59,7 @@ public class AgentAssistService {
         this.aiTaskService = aiTaskService;
         this.boardService = boardService;
         this.sessionService = sessionService;
+        this.quotaService = quotaService;
         this.properties = properties;
     }
 
@@ -69,6 +73,8 @@ public class AgentAssistService {
             UUID sessionId) {
         // 归属校验与会话归属校验都放在调用模型之前：非本人画布/会话直接 404，不消耗模型额度
         boardService.getOwned(boardId, user);
+        // 预检也消耗模型 token，配额用尽时直接 429，避免靠对话绕过配额
+        quotaService.assertTokensAvailable(user);
         AgentSession session = sessionService.open(boardId, user, sessionId, prompt);
         // 先读历史再写入本轮用户消息，避免当前需求在提示词里出现两次
         SessionMemory memory = sessionService.loadMemory(session.getId());
@@ -94,6 +100,10 @@ public class AgentAssistService {
             log.info("预检开始：boardId={} sessionId={} runId={} 需求长度={} 选中节点={}", boardId,
                     session.getId(), runId, prompt.length(), selectedShapeIds.size());
             LlmResult result = gateway.call(request);
+            // 配额异常可能被工具调用层转成错误文本，此时模型仍会正常返回；在记账前把它还原成 429
+            if (context.quotaError() != null) {
+                throw context.quotaError();
+            }
             log.info("预检模型返回：boardId={} runId={} 耗时={}ms 模型={} 模型调用={} 工具调用={} tokens={}",
                     boardId, runId, elapsedMs(startNanos), result.model(), runtime.modelCalls(),
                     runtime.toolCalls(), runtime.totalTokens());
@@ -131,8 +141,23 @@ public class AgentAssistService {
             } catch (RuntimeException ignored) {
                 // 审计失败不覆盖原始异常
             }
-            throw exception;
+            // 工具层可能把配额异常包成 ToolExecutionException，这里剥出原始异常交给 ErrorHandler 映射 429
+            QuotaExceededException quota = quotaFrom(exception);
+            throw quota == null ? exception : quota;
         }
+    }
+
+    /** 沿 cause 链查找配额异常 */
+    private QuotaExceededException quotaFrom(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current instanceof QuotaExceededException quota) {
+                return quota;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return null;
     }
 
     /** 创建计划后的会话摘要：后续“第 N 个分支”等指代依赖这里的步骤顺序 */

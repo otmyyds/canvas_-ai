@@ -18,6 +18,7 @@ import com.picturecreate.doccanvas.domain.AgentStep;
 import com.picturecreate.doccanvas.domain.AgentStepType;
 import com.picturecreate.doccanvas.repository.AgentRunRepository;
 import com.picturecreate.doccanvas.repository.AgentStepRepository;
+import com.picturecreate.doccanvas.service.QuotaService;
 import com.picturecreate.doccanvas.service.ai.llm.ModelCallListener;
 import com.picturecreate.doccanvas.service.ai.llm.ModelCallTrace;
 
@@ -34,13 +35,15 @@ public class AgentRunRecorder {
     private final AgentRunRepository runRepository;
     private final AgentStepRepository stepRepository;
     private final AgentMetrics metrics;
+    private final QuotaService quotaService;
     private final ObjectMapper objectMapper;
 
     public AgentRunRecorder(AgentRunRepository runRepository, AgentStepRepository stepRepository,
-            AgentMetrics metrics, ObjectMapper objectMapper) {
+            AgentMetrics metrics, QuotaService quotaService, ObjectMapper objectMapper) {
         this.runRepository = runRepository;
         this.stepRepository = stepRepository;
         this.metrics = metrics;
+        this.quotaService = quotaService;
         this.objectMapper = objectMapper;
     }
 
@@ -114,6 +117,10 @@ public class AgentRunRecorder {
         run.addUsage(modelCalls, toolCalls, promptTokens, completionTokens);
         runRepository.save(run);
         metrics.tokens(run.getRole(), promptTokens, completionTokens);
+        // 分支与审查运行会把用量同时记到父运行，只有顶层运行计入每日配额，避免重复消耗
+        if (run.getParentRunId() == null) {
+            quotaService.recordUsage(run.getOwnerId(), modelCalls, promptTokens, completionTokens);
+        }
     }
 
     /** 关闭任务下仍在运行中的记录，用于进程重启和僵尸任务回收 */
