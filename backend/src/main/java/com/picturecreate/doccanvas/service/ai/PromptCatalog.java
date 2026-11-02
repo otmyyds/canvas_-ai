@@ -24,14 +24,20 @@ public class PromptCatalog {
     private final PromptTemplate generationOutlineTemplate;
     private final PromptTemplate generationActionsTemplate;
     private final PromptTemplate agentPreflightTemplate;
+    private final PromptTemplate branchOutlineTemplate;
+    private final PromptTemplate branchWorkerTemplate;
 
     public PromptCatalog(
             @Value("classpath:prompts/generation-outline.st") Resource outlineResource,
             @Value("classpath:prompts/generation-actions.st") Resource actionsResource,
-            @Value("classpath:prompts/agent-preflight.st") Resource preflightResource) {
+            @Value("classpath:prompts/agent-preflight.st") Resource preflightResource,
+            @Value("classpath:prompts/agent-branch-outline.st") Resource branchOutlineResource,
+            @Value("classpath:prompts/agent-branch-worker.st") Resource branchWorkerResource) {
         this.generationOutlineTemplate = new PromptTemplate(read(outlineResource));
         this.generationActionsTemplate = new PromptTemplate(read(actionsResource));
         this.agentPreflightTemplate = new PromptTemplate(read(preflightResource));
+        this.branchOutlineTemplate = new PromptTemplate(read(branchOutlineResource));
+        this.branchWorkerTemplate = new PromptTemplate(read(branchWorkerResource));
     }
 
     private static String read(Resource resource) {
@@ -80,6 +86,36 @@ public class PromptCatalog {
                 "tools", renderToolList(toolNames),
                 "prompt", prompt == null ? "" : prompt,
                 "selected", selected == null || selected.isBlank() ? "无" : selected));
+    }
+
+    /** Supervisor 拆解分支：只输出根节点与一级分支的 JSON */
+    public String branchOutlinePrompt(UUID boardId, AiTaskType taskType, List<String> toolNames,
+            String prompt, String skill, int maxBranches, int maxChildren) {
+        return branchOutlineTemplate.render(Map.of(
+                "boardId", boardId.toString(),
+                "date", LocalDate.now().toString(),
+                "taskHint", taskType.name(),
+                "requirement", generationRequirement(taskType),
+                "tools", renderToolList(toolNames),
+                "prompt", prompt == null ? "" : prompt,
+                "skill", skill == null || skill.isBlank() ? "无" : skill,
+                "maxBranches", String.valueOf(maxBranches),
+                "maxChildrenLimit", String.valueOf(maxChildren)));
+    }
+
+    /** 分支 Worker：只展开一个分支，输出 Markdown 一级子标题 */
+    public String branchWorkerPrompt(AiTaskType taskType, List<String> toolNames, String prompt, String skill,
+            String rootTitle, String branchTitle, String branchGoal, int maxChildren) {
+        return branchWorkerTemplate.render(Map.of(
+                "taskHint", taskType.name(),
+                "requirement", generationRequirement(taskType),
+                "tools", renderToolList(toolNames),
+                "prompt", prompt == null ? "" : prompt,
+                "skill", skill == null || skill.isBlank() ? "无" : skill,
+                "rootTitle", rootTitle,
+                "branchTitle", branchTitle,
+                "branchGoal", branchGoal,
+                "maxChildren", String.valueOf(maxChildren)));
     }
 
     /** 按任务类型给出一句产出要求 */

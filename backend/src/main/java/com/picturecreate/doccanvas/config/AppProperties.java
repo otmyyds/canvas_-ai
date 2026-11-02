@@ -48,7 +48,10 @@ public record AppProperties(Cors cors, Ai ai, RustFs rustfs) {
             boolean criticEnabled,
             int criticMinNodes,
             int criticMaxRounds,
-            int maxNodesPerTask) {
+            int maxNodesPerTask,
+            boolean delegationEnabled,
+            int branchMaxDurationSeconds,
+            boolean delegateAllowPartial) {
     }
 
     /** 每用户配额 */

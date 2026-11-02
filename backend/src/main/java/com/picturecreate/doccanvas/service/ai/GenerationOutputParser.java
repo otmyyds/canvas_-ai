@@ -139,7 +139,7 @@ public final class GenerationOutputParser {
     }
 
     /** 去掉 ```json 代码围栏 */
-    private static String stripFence(String content) {
+    public static String stripFence(String content) {
         if (!content.startsWith("```")) {
             return content;
         }

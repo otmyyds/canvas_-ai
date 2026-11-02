@@ -67,6 +67,7 @@ public class AgentPlanExecutor {
     private final BoardSnapshotRepository snapshotRepository;
     private final BoardCheckpointService checkpointService;
     private final AgentRuntime agentRuntime;
+    private final BranchDelegator branchDelegator;
     private final AgentRunRecorder recorder;
     private final SkillLoader skillLoader;
     private final BoardActionApplier actionApplier;
@@ -80,10 +81,11 @@ public class AgentPlanExecutor {
     public AgentPlanExecutor(AiTaskRepository taskRepository, AiTaskStepRepository stepRepository,
             ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
             AssetRepository assetRepository, BoardSnapshotRepository snapshotRepository,
-            BoardCheckpointService checkpointService, AgentRuntime agentRuntime, AgentRunRecorder recorder,
-            SkillLoader skillLoader, BoardActionApplier actionApplier, AssetService assetService,
-            ImageGenerationService imageGenerationService, TaskEventPublisher eventPublisher,
-            AiTaskCancellation cancellation, TransactionTemplate transactionTemplate, AppProperties properties) {
+            BoardCheckpointService checkpointService, AgentRuntime agentRuntime, BranchDelegator branchDelegator,
+            AgentRunRecorder recorder, SkillLoader skillLoader, BoardActionApplier actionApplier,
+            AssetService assetService, ImageGenerationService imageGenerationService,
+            TaskEventPublisher eventPublisher, AiTaskCancellation cancellation,
+            TransactionTemplate transactionTemplate, AppProperties properties) {
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
         this.shapeRepository = shapeRepository;
@@ -92,6 +94,7 @@ public class AgentPlanExecutor {
         this.snapshotRepository = snapshotRepository;
         this.checkpointService = checkpointService;
         this.agentRuntime = agentRuntime;
+        this.branchDelegator = branchDelegator;
         this.recorder = recorder;
         this.skillLoader = skillLoader;
         this.actionApplier = actionApplier;
@@ -199,8 +202,10 @@ public class AgentPlanExecutor {
         String prompt = "总目标：" + task.getPrompt() + "\n本步要求：" + step.getBrief();
         AgentExecutionContext context = new AgentExecutionContext(task.getId(), task.getBoardId(), user, null, runId,
                 AgentRole.SUPERVISOR, stepType, prompt, selectedShapeIds, runtime);
-        AgentResult result = agentRuntime.generate(context, skill);
-        List<BoardAction> actions = result.actions() == null ? List.of() : result.actions();
+        // 树型大图由 Supervisor 拆分支、Worker 并行展开；其余类型仍走单 Agent 一次生成
+        List<BoardAction> actions = branchDelegator.supports(stepType)
+                ? branchDelegator.generate(context, skill)
+                : generatedActions(context, skill);
         int shapesBefore = countShapes(task.getBoardId());
         int edgesBefore = countEdges(task.getBoardId());
         ApplyReport report = applyGenerationStep(task, step, actions, planProgress);
@@ -214,6 +219,12 @@ public class AgentPlanExecutor {
         if (report.createdEdges() > 0 && edgesAfter <= edgesBefore) {
             throw new IllegalStateException("画布连线未按预期增加");
         }
+    }
+
+    /** 单 Agent 生成路径：一次模型调用产出全部动作 */
+    private List<BoardAction> generatedActions(AgentExecutionContext context, SkillDefinition skill) {
+        AgentResult result = agentRuntime.generate(context, skill);
+        return result.actions() == null ? List.of() : result.actions();
     }
 
     private ApplyReport applyGenerationStep(AiTask task, AiTaskStep step, List<BoardAction> actions,

@@ -122,6 +122,11 @@ app:
       branch-max-tool-calls: ${AI_AGENT_BRANCH_MAX_TOOL_CALLS:8}
       branch-max-tokens: ${AI_AGENT_BRANCH_MAX_TOKENS:20000}
       branch-max-children: ${AI_AGENT_BRANCH_MAX_CHILDREN:5}
+      branch-max-duration-seconds: ${AI_AGENT_BRANCH_MAX_DURATION_SECONDS:90}
+      # 树型大图委派：Supervisor 拆分分支，BranchWorker 并行展开
+      delegation-enabled: ${AI_AGENT_DELEGATION_ENABLED:true}
+      # false：任一分支失败即整体失败；true：跳过失败分支，保留成功结果
+      delegate-allow-partial: ${AI_AGENT_DELEGATE_ALLOW_PARTIAL:false}
       # 预检
       preflight-max-model-calls: ${AI_AGENT_PREFLIGHT_MAX_MODEL_CALLS:4}
       preflight-max-tool-calls: ${AI_AGENT_PREFLIGHT_MAX_TOOL_CALLS:6}

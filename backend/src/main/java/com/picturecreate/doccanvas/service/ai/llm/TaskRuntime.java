@@ -21,6 +21,8 @@ public final class TaskRuntime {
     private final long maxTotalTokens;
     private final Runnable cancellationCheck;
     private final BiConsumer<String, Integer> progressSink;
+    /** 父运行预算：分支运行除自身额度外，每次调用同时扣减父预算 */
+    private final TaskRuntime parent;
 
     private final AtomicInteger modelCalls = new AtomicInteger();
     private final AtomicInteger toolCalls = new AtomicInteger();
@@ -30,9 +32,11 @@ public final class TaskRuntime {
     private final AtomicBoolean degraded = new AtomicBoolean();
     private volatile String lastModel;
 
-    private TaskRuntime(UUID taskId, int maxModelCalls, int maxToolCalls, int maxDurationSeconds,
-            long maxTotalTokens, Runnable cancellationCheck, BiConsumer<String, Integer> progressSink) {
+    private TaskRuntime(UUID taskId, TaskRuntime parent, int maxModelCalls, int maxToolCalls,
+            int maxDurationSeconds, long maxTotalTokens, Runnable cancellationCheck,
+            BiConsumer<String, Integer> progressSink) {
         this.taskId = taskId;
+        this.parent = parent;
         this.maxModelCalls = maxModelCalls;
         this.maxToolCalls = maxToolCalls;
         this.maxDurationSeconds = maxDurationSeconds;
@@ -44,12 +48,26 @@ public final class TaskRuntime {
 
     public static TaskRuntime start(UUID taskId, int maxModelCalls, int maxToolCalls, int maxDurationSeconds,
             long maxTotalTokens, Runnable cancellationCheck, BiConsumer<String, Integer> progressSink) {
-        return new TaskRuntime(taskId, maxModelCalls, maxToolCalls, maxDurationSeconds, maxTotalTokens,
+        return new TaskRuntime(taskId, null, maxModelCalls, maxToolCalls, maxDurationSeconds, maxTotalTokens,
                 cancellationCheck, progressSink);
+    }
+
+    /**
+     * 创建分支预算：额度与截止时间独立，同时每次模型/工具调用和 token 用量都扣减父预算，
+     * 保证并行分支不会绕过计划级总预算。分支进度不单独占进度条。
+     */
+    public static TaskRuntime branch(TaskRuntime parent, int maxModelCalls, int maxToolCalls,
+            int maxDurationSeconds, long maxTotalTokens) {
+        return new TaskRuntime(parent.taskId, parent, maxModelCalls, maxToolCalls, maxDurationSeconds,
+                maxTotalTokens, () -> {
+                }, null);
     }
 
     /** 取消 + 超时检查，任何模型/工具调用前都会执行 */
     public void check() {
+        if (parent != null) {
+            parent.check();
+        }
         cancellationCheck.run();
         if (Instant.now().isAfter(deadline)) {
             throw new TaskBudgetExceededException("任务执行超时（上限 " + maxDurationSeconds + " 秒）");
@@ -63,6 +81,9 @@ public final class TaskRuntime {
         if (count > maxModelCalls) {
             throw new TaskBudgetExceededException("模型调用次数超过上限：" + maxModelCalls);
         }
+        if (parent != null) {
+            parent.beforeModelCall();
+        }
     }
 
     public void beforeToolCall() {
@@ -70,6 +91,9 @@ public final class TaskRuntime {
         int count = toolCalls.incrementAndGet();
         if (count > maxToolCalls) {
             throw new TaskBudgetExceededException("工具调用次数超过上限：" + maxToolCalls);
+        }
+        if (parent != null) {
+            parent.beforeToolCall();
         }
     }
 
@@ -82,6 +106,9 @@ public final class TaskRuntime {
         long total = promptTokens.get() + completionTokens.get();
         if (maxTotalTokens > 0 && total > maxTotalTokens) {
             throw new TaskBudgetExceededException("token 用量超过上限：" + maxTotalTokens);
+        }
+        if (parent != null) {
+            parent.onUsage(model, prompt, completion);
         }
     }
 

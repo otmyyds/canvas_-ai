@@ -87,6 +87,8 @@ class AiTaskTransactionIntegrationTest {
                   address: "redis://%s:%d"
                   database: 0
                 """.formatted(REDIS.getHost(), REDIS.getMappedPort(6379)));
+        // 本测试验证事务边界：生成步骤统一走单 Agent 桩，不触发分支委派的真实模型调用
+        registry.add("app.ai.agent.delegation-enabled", () -> "false");
     }
 
     /** 对象存储（RustFS）与两处模型调用：外部依赖，本测试不关心其行为 */
