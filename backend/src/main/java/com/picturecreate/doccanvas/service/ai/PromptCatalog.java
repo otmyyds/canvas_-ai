@@ -50,7 +50,7 @@ public class PromptCatalog {
 
     /** 树型任务：单份 Markdown 标题大纲 */
     public String generationOutlinePrompt(UUID boardId, AiTaskType taskType, List<String> toolNames,
-            String prompt, String selected, String skill) {
+            String prompt, String selected, String skill, String memory) {
         return generationOutlineTemplate.render(Map.of(
                 "boardId", boardId.toString(),
                 "date", LocalDate.now().toString(),
@@ -59,12 +59,13 @@ public class PromptCatalog {
                 "tools", renderToolList(toolNames),
                 "prompt", prompt == null ? "" : prompt,
                 "selected", selected == null || selected.isBlank() ? "无" : selected,
-                "skill", skill == null || skill.isBlank() ? "无" : skill));
+                "skill", skill == null || skill.isBlank() ? "无" : skill,
+                "memory", memory == null || memory.isBlank() ? "无" : memory));
     }
 
     /** 流程图/编辑任务：单份 JSON 动作文档 */
     public String generationActionsPrompt(UUID boardId, AiTaskType taskType, List<String> toolNames,
-            String prompt, String selected, String skill) {
+            String prompt, String selected, String skill, String memory) {
         String editConstraint = taskType == AiTaskType.EDIT_ELEMENT ? editElementConstraint() : "";
         return generationActionsTemplate.render(Map.of(
                 "boardId", boardId.toString(),
@@ -75,22 +76,26 @@ public class PromptCatalog {
                 "prompt", prompt == null ? "" : prompt,
                 "selected", selected == null || selected.isBlank() ? "无" : selected,
                 "skill", skill == null || skill.isBlank() ? "无" : skill,
-                "editConstraint", editConstraint));
+                "editConstraint", editConstraint,
+                "memory", memory == null || memory.isBlank() ? "无" : memory));
     }
 
-    /** 同步预检系统提示词 */
-    public String agentPreflightPrompt(UUID boardId, List<String> toolNames, String prompt, String selected) {
+    /** 同步预检系统提示词：摘要 + 最近对话作为多轮上下文 */
+    public String agentPreflightPrompt(UUID boardId, List<String> toolNames, String prompt, String selected,
+            String summary, String history) {
         return agentPreflightTemplate.render(Map.of(
                 "boardId", boardId.toString(),
                 "date", LocalDate.now().toString(),
                 "tools", renderToolList(toolNames),
                 "prompt", prompt == null ? "" : prompt,
-                "selected", selected == null || selected.isBlank() ? "无" : selected));
+                "selected", selected == null || selected.isBlank() ? "无" : selected,
+                "summary", summary == null || summary.isBlank() ? "无" : summary,
+                "history", history == null || history.isBlank() ? "无" : history));
     }
 
     /** Supervisor 拆解分支：只输出根节点与一级分支的 JSON */
     public String branchOutlinePrompt(UUID boardId, AiTaskType taskType, List<String> toolNames,
-            String prompt, String skill, int maxBranches, int maxChildren) {
+            String prompt, String skill, int maxBranches, int maxChildren, String memory) {
         return branchOutlineTemplate.render(Map.of(
                 "boardId", boardId.toString(),
                 "date", LocalDate.now().toString(),
@@ -100,7 +105,8 @@ public class PromptCatalog {
                 "prompt", prompt == null ? "" : prompt,
                 "skill", skill == null || skill.isBlank() ? "无" : skill,
                 "maxBranches", String.valueOf(maxBranches),
-                "maxChildrenLimit", String.valueOf(maxChildren)));
+                "maxChildrenLimit", String.valueOf(maxChildren),
+                "memory", memory == null || memory.isBlank() ? "无" : memory));
     }
 
     /** 分支 Worker：只展开一个分支，输出 Markdown 一级子标题 */

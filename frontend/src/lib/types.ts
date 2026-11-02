@@ -117,10 +117,10 @@ export type AiTask = {
   steps: AiTaskStep[];
 };
 
-/** AI 助手统一响应：kind=reply 返回纯文本，kind=task 返回后台执行的任务 */
+/** AI 助手统一响应：kind=reply 返回纯文本，kind=task 返回后台执行的任务；sessionId 用于多轮会话 */
 export type AssistResult =
-  | { kind: "reply"; reply: string }
-  | { kind: "task"; task: AiTask };
+  | { kind: "reply"; reply: string; sessionId?: string | null }
+  | { kind: "task"; task: AiTask; sessionId?: string | null };
 
 /** 上传资料文件（TXT/MD 等自动解析为可检索文本） */
 export type SourceFile = {

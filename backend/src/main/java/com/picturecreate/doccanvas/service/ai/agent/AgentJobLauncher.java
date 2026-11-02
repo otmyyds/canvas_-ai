@@ -24,10 +24,10 @@ public class AgentJobLauncher {
         this.taskServiceProvider = taskServiceProvider;
     }
 
-    /** 创建并投递计划任务：一个任务加 N 条有序步骤 */
+    /** 创建并投递计划任务：一个任务加 N 条有序步骤，会话 id 随任务保存 */
     public AiTaskResponse launchPlan(UUID boardId, CurrentUser user, String goal, List<PlanDraft> steps,
-            List<String> selectedShapeIds) {
+            List<String> selectedShapeIds, UUID sessionId) {
         return taskServiceProvider.getObject()
-                .createPlan(boardId, user, goal, steps, selectedShapeIds);
+                .createPlan(boardId, user, goal, steps, selectedShapeIds, sessionId);
     }
 }

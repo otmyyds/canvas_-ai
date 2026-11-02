@@ -15,4 +15,7 @@ public interface AgentMessageRepository extends JpaRepository<AgentMessage, UUID
 
     /** 会话下的全部消息（按时间升序） */
     List<AgentMessage> findBySessionIdAndOwnerIdOrderByCreatedAtAsc(UUID sessionId, UUID ownerId);
+
+    /** 会话消息总数：判断是否触发滚动摘要 */
+    long countBySessionId(UUID sessionId);
 }

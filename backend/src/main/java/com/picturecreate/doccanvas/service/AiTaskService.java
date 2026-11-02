@@ -1,6 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -99,14 +100,15 @@ public class AiTaskService {
      * 事务提交后（afterCommit）投递到 Stream，避免长任务阻塞 HTTP 请求。
      *
      * @param selectedShapeIds 用户选中的图形节点 id（编辑类步骤的操作目标）
+     * @param sessionId        来源会话 id，用于执行完成后写入任务摘要
      */
     @Transactional
     public AiTaskResponse createPlan(UUID boardId, CurrentUser user, String goal, List<PlanDraft> steps,
-            List<String> selectedShapeIds) {
+            List<String> selectedShapeIds, UUID sessionId) {
         boardService.getOwned(boardId, user);
         enforceConcurrency(boardId, user);
         AiTask task = new AiTask(boardId, user.id(), AiTaskType.AGENT_PLAN, goal);
-        task.setContextJson(contextJson(selectedShapeIds));
+        task.setContextJson(contextJson(selectedShapeIds, sessionId));
         AiTask saved = taskRepository.save(task);
         for (int index = 0; index < steps.size(); index++) {
             PlanDraft draft = steps.get(index);
@@ -213,7 +215,8 @@ public class AiTaskService {
                 throw new IllegalStateException("未知任务类型：" + task.getType());
             }
             planExecutor.execute(task, ownerUser(task.getOwnerId()),
-                    parseStringList(task.getContextJson(), "selectedShapeIds"));
+                    parseStringList(task.getContextJson(), "selectedShapeIds"),
+                    parseUuid(task.getContextJson(), "sessionId"));
         } catch (TaskAbortedException exception) {
             // 执行器启动前的取消：此时还没有检查点，画布未动
             finishRunningRunsQuietly(taskId, AgentRunStatus.ABORTED, "任务被用户中断");
@@ -344,14 +347,32 @@ public class AiTaskService {
         return new CurrentUser(user.getId(), user.getEmail(), user.getDisplayName());
     }
 
-    /** 把选中元素 id 列表序列化为 JSON，存入任务 context_json */
-    private String contextJson(List<String> shapeIds) {
-        Map<String, Object> payload = Map.of(
-                "selectedShapeIds", shapeIds == null ? List.of() : shapeIds);
+    /** 把选中元素与会话 id 序列化为 JSON，存入任务 context_json */
+    private String contextJson(List<String> shapeIds, UUID sessionId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("selectedShapeIds", shapeIds == null ? List.of() : shapeIds);
+        if (sessionId != null) {
+            payload.put("sessionId", sessionId.toString());
+        }
         try {
             return OBJECT_MAPPER.writeValueAsString(payload);
         } catch (Exception exception) {
             log.warn("序列化任务上下文失败：{}", exception.getMessage());
+            return null;
+        }
+    }
+
+    /** 从 context_json 解析 UUID；缺失或非法返回 null（无会话的任务不写会话摘要） */
+    private UUID parseUuid(String contextJson, String key) {
+        if (contextJson == null || contextJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<?, ?> root = OBJECT_MAPPER.readValue(contextJson, Map.class);
+            Object value = root.get(key);
+            return value == null ? null : UUID.fromString(String.valueOf(value));
+        } catch (Exception exception) {
+            log.warn("解析任务上下文 UUID 失败：key={} error={}", key, exception.getMessage());
             return null;
         }
     }

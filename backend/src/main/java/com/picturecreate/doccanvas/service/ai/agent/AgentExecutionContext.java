@@ -24,6 +24,7 @@ public final class AgentExecutionContext {
     private final String prompt;
     private final List<String> selectedShapeIds;
     private final TaskRuntime runtime;
+    private final String sessionContext;
 
     private volatile boolean finished;
     private volatile String replyText;
@@ -33,7 +34,7 @@ public final class AgentExecutionContext {
 
     public AgentExecutionContext(UUID taskId, UUID boardId, CurrentUser user, UUID sessionId, UUID runId,
             AgentRole role, AiTaskType taskTypeHint, String prompt, List<String> selectedShapeIds,
-            TaskRuntime runtime) {
+            TaskRuntime runtime, String sessionContext) {
         this.taskId = taskId;
         this.boardId = boardId;
         this.user = user;
@@ -44,6 +45,7 @@ public final class AgentExecutionContext {
         this.prompt = prompt;
         this.selectedShapeIds = selectedShapeIds == null ? List.of() : List.copyOf(selectedShapeIds);
         this.runtime = runtime;
+        this.sessionContext = sessionContext;
     }
 
     public UUID taskId() {
@@ -84,6 +86,11 @@ public final class AgentExecutionContext {
 
     public TaskRuntime runtime() {
         return runtime;
+    }
+
+    /** 会话摘要与最近对话文本；分支 Worker 不读取会话，值为 null */
+    public String sessionContext() {
+        return sessionContext;
     }
 
     public boolean finished() {

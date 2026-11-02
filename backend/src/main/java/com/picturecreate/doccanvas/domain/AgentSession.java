@@ -64,6 +64,11 @@ public class AgentSession extends BaseEntity {
         this.lastActiveAt = Instant.now();
     }
 
+    /** 仅刷新活跃时间：新消息写入但还没触发摘要时使用 */
+    public void touch() {
+        this.lastActiveAt = Instant.now();
+    }
+
     public UUID getOwnerId() {
         return ownerId;
     }

@@ -235,13 +235,15 @@ export const api = {
   /**
    * 统一提交到后端预检：返回 kind=reply 纯文本 / kind=task 后台任务。
    * selection 携带用户当前选中的图形节点真实 id，用于「编辑选中元素」任务。
+   * sessionId 为空时后端新建会话，响应会带回会话 id 供后续多轮复用。
    */
-  assist: (boardId: string, prompt: string, selection?: { shapeIds: string[] }) =>
+  assist: (boardId: string, prompt: string, selection?: { shapeIds: string[] }, sessionId?: string) =>
     request<AssistResult>(`/api/boards/${boardId}/assist`, {
       method: "POST",
       body: JSON.stringify({
         prompt,
-        selectedShapeIds: selection?.shapeIds ?? []
+        selectedShapeIds: selection?.shapeIds ?? [],
+        sessionId: sessionId ?? null
       })
     }),
 

@@ -69,6 +69,7 @@ public class AgentPlanExecutor {
     private final AgentRuntime agentRuntime;
     private final BranchDelegator branchDelegator;
     private final AgentRunRecorder recorder;
+    private final AgentSessionService sessionService;
     private final SkillLoader skillLoader;
     private final BoardActionApplier actionApplier;
     private final AssetService assetService;
@@ -82,10 +83,10 @@ public class AgentPlanExecutor {
             ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
             AssetRepository assetRepository, BoardSnapshotRepository snapshotRepository,
             BoardCheckpointService checkpointService, AgentRuntime agentRuntime, BranchDelegator branchDelegator,
-            AgentRunRecorder recorder, SkillLoader skillLoader, BoardActionApplier actionApplier,
-            AssetService assetService, ImageGenerationService imageGenerationService,
-            TaskEventPublisher eventPublisher, AiTaskCancellation cancellation,
-            TransactionTemplate transactionTemplate, AppProperties properties) {
+            AgentRunRecorder recorder, AgentSessionService sessionService, SkillLoader skillLoader,
+            BoardActionApplier actionApplier, AssetService assetService,
+            ImageGenerationService imageGenerationService, TaskEventPublisher eventPublisher,
+            AiTaskCancellation cancellation, TransactionTemplate transactionTemplate, AppProperties properties) {
         this.taskRepository = taskRepository;
         this.stepRepository = stepRepository;
         this.shapeRepository = shapeRepository;
@@ -96,6 +97,7 @@ public class AgentPlanExecutor {
         this.agentRuntime = agentRuntime;
         this.branchDelegator = branchDelegator;
         this.recorder = recorder;
+        this.sessionService = sessionService;
         this.skillLoader = skillLoader;
         this.actionApplier = actionApplier;
         this.assetService = assetService;
@@ -107,10 +109,10 @@ public class AgentPlanExecutor {
     }
 
     /** 执行一个计划任务；异常已在此统一收口，不会再抛给调用方 */
-    public void execute(AiTask task, CurrentUser user, List<String> selectedShapeIds) {
+    public void execute(AiTask task, CurrentUser user, List<String> selectedShapeIds, UUID sessionId) {
         List<AiTaskStep> steps = stepRepository.findByTaskIdOrderBySeqAsc(task.getId());
         if (steps.isEmpty()) {
-            finishWithoutCheckpoint(task, "计划没有可执行的步骤");
+            finishWithoutCheckpoint(task, "计划没有可执行的步骤", sessionId);
             return;
         }
         try {
@@ -118,7 +120,7 @@ public class AgentPlanExecutor {
         } catch (RuntimeException exception) {
             log.error("保存画布检查点失败，计划未执行：taskId={} error={}", task.getId(), exception.getMessage(),
                     exception);
-            finishWithoutCheckpoint(task, "保存画布检查点失败：" + message(exception));
+            finishWithoutCheckpoint(task, "保存画布检查点失败：" + message(exception), sessionId);
             return;
         }
         int total = steps.size();
@@ -131,8 +133,12 @@ public class AgentPlanExecutor {
                         progressMessage));
         List<String> pendingPurgeKeys = new ArrayList<>();
         List<String> createdAssetKeys = new ArrayList<>();
+        // 新建节点信息汇总进会话摘要，下一轮才能按“第 N 个分支”定位到真实节点
+        List<ApplyReport.CreatedShape> createdNodes = new ArrayList<>();
         AiTaskStep active = null;
         try {
+            // 计划开始时读取一次会话记忆，整个计划共用；放在 try 内保证读取失败也能回退检查点
+            String sessionContext = sessionService.loadMemory(sessionId).render();
             for (int index = 0; index < steps.size(); index++) {
                 active = steps.get(index);
                 activeIndex.set(index);
@@ -140,39 +146,43 @@ public class AgentPlanExecutor {
                 runtime.check();
                 startStep(task, active, index, total);
                 executeStep(task, user, active, index, total, runtime, selectedShapeIds, pendingPurgeKeys,
-                        createdAssetKeys);
+                        createdAssetKeys, sessionId, sessionContext, createdNodes);
             }
-            finishSucceeded(task, steps, pendingPurgeKeys);
+            finishSucceeded(task, steps, pendingPurgeKeys, sessionId, createdNodes);
         } catch (TaskAbortedException exception) {
-            handleAborted(task, active, createdAssetKeys);
+            handleAborted(task, active, createdAssetKeys, sessionId);
         } catch (Exception exception) {
-            handleFailed(task, active, exception, createdAssetKeys);
+            handleFailed(task, active, exception, createdAssetKeys, sessionId);
         }
     }
 
     /** 按步骤类型分派；每一步单独记录一条 AgentRun */
     private void executeStep(AiTask task, CurrentUser user, AiTaskStep step, int index, int total,
             TaskRuntime runtime, List<String> selectedShapeIds, List<String> pendingPurgeKeys,
-            List<String> createdAssetKeys) {
+            List<String> createdAssetKeys, UUID sessionId, String sessionContext,
+            List<ApplyReport.CreatedShape> createdNodes) {
         AiTaskType type = step.getStepType();
         if (type == null) {
             throw new IllegalStateException("步骤缺少类型：" + step.getSeq());
         }
-        AgentRun run = recorder.startRun(task.getId(), null, null, task.getOwnerId(), task.getBoardId(),
+        AgentRun run = recorder.startRun(task.getId(), sessionId, null, task.getOwnerId(), task.getBoardId(),
                 AgentRole.SUPERVISOR, "step-" + step.getSeq(), null);
         UUID runId = run.getId();
         Usage before = usage(runtime);
         int planProgress = (index + 1) * 100 / total;
-        log.info("开始执行计划步骤：taskId={} runId={} seq={} type={} title={}", task.getId(), runId, step.getSeq(),
-                type, step.getTitle());
+        log.info("开始执行计划步骤：taskId={} sessionId={} runId={} seq={} type={} title={}", task.getId(),
+                sessionId, runId, step.getSeq(), type, step.getTitle());
         try {
             switch (type) {
                 case CLEAR_CANVAS -> executeClear(task, step, planProgress, pendingPurgeKeys);
                 case GENERATE_IMAGE -> executeImage(task, step, planProgress, createdAssetKeys);
                 case CANVAS_STRUCTURE -> executeLayout(task, step, planProgress);
                 case GENERATE_MINDMAP, GENERATE_FLOWCHART, DOCUMENT_SUMMARY, STUDY_PLAN,
-                        PRODUCT_REQUIREMENT, EDIT_ELEMENT -> executeGeneration(task, user, step, planProgress,
-                                runtime, selectedShapeIds, runId);
+                        PRODUCT_REQUIREMENT, EDIT_ELEMENT -> {
+                    ApplyReport report = executeGeneration(task, user, step, planProgress, runtime,
+                            selectedShapeIds, runId, sessionId, sessionContext);
+                    createdNodes.addAll(report.createdNodes());
+                }
                 case AGENT_PLAN -> throw new IllegalStateException("步骤不能是 AGENT_PLAN");
             }
             recordUsageQuietly(runId, runtime, before);
@@ -195,13 +205,15 @@ public class AgentPlanExecutor {
     }
 
     /** 生成类步骤：生成动作，校验、布局、落库与步骤完成放在同一事务 */
-    private void executeGeneration(AiTask task, CurrentUser user, AiTaskStep step, int planProgress,
-            TaskRuntime runtime, List<String> selectedShapeIds, UUID runId) {
+    private ApplyReport executeGeneration(AiTask task, CurrentUser user, AiTaskStep step, int planProgress,
+            TaskRuntime runtime, List<String> selectedShapeIds, UUID runId, UUID sessionId,
+            String sessionContext) {
         AiTaskType stepType = step.getStepType();
         SkillDefinition skill = skillLoader.findForTask(stepType.name()).orElse(null);
         String prompt = "总目标：" + task.getPrompt() + "\n本步要求：" + step.getBrief();
-        AgentExecutionContext context = new AgentExecutionContext(task.getId(), task.getBoardId(), user, null, runId,
-                AgentRole.SUPERVISOR, stepType, prompt, selectedShapeIds, runtime);
+        AgentExecutionContext context = new AgentExecutionContext(task.getId(), task.getBoardId(), user,
+                sessionId, runId, AgentRole.SUPERVISOR, stepType, prompt, selectedShapeIds, runtime,
+                sessionContext);
         // 树型大图由 Supervisor 拆分支、Worker 并行展开；其余类型仍走单 Agent 一次生成
         List<BoardAction> actions = branchDelegator.supports(stepType)
                 ? branchDelegator.generate(context, skill)
@@ -219,6 +231,7 @@ public class AgentPlanExecutor {
         if (report.createdEdges() > 0 && edgesAfter <= edgesBefore) {
             throw new IllegalStateException("画布连线未按预期增加");
         }
+        return report;
     }
 
     /** 单 Agent 生成路径：一次模型调用产出全部动作 */
@@ -309,7 +322,8 @@ public class AgentPlanExecutor {
     }
 
     /** 计划成功：标记任务成功，再清理清空步骤留下的资产对象并删除检查点 */
-    private void finishSucceeded(AiTask task, List<AiTaskStep> steps, List<String> pendingPurgeKeys) {
+    private void finishSucceeded(AiTask task, List<AiTaskStep> steps, List<String> pendingPurgeKeys,
+            UUID sessionId, List<ApplyReport.CreatedShape> createdNodes) {
         transactionTemplate.executeWithoutResult(status -> {
             cancellation.assertNotCancelled(task.getId());
             AiTask current = taskRepository.findById(task.getId()).orElseThrow();
@@ -317,6 +331,8 @@ public class AgentPlanExecutor {
             taskRepository.save(current);
         });
         log.info("计划执行成功：taskId={} 步骤数={}", task.getId(), steps.size());
+        // 先写会话摘要再推送 done：客户端收到 done 后立刻追问时，上一轮结果已经在上下文里
+        appendSummaryQuietly(sessionId, successSummary(task, steps, createdNodes), task.getId());
         eventPublisher.publishQuietly(task.getBoardId(), task.getId(),
                 TaskEvent.done(task.getId(), task.getBoardId(), AiTaskType.AGENT_PLAN.name()));
         assetService.purgeObjectsNow(pendingPurgeKeys);
@@ -324,7 +340,8 @@ public class AgentPlanExecutor {
     }
 
     /** 计划失败：先回退画布，再落步骤与任务终态，最后推送事件 */
-    private void handleFailed(AiTask task, AiTaskStep active, Exception exception, List<String> createdAssetKeys) {
+    private void handleFailed(AiTask task, AiTaskStep active, Exception exception, List<String> createdAssetKeys,
+            UUID sessionId) {
         String errorMessage = truncate(message(exception));
         String restoreError = restoreQuietly(task);
         boolean restored = restoreError == null;
@@ -338,6 +355,9 @@ public class AgentPlanExecutor {
         });
         log.error("计划执行失败：taskId={} 回退={} 错误={}", task.getId(), restored ? "成功" : "失败", errorMessage,
                 exception);
+        appendSummaryQuietly(sessionId,
+                "计划执行失败（任务 " + task.getId() + "）：" + taskError + "。画布已回退到计划开始前。",
+                task.getId());
         touched.forEach(step -> publishStep(task, step));
         eventPublisher.publishQuietly(task.getBoardId(), task.getId(),
                 TaskEvent.failed(task.getId(), task.getBoardId(), taskError));
@@ -348,7 +368,7 @@ public class AgentPlanExecutor {
     }
 
     /** 计划被中断：回退后当前步骤 ABORTED、剩余步骤 SKIPPED */
-    private void handleAborted(AiTask task, AiTaskStep active, List<String> createdAssetKeys) {
+    private void handleAborted(AiTask task, AiTaskStep active, List<String> createdAssetKeys, UUID sessionId) {
         String restoreError = restoreQuietly(task);
         boolean restored = restoreError == null;
         String message = restored ? "任务已中断，画布已恢复到计划开始前"
@@ -360,6 +380,8 @@ public class AgentPlanExecutor {
             taskRepository.save(current);
         });
         log.warn("计划执行被中断：taskId={} 回退={}", task.getId(), restored ? "成功" : "失败");
+        appendSummaryQuietly(sessionId, "计划已中断（任务 " + task.getId() + "）：" + message + "。",
+                task.getId());
         touched.forEach(step -> publishStep(task, step));
         eventPublisher.publishQuietly(task.getBoardId(), task.getId(),
                 TaskEvent.aborted(task.getId(), task.getBoardId()));
@@ -370,16 +392,72 @@ public class AgentPlanExecutor {
     }
 
     /** 检查点保存失败：画布未动，不需要回退，所有步骤标记未执行 */
-    private void finishWithoutCheckpoint(AiTask task, String errorMessage) {
+    private void finishWithoutCheckpoint(AiTask task, String errorMessage, UUID sessionId) {
         List<AiTaskStep> touched = finishSteps(task, null, AiTaskStepStatus.FAILED, errorMessage);
         transactionTemplate.executeWithoutResult(status -> {
             AiTask current = taskRepository.findById(task.getId()).orElseThrow();
             current.markFailed(errorMessage);
             taskRepository.save(current);
         });
+        appendSummaryQuietly(sessionId,
+                "计划执行失败（任务 " + task.getId() + "）：" + errorMessage + "。画布未发生修改。",
+                task.getId());
         touched.forEach(step -> publishStep(task, step));
         eventPublisher.publishQuietly(task.getBoardId(), task.getId(),
                 TaskEvent.failed(task.getId(), task.getBoardId(), errorMessage));
+    }
+
+    /** 成功摘要：一级分支的真实节点 id 放前面，后续“第 N 个分支”依赖这里；步骤结果随后 */
+    private String successSummary(AiTask task, List<AiTaskStep> steps,
+            List<ApplyReport.CreatedShape> createdNodes) {
+        StringBuilder summary = new StringBuilder("计划已完成（任务 ").append(task.getId()).append("）。");
+        List<ApplyReport.CreatedShape> branches = createdNodes.stream()
+                .filter(node -> node.level() == 1)
+                .toList();
+        if (!branches.isEmpty()) {
+            summary.append("\n一级分支：");
+            int shown = Math.min(branches.size(), 10);
+            for (int index = 0; index < shown; index++) {
+                ApplyReport.CreatedShape branch = branches.get(index);
+                if (index > 0) {
+                    summary.append("；");
+                }
+                summary.append(index + 1).append(". ").append(abbreviate(branch.title(), 40))
+                        .append("（id=").append(branch.id()).append("）");
+            }
+            if (branches.size() > shown) {
+                summary.append("；等 ").append(branches.size()).append(" 个");
+            }
+        }
+        summary.append("\n步骤：");
+        for (AiTaskStep step : steps) {
+            summary.append("\n").append(step.getSeq()).append(". ").append(step.getTitle());
+            if (step.getResultMessage() != null && !step.getResultMessage().isBlank()) {
+                summary.append("：").append(step.getResultMessage());
+            }
+        }
+        return summary.toString();
+    }
+
+    /** 截断过长标题，保留开头部分 */
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "……";
+    }
+
+    /** 摘要写入失败只记日志，不影响任务终态与画布结果 */
+    private void appendSummaryQuietly(UUID sessionId, String content, UUID taskId) {
+        if (sessionId == null) {
+            return;
+        }
+        try {
+            sessionService.appendTaskSummary(sessionId, content, taskId);
+        } catch (RuntimeException exception) {
+            log.warn("写入会话任务摘要失败：sessionId={} taskId={} error={}", sessionId, taskId,
+                    exception.getMessage());
+        }
     }
 
     /**

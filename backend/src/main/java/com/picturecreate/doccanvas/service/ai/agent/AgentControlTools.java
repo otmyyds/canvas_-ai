@@ -86,7 +86,7 @@ public class AgentControlTools {
         String prompt = goal == null || goal.isBlank() ? context.prompt() : goal.trim();
         try {
             AiTaskResponse task = jobLauncher.launchPlan(context.boardId(), context.user(), prompt, steps,
-                    context.selectedShapeIds());
+                    context.selectedShapeIds(), context.sessionId());
             context.markTaskStarted(task.id(), AiTaskType.AGENT_PLAN);
             log.info("预检创建计划任务：taskId={} 步骤数={} 目标={}", task.id(), steps.size(), prompt);
             Map<String, Object> payload = new LinkedHashMap<>();

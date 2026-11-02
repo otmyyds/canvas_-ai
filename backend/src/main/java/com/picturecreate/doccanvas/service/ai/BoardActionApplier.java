@@ -110,6 +110,7 @@ public class BoardActionApplier {
             return ApplyReport.empty();
         }
         Map<String, UUID> shapeIdMap = new HashMap<>();
+        List<ApplyReport.CreatedShape> createdNodes = new ArrayList<>();
         int createdShapes = 0;
         int createdEdges = 0;
         int updatedShapes = 0;
@@ -120,6 +121,7 @@ public class BoardActionApplier {
             if (action instanceof BoardAction.CreateShape createShape) {
                 UUID created = createShape(boardId, createShape);
                 createdShapes++;
+                createdNodes.add(new ApplyReport.CreatedShape(created, createShape.title(), createShape.level()));
                 if (createShape.id() != null && !createShape.id().isBlank()) {
                     shapeIdMap.put(createShape.id(), created);
                 }
@@ -154,7 +156,8 @@ public class BoardActionApplier {
                 }
             }
         }
-        return new ApplyReport(createdShapes, createdEdges, updatedShapes, deletedShapes, skipped);
+        return new ApplyReport(createdShapes, createdEdges, updatedShapes, deletedShapes, skipped,
+                List.copyOf(createdNodes));
     }
 
     /**

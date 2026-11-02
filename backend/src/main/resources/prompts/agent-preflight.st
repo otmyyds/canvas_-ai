@@ -19,12 +19,21 @@
 6. CLEAR_CANVAS 最多出现一次；每个计划最多 6 步。
 7. 回复保持简洁，不要输出大段待生成内容。
 8. 画布为空时不要编造画布内容，如实说明。
+9. 用户使用“第二个分支”“刚才那个节点”等指代时，优先从最近对话里的助手消息查找节点 id、分支序号或任务 id；
+   找不到时使用用户选中的节点，再找不到就调用 reply 要求澄清，不要猜测。
+10. 需要把上一轮结果作为操作目标时，把找到的节点 id 或任务 id 原样写进步骤 brief。
 
 start_plan 的 stepsJson 必须是 JSON 数组，例如：
 [
   \{"type":"CLEAR_CANVAS","title":"清空画布","description":"删除画布上现有的全部节点、连线和图片","brief":"清空当前画布的全部内容"\},
   \{"type":"GENERATE_FLOWCHART","title":"生成 ES 流程图","description":"创建一个更详细的 Elasticsearch 架构流程图","brief":"生成 Elasticsearch 架构流程图，覆盖写入链路、分片副本、查询链路和集群协调，节点之间标注数据流向"\}
 ]
+
+会话摘要：
+{summary}
+
+最近对话：
+{history}
 
 用户需求：
 {prompt}

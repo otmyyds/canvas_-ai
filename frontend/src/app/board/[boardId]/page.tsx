@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Share2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, authRefresh } from "@/lib/api";
 import type { TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
@@ -13,6 +13,30 @@ import { GhostButton } from "@/components/ui";
 type BoardPageProps = {
   params: Promise<{ boardId: string }>;
 };
+
+/**
+ * 每个用户在每个画布下保存一个持续会话 id，刷新后继续同一段对话。
+ * key 带 userId，避免同一浏览器切换账号后复用上一个用户的会话 id。
+ */
+const AGENT_SESSION_PREFIX = "dc_agent_session_";
+
+function agentSessionKey(boardId: string): string {
+  const userId = authRefresh.get()?.userId ?? "anonymous";
+  return `${AGENT_SESSION_PREFIX}${userId}_${boardId}`;
+}
+
+function loadAgentSessionId(boardId: string): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+  return window.localStorage.getItem(agentSessionKey(boardId)) ?? undefined;
+}
+
+function saveAgentSessionId(boardId: string, sessionId: string) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(agentSessionKey(boardId), sessionId);
+  }
+}
 
 export default function BoardPage({ params }: BoardPageProps) {
   const [boardId, setBoardId] = useState<string>();
@@ -46,6 +70,12 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [titleDraft, setTitleDraft] = useState("");
   // 当前选中的图形节点真实 id（用于「编辑选中元素」任务）
   const [selection, setSelection] = useState<{ shapeIds: string[] }>({ shapeIds: [] });
+  // 当前画布的后端会话 id，用于多轮对话；首次请求由后端创建
+  const sessionIdRef = useRef<string | undefined>(loadAgentSessionId(boardId));
+
+  useEffect(() => {
+    sessionIdRef.current = loadAgentSessionId(boardId);
+  }, [boardId]);
   // 分享链接复制状态
   const [shareCopied, setShareCopied] = useState(false);
 
@@ -141,7 +171,12 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const connection = useTaskStream(boardId, onTaskEvent);
 
   async function assist(prompt: string) {
-    const result = await api.assist(boardId, prompt, selection);
+    const result = await api.assist(boardId, prompt, selection, sessionIdRef.current);
+    // 后端每次都会返回会话 id；首次请求后保存，后续多轮复用同一段记忆
+    if (result.sessionId) {
+      sessionIdRef.current = result.sessionId;
+      saveAgentSessionId(boardId, result.sessionId);
+    }
     if (result.kind === "task") {
       // 立即把新计划插入任务列表，任务卡不用等下一次事件刷新才出现
       upsertTask(result.task);

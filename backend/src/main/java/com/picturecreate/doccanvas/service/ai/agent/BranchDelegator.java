@@ -128,7 +128,8 @@ public class BranchDelegator {
             AppProperties.Agent config) {
         List<String> toolNames = toolRegistry.generationToolNames();
         String system = promptCatalog.branchOutlinePrompt(context.boardId(), context.taskTypeHint(), toolNames,
-                context.prompt(), skillBody(skill), config.maxBranches(), config.branchMaxChildren());
+                context.prompt(), skillBody(skill), config.maxBranches(), config.branchMaxChildren(),
+                context.sessionContext());
         String previousError = null;
         for (int attempt = 1; attempt <= PLAN_ATTEMPTS; attempt++) {
             context.runtime().check();

@@ -18,6 +18,9 @@ JSON 格式：
 
 {editConstraint}
 
+会话记忆（仅用于理解指代和延续上一轮目标；节点 id 必须先用工具确认真实存在）：
+{memory}
+
 用户需求：
 {prompt}
 

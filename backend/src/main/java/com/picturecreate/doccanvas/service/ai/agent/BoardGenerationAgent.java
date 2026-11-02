@@ -56,9 +56,11 @@ public class BoardGenerationAgent {
         // 提示词只组装一次：重试时只替换 user prompt 里的错误反馈，避免重复读模板与技能
         String system = outline
                 ? promptCatalog.generationOutlinePrompt(context.boardId(), taskType, toolNames,
-                        context.prompt(), selectedDescription(context), skillBody(skill))
+                        context.prompt(), selectedDescription(context), skillBody(skill),
+                        context.sessionContext())
                 : promptCatalog.generationActionsPrompt(context.boardId(), taskType, toolNames,
-                        context.prompt(), selectedDescription(context), skillBody(skill));
+                        context.prompt(), selectedDescription(context), skillBody(skill),
+                        context.sessionContext());
         long runStart = System.nanoTime();
         log.info("生成开始：taskId={} runId={} 任务类型={} 输出模式={} 选中节点={} 需求长度={} 可用工具={}",
                 context.taskId(), context.runId(), taskType, outline ? "markdown" : "json",

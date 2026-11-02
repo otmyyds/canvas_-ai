@@ -77,7 +77,7 @@ public class BranchWorkerAgent {
                 rootTitle, branch.title(), branch.goal(), branch.maxChildren());
         AgentExecutionContext branchContext = new AgentExecutionContext(parentContext.taskId(),
                 parentContext.boardId(), parentContext.user(), parentContext.sessionId(), run.getId(),
-                AgentRole.BRANCH_WORKER, taskType, system, List.of(), runtime);
+                AgentRole.BRANCH_WORKER, taskType, system, List.of(), runtime, null);
         log.info("分支开始：taskId={} runId={} key={} 标题={} 子节点上限={}", parentContext.taskId(), run.getId(),
                 branch.key(), branch.title(), branch.maxChildren());
         try {
