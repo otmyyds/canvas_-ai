@@ -1,91 +1,182 @@
 import { createBindingId, createShapeId, toRichText } from "tldraw";
-import type { Editor as TldrawEditor, TLGeoShape, TLShapePartial } from "@tldraw/editor";
-import type { BoardEdge, BoardShape } from "@/lib/types";
+import type { Editor as TldrawEditor, TLGeoShape, TLShapeId, TLShapePartial } from "@tldraw/editor";
+import type { BoardEdge, BoardLayoutStyle, BoardShape } from "@/lib/types";
+import {
+  createMindmapEdgeBindings,
+  updateMindmapEdgeGeometry
+} from "@/lib/whiteboard/mindmap-shapes";
+import type { MindmapEdgeBinding, MindmapEdgeShape, MindmapNodeShape } from "@/lib/whiteboard/mindmap-shapes";
 
 /** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被改动 */
 export function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
   return JSON.stringify([x, y, width, height, title]);
 }
 
+type ShapeId = ReturnType<typeof createShapeId>;
+
 /**
- * 把后端图形节点（思维导图/流程图节点）渲染为 tldraw geo shape。
- * shape 类型映射：ellipse→椭圆，rectangle→矩形，oval→胶囊，diamond→菱形。
- * 返回新增数量。编辑器与只读分享页共用。
+ * 逻辑图里按连通分量判定 fork 节点：分量内任一层级 > 0 的节点即视为思维导图，
+ * 整分量使用无边框文字节点和贝塞尔连线。判定规则与后端 BoardActionApplier 保持一致。
  */
-export function mergeMissingShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[]): number {
-  let added = 0;
+function collectForkNodeIds(
+  shapes: BoardShape[],
+  edges: BoardEdge[],
+  layoutStyle: BoardLayoutStyle
+): Set<string> {
+  const result = new Set<string>();
+  if (layoutStyle !== "LOGIC") {
+    return result;
+  }
+  const adjacency = new Map<string, Set<string>>();
+  const levelById = new Map<string, number>();
   for (const node of shapes) {
-    const shapeId = createShapeId(node.id);
-    if (editor.getShape(shapeId)) {
+    adjacency.set(node.id, new Set());
+    levelById.set(node.id, node.level);
+  }
+  for (const edge of edges) {
+    const from = adjacency.get(edge.fromShapeId);
+    const to = adjacency.get(edge.toShapeId);
+    if (!from || !to) {
       continue;
     }
-    try {
-      createGraphShape(editor, node, shapeId);
-      added += 1;
-    } catch (err) {
-      // 单个节点失败不阻塞其他节点
-      console.error("创建图形节点失败", node.id, err);
-    }
+    from.add(edge.toShapeId);
+    to.add(edge.fromShapeId);
   }
-  // 创建图形节点间的连线（edges 引用 shape id）
-  if (edges.length > 0) {
-    const shapeIdByNode = new Map(shapes.map((s) => [s.id, createShapeId(s.id)]));
-    for (const edge of edges) {
-      try {
-        createEdgeBinding(editor, edge, shapeIdByNode);
-      } catch (err) {
-        console.error("创建连线失败", edge.id, err);
+  const visited = new Set<string>();
+  for (const node of shapes) {
+    if (visited.has(node.id)) {
+      continue;
+    }
+    const component: string[] = [];
+    const stack = [node.id];
+    visited.add(node.id);
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      component.push(current);
+      for (const next of adjacency.get(current) ?? []) {
+        if (!visited.has(next)) {
+          visited.add(next);
+          stack.push(next);
+        }
+      }
+    }
+    if (component.some((id) => (levelById.get(id) ?? 0) > 0)) {
+      for (const id of component) {
+        result.add(id);
       }
     }
   }
-  return added;
+  return result;
 }
+
+export type SyncGraphOptions = {
+  /** 回写基线：同步后把实际状态写进去，避免监听器把这些后端值当成用户编辑再回写一次 */
+  baseline?: Map<string, string>;
+  /** 是否用后端值覆盖已存在且类型正确的节点；增量新增场景只补齐缺失元素，避免覆盖用户尚未回写的编辑 */
+  updateExisting?: boolean;
+};
 
 /**
- * 把后端 shapes 里已存在节点的坐标/尺寸/标题同步到 tldraw。
- * AI 的 update_shape 只改后端行，若不回写标题，画布会一直显示旧文案；
- * 整理画布则只会改坐标。新节点由 mergeMissingShapes 负责创建，这里只更新已有节点。
- * 只同步会回写后端的字段（位置、尺寸、标题），避免覆盖用户手动调整的样式。
- * baseline 传入回写基线时，会先把新状态写进去，避免监听器把这些后端值当成用户编辑再回写一次。
- * 返回被更新的节点数量。
+ * 把后端图形数据同步到 tldraw：创建缺失元素、转换类型、更新位置/尺寸/标题。
+ * 类型由当前布局风格决定：
+ * - LOGIC 且属于思维导图分量 → mindmap-node / mindmap-edge（Freeplane fork 风格）；
+ * - 其他情况 → geo / arrow（原有样式）。
+ * 先处理节点再处理连线，保证节点类型转换删掉的绑定会被重新建立。
+ * 返回发生变更的元素数量。
  */
-export function syncExistingShapes(editor: TldrawEditor, shapes: BoardShape[],
-    baseline?: Map<string, string>): number {
-  // 正在输入的节点跳过，避免同步打断用户编辑
+export function syncGraphVisuals(
+  editor: TldrawEditor,
+  shapes: BoardShape[],
+  edges: BoardEdge[],
+  layoutStyle: BoardLayoutStyle,
+  options: SyncGraphOptions = {}
+): number {
+  const { baseline, updateExisting = true } = options;
+  const forkIds = collectForkNodeIds(shapes, edges, layoutStyle);
   const editingShapeId = editor.getEditingShapeId();
-  const updates: TLShapePartial<TLGeoShape>[] = [];
+  const shapeIdByNode = new Map<string, ShapeId>();
+  let changed = 0;
+
   for (const node of shapes) {
     const shapeId = createShapeId(node.id);
-    const shape = editor.getShape(shapeId);
-    if (!shape || shape.type !== "geo" || shape.id === editingShapeId) {
+    shapeIdByNode.set(node.id, shapeId);
+    const desiredType = forkIds.has(node.id) ? "mindmap-node" : "geo";
+    const existing = editor.getShape(shapeId);
+    if (!existing) {
+      createGraphShape(editor, node, shapeId, desiredType);
+      changed++;
       continue;
     }
-    const props = shape.props as { w?: number; h?: number };
-    const propsUpdate: Partial<TLGeoShape["props"]> = {};
-    if (editor.getShapeUtil(shape).getText(shape) !== node.title) {
-      propsUpdate.richText = toRichText(node.title);
-    }
-    if ((props.w ?? 0) !== node.width) {
-      propsUpdate.w = node.width;
-    }
-    if ((props.h ?? 0) !== node.height) {
-      propsUpdate.h = node.height;
-    }
-    const moved = shape.x !== node.x || shape.y !== node.y;
-    if (!moved && Object.keys(propsUpdate).length === 0) {
+    if (existing.type !== desiredType) {
+      // 正在输入的节点跳过类型转换，等编辑结束后下一轮再处理
+      if (shapeId === editingShapeId) {
+        continue;
+      }
+      editor.deleteShapes([shapeId]);
+      createGraphShape(editor, node, shapeId, desiredType);
+      changed++;
       continue;
     }
-    // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写
-    baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title));
-    updates.push({ id: shape.id, type: "geo", x: node.x, y: node.y, props: propsUpdate });
+    if (updateExisting && shapeId !== editingShapeId
+        && updateGraphShape(editor, node, shapeId, desiredType, baseline)) {
+      changed++;
+    }
   }
-  if (updates.length > 0) {
-    editor.updateShapes(updates);
+
+  for (const edge of edges) {
+    const fromId = shapeIdByNode.get(edge.fromShapeId) ?? createShapeId(edge.fromShapeId);
+    const toId = shapeIdByNode.get(edge.toShapeId) ?? createShapeId(edge.toShapeId);
+    if (!editor.getShape(fromId) || !editor.getShape(toId)) {
+      continue;
+    }
+    const edgeId = createShapeId(edge.id);
+    const desiredType = layoutStyle === "LOGIC"
+      && forkIds.has(edge.fromShapeId)
+      && forkIds.has(edge.toShapeId)
+      ? "mindmap-edge"
+      : "arrow";
+    const existing = editor.getShape(edgeId);
+    if (!existing || existing.type !== desiredType) {
+      if (existing) {
+        editor.deleteShapes([edgeId]);
+      }
+      if (desiredType === "mindmap-edge") {
+        createMindmapEdge(editor, edgeId, fromId, toId);
+      } else {
+        createArrowEdge(editor, edge, edgeId, fromId, toId);
+      }
+      changed++;
+      continue;
+    }
+    if (desiredType === "mindmap-edge") {
+      if (ensureMindmapEdgeBindings(editor, edgeId, fromId, toId)) {
+        changed++;
+      }
+      if (updateMindmapEdgeGeometry(editor, edgeId)) {
+        changed++;
+      }
+    }
   }
-  return updates.length;
+  return changed;
 }
 
-function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ReturnType<typeof createShapeId>) {
+/** 按节点期望类型创建图形 */
+function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ShapeId,
+    type: "geo" | "mindmap-node") {
+  if (type === "mindmap-node") {
+    editor.createShape<MindmapNodeShape>({
+      id: shapeId,
+      type: "mindmap-node",
+      x: node.x,
+      y: node.y,
+      props: {
+        w: node.width,
+        h: node.height,
+        richText: toRichText(node.title)
+      }
+    });
+    return;
+  }
   const geoType = node.shape === "ellipse" ? "ellipse"
     : node.shape === "oval" ? "oval"
     : node.shape === "diamond" ? "diamond"
@@ -116,21 +207,141 @@ function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Retur
   });
 }
 
-function createEdgeBinding(
-  editor: TldrawEditor,
-  edge: BoardEdge,
-  shapeIdsByNode: Map<string, ReturnType<typeof createShapeId>>
-) {
-  const fromId = shapeIdsByNode.get(edge.fromShapeId) ?? createShapeId(edge.fromShapeId);
-  const toId = shapeIdsByNode.get(edge.toShapeId) ?? createShapeId(edge.toShapeId);
-  if (!editor.getShape(fromId) || !editor.getShape(toId)) {
-    return;
+/**
+ * 更新已存在且类型正确的节点。
+ * geo 会清掉旧尺寸留下的 growY；mindmap-node 按文字重新写 richText/w/h。
+ * 返回是否有改动。
+ */
+function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: ShapeId,
+    type: "geo" | "mindmap-node", baseline?: Map<string, string>): boolean {
+  const shape = editor.getShape(shapeId);
+  if (!shape) {
+    return false;
+  }
+  const titleChanged = editor.getShapeUtil(shape).getText(shape) !== node.title;
+  const moved = shape.x !== node.x || shape.y !== node.y;
+
+  if (type === "mindmap-node") {
+    const props = shape.props as MindmapNodeShape["props"];
+    const propsUpdate: Partial<MindmapNodeShape["props"]> = {};
+    if (titleChanged) {
+      propsUpdate.richText = toRichText(node.title);
+    }
+    if (props.w !== node.width) {
+      propsUpdate.w = node.width;
+    }
+    if (props.h !== node.height) {
+      propsUpdate.h = node.height;
+    }
+    if (!moved && Object.keys(propsUpdate).length === 0) {
+      return false;
+    }
+    // 先写入本次目标状态的基线，避免 store 监听把后端同步当成用户编辑再回写一次
+    baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title));
+    editor.updateShape<MindmapNodeShape>({
+      id: shapeId,
+      type: "mindmap-node",
+      x: node.x,
+      y: node.y,
+      props: propsUpdate
+    });
+    // 改名时 onBeforeUpdate 可能按文字加高，基线再记录更新后的实际尺寸
+    if (baseline) {
+      const updated = editor.getShape<MindmapNodeShape>(shapeId);
+      if (updated) {
+        baseline.set(node.id, shapeStateFingerprint(updated.x, updated.y,
+          updated.props.w, updated.props.h, editor.getShapeUtil(updated).getText(updated) ?? ""));
+      }
+    }
+    return true;
   }
 
-  const arrowId = createShapeId(edge.id);
-  if (editor.getShape(arrowId)) {
-    return;
+  const props = shape.props as TLGeoShape["props"];
+  const propsUpdate: Partial<TLGeoShape["props"]> = {};
+  if (titleChanged) {
+    propsUpdate.richText = toRichText(node.title);
   }
+  if (props.w !== node.width) {
+    propsUpdate.w = node.width;
+  }
+  if (props.h !== node.height) {
+    propsUpdate.h = node.height;
+  }
+  const sizeChanged = propsUpdate.w !== undefined || propsUpdate.h !== undefined;
+  if (sizeChanged) {
+    // 后端尺寸已经按 tldraw 的标签参数算好，清掉旧尺寸留下的文字溢出高度
+    propsUpdate.growY = 0;
+  }
+  if (!moved && Object.keys(propsUpdate).length === 0) {
+    return false;
+  }
+  // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写
+  baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title));
+  editor.updateShape<TLGeoShape>({
+    id: shapeId,
+    type: "geo",
+    x: node.x,
+    y: node.y,
+    props: propsUpdate
+  });
+  if (titleChanged) {
+    // 改标题时 tldraw 会按旧高度补 growY，再归零一次
+    const reset: TLShapePartial<TLGeoShape>[] = [{ id: shapeId, type: "geo", props: { growY: 0 } }];
+    editor.updateShapes(reset);
+  }
+  return true;
+}
+
+/** 创建贝塞尔连线：先建图形与两端绑定，再按节点实际位置写路径 */
+function createMindmapEdge(editor: TldrawEditor, edgeId: ShapeId, parentId: ShapeId, childId: ShapeId) {
+  editor.createShape<MindmapEdgeShape>({
+    id: edgeId,
+    type: "mindmap-edge",
+    x: 0,
+    y: 0,
+    props: {
+      startX: 0,
+      startY: 0,
+      cp1X: 12,
+      cp1Y: 0,
+      cp2X: 148,
+      cp2Y: 0,
+      endX: 160,
+      endY: 0
+    }
+  });
+  createMindmapEdgeBindings(editor, edgeId, parentId, childId);
+  updateMindmapEdgeGeometry(editor, edgeId);
+}
+
+/** 确保连线绑定存在且指向当前父子节点；节点类型转换会删掉旧绑定，需要重建 */
+function ensureMindmapEdgeBindings(
+  editor: TldrawEditor,
+  edgeId: ShapeId,
+  parentId: ShapeId,
+  childId: ShapeId
+): boolean {
+  const bindings = editor.getBindingsFromShape<MindmapEdgeBinding>(edgeId, "mindmap-edge");
+  const start = bindings.find((binding) => binding.props.terminal === "start");
+  const end = bindings.find((binding) => binding.props.terminal === "end");
+  if (start?.toId === parentId && end?.toId === childId) {
+    return false;
+  }
+  if (bindings.length > 0) {
+    editor.deleteBindings(bindings.map((binding) => binding.id));
+  }
+  createMindmapEdgeBindings(editor, edgeId, parentId, childId);
+  return true;
+}
+
+/** 创建内建箭头连线（树形图 / 流程图沿用原有样式） */
+function createArrowEdge(
+  editor: TldrawEditor,
+  edge: BoardEdge,
+  arrowId: ShapeId,
+  fromId: ShapeId,
+  toId: ShapeId
+) {
   // 连线样式：curve→arc 曲线（加大 bend），straight→直线（bend=0）；颜色/粗细按 edge 配置
   const isCurve = edge.style === "curve";
   // tldraw arrow color 只接受内建颜色名（black/blue/green...），不能是 hex 或空串

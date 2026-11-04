@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Tldraw, createTLStore, defaultBindingUtils, defaultShapeUtils, parseTldrawJsonFile } from "tldraw";
+import { Tldraw, createTLStore, parseTldrawJsonFile } from "tldraw";
 import type { Editor as TldrawEditor } from "@tldraw/editor";
 import { ArrowLeft, Loader2, Lock } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SharedBoard } from "@/lib/types";
-import { mergeMissingShapes, syncExistingShapes } from "@/lib/whiteboard/shape-render";
+import { syncGraphVisuals } from "@/lib/whiteboard/shape-render";
+import { whiteboardBindingUtils, whiteboardShapeUtils } from "@/lib/whiteboard/mindmap-shapes";
 import { GhostButton } from "@/components/ui";
 
 /**
@@ -69,8 +70,8 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
   const store = useMemo(
     () =>
       createTLStore({
-        shapeUtils: defaultShapeUtils,
-        bindingUtils: defaultBindingUtils,
+        shapeUtils: whiteboardShapeUtils,
+        bindingUtils: whiteboardBindingUtils,
         defaultName: board.title
       }),
     [board]
@@ -84,9 +85,9 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
         }
       }
-      mergeMissingShapes(editor, board.shapes, board.edges);
-      // 快照里的标题可能落后于后端（AI 改过标题但所有者还没重新保存快照），按后端数据对账
-      syncExistingShapes(editor, board.shapes);
+      // 快照里的标题可能落后于后端（AI 改过标题但所有者还没重新保存快照），按后端数据对账；
+      // 同时按分享画布的布局风格把思维导图分量转换成 fork 节点 + 贝塞尔连线
+      syncGraphVisuals(editor, board.shapes, board.edges, board.layoutStyle);
       editor.clearHistory();
       editor.updateInstanceState({ isReadonly: true });
       editor.zoomToFit();
@@ -96,7 +97,15 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden bg-[#eef4f1]">
-      <Tldraw store={store} onMount={onMount} hideUi autoFocus={false} className="h-full w-full" />
+      <Tldraw
+        store={store}
+        onMount={onMount}
+        hideUi
+        autoFocus={false}
+        className="h-full w-full"
+        shapeUtils={whiteboardShapeUtils}
+        bindingUtils={whiteboardBindingUtils}
+      />
     </div>
   );
 }

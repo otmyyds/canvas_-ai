@@ -5,7 +5,7 @@
  */
 
 /** 画布：私有/只读分享 */
-/** 思维导图排布风格：RADIAL 树形图（径向）/ LOGIC 逻辑图（从左到右） */
+/** 思维导图排布风格：RADIAL 树形图（径向）/ LOGIC 逻辑图（根居中，分支左右展开） */
 export type BoardLayoutStyle = "RADIAL" | "LOGIC";
 
 export type Board = {
@@ -46,13 +46,15 @@ export type BoardShape = {
   height: number;
 };
 
-/** 分享画布的只读数据（标题 + 图形节点 + 连线 + 快照） */
+/** 分享画布的只读数据（标题 + 图形节点 + 连线 + 快照 + 布局风格） */
 export type SharedBoard = {
   boardId: string;
   title: string;
   shapes: BoardShape[];
   edges: BoardEdge[];
   snapshotJson: string | null;
+  /** 决定只读页用逻辑图 fork 样式还是普通 geo 样式渲染 */
+  layoutStyle: BoardLayoutStyle;
 };
 
 /** AI 生成图片资产（存 assets 表） */

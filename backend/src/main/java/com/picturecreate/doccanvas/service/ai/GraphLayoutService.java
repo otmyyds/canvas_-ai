@@ -29,23 +29,12 @@ public final class GraphLayoutService {
 
     private static final Logger log = LoggerFactory.getLogger(GraphLayoutService.class);
 
-    /** 节点间距 */
-    private static final double GAP = 120;
     /** 缺省节点宽高（sizes 未提供时用） */
     private static final double DEFAULT_W = 180;
     private static final double DEFAULT_H = 72;
-    /** 根到一级分支的基础半径 */
-    private static final double BASE_RADIUS = 240;
-    /** 每加深一层的半径增量 */
-    private static final double LAYER_GAP = 200;
-    /** 逻辑图：父子列间距 / 兄弟子树间距 / 多树之间的纵向间距 */
-    private static final double LOGIC_H_GAP = 160;
-    private static final double LOGIC_V_GAP = 32;
-    private static final double ROOT_GAP = 80;
     /** 流程图：同层节点间距 / 层间纵向间距 */
     private static final double FLOW_H_GAP = 80;
     private static final double FLOW_LAYER_GAP = 100;
-    private static final double TWO_PI = Math.PI * 2;
 
     private GraphLayoutService() {
     }
@@ -136,19 +125,19 @@ public final class GraphLayoutService {
     }
 
     /** 节点宽度（无尺寸记录时回退缺省值） */
-    private static double widthOf(Map<String, double[]> sizes, String id) {
+    static double widthOf(Map<String, double[]> sizes, String id) {
         double[] size = sizes == null ? null : sizes.get(id);
         return size == null || size[0] <= 0 ? DEFAULT_W : size[0];
     }
 
     /** 节点高度（无尺寸记录时回退缺省值） */
-    private static double heightOf(Map<String, double[]> sizes, String id) {
+    static double heightOf(Map<String, double[]> sizes, String id) {
         double[] size = sizes == null ? null : sizes.get(id);
         return size == null || size[1] <= 0 ? DEFAULT_H : size[1];
     }
 
     /**
-     * 径向树布局（树形图）：根在中心，子节点按叶子权重瓜分父节点的角度扇区。
+     * 径向树布局（树形图）：根在中心，半径按层节点外接尺寸递增，角度按子树所需角宽分配。
      * 边集存在环时只按生成树展开，回边不进入递归。
      */
     public static Map<String, double[]> layoutMindmapTree(List<String> nodeIds, List<String[]> edges,
@@ -158,198 +147,31 @@ public final class GraphLayoutService {
 
     public static Map<String, double[]> layoutMindmapTree(List<String> nodeIds, List<String[]> edges,
             Map<String, double[]> sizes, Map<String, Integer> levels) {
-        Map<String, double[]> positions = new LinkedHashMap<>();
         if (nodeIds == null || nodeIds.isEmpty()) {
-            return positions;
+            return new LinkedHashMap<>();
         }
         log.info("树形图布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
         SpanningTree tree = spanningTree(nodeIds, edges, levels);
-        // 多个根（森林或纯环）按纵向堆叠，互不重叠
-        double cursorY = 0;
-        for (String root : tree.roots()) {
-            Map<String, Integer> leafWeight = new HashMap<>();
-            computeLeafWeight(root, tree.children(), leafWeight);
-            Map<String, Integer> depth = computeDepths(root, tree.children());
-            double radius = adaptiveRadius(root, tree.children(), leafWeight, depth, sizes);
-            Map<String, double[]> local = new LinkedHashMap<>();
-            place(root, tree.children(), leafWeight, 0, TWO_PI, 0, radius, sizes, local);
-            double[] box = bounds(local, sizes);
-            double offsetX = -box[0];
-            double offsetY = cursorY - box[1];
-            local.forEach((id, pos) ->
-                    positions.put(id, new double[] { pos[0] + offsetX, pos[1] + offsetY }));
-            cursorY += (box[3] - box[1]) + ROOT_GAP;
-        }
-        return positions;
-    }
-
-    /**
-     * 逻辑图布局（XMind / Freeplane 风格）：从左到右分列，父节点在子块内垂直居中，兄弟子树不重叠。
-     */
-    public static Map<String, double[]> layoutLogicChart(List<String> nodeIds, List<String[]> edges,
-            Map<String, double[]> sizes, Map<String, Integer> levels) {
-        Map<String, double[]> positions = new LinkedHashMap<>();
-        if (nodeIds == null || nodeIds.isEmpty()) {
-            return positions;
-        }
-        log.info("逻辑图布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
-        SpanningTree tree = spanningTree(nodeIds, edges, levels);
-        Map<String, Integer> depth = new HashMap<>();
-        for (String root : tree.roots()) {
-            assignDepth(root, tree.children(), 0, depth);
-        }
-        // 每列宽度取该层最宽节点，列坐标按层推进
-        Map<Integer, Double> layerWidth = new TreeMap<>();
-        for (Map.Entry<String, Integer> entry : depth.entrySet()) {
-            layerWidth.merge(entry.getValue(), widthOf(sizes, entry.getKey()), Math::max);
-        }
-        Map<Integer, Double> columnX = new TreeMap<>();
-        double cursorX = 0;
-        for (Map.Entry<Integer, Double> entry : layerWidth.entrySet()) {
-            columnX.put(entry.getKey(), cursorX);
-            cursorX += entry.getValue() + LOGIC_H_GAP;
-        }
-        Map<String, Double> subtreeHeight = new HashMap<>();
-        for (String root : tree.roots()) {
-            computeSubtreeHeight(root, tree.children(), sizes, subtreeHeight);
-        }
-        double cursorY = 0;
-        for (String root : tree.roots()) {
-            assignLogicPosition(root, tree.children(), sizes, depth, columnX, subtreeHeight, cursorY, positions);
-            cursorY += subtreeHeight.getOrDefault(root, heightOf(sizes, root)) + ROOT_GAP;
-        }
+        Map<String, double[]> positions = RadialTreeLayout.layout(nodeIds, tree, sizes);
         normalize(positions);
         return positions;
     }
 
-    private static void assignDepth(String node, Map<String, List<String>> children, int value,
-            Map<String, Integer> depth) {
-        depth.put(node, value);
-        for (String kid : children.getOrDefault(node, List.of())) {
-            assignDepth(kid, children, value + 1, depth);
-        }
-    }
-
-    /** 子树高度：叶子取自身高度，内部节点取子块高度（含间距）与自身高度的较大值 */
-    private static double computeSubtreeHeight(String node, Map<String, List<String>> children,
-            Map<String, double[]> sizes, Map<String, Double> result) {
-        List<String> kids = children.getOrDefault(node, List.of());
-        double own = heightOf(sizes, node);
-        if (kids.isEmpty()) {
-            result.put(node, own);
-            return own;
-        }
-        double sum = 0;
-        for (String kid : kids) {
-            sum += computeSubtreeHeight(kid, children, sizes, result);
-        }
-        sum += LOGIC_V_GAP * (kids.size() - 1);
-        double block = Math.max(own, sum);
-        result.put(node, block);
-        return block;
-    }
-
-    private static void assignLogicPosition(String node, Map<String, List<String>> children,
-            Map<String, double[]> sizes, Map<String, Integer> depth, Map<Integer, Double> columnX,
-            Map<String, Double> subtreeHeight, double top, Map<String, double[]> positions) {
-        double block = subtreeHeight.getOrDefault(node, heightOf(sizes, node));
-        double own = heightOf(sizes, node);
-        positions.put(node, new double[] { columnX.getOrDefault(depth.get(node), 0.0), top + (block - own) / 2 });
-        List<String> kids = children.getOrDefault(node, List.of());
-        if (kids.isEmpty()) {
-            return;
-        }
-        double kidsBlock = 0;
-        for (String kid : kids) {
-            kidsBlock += subtreeHeight.getOrDefault(kid, heightOf(sizes, kid));
-        }
-        kidsBlock += LOGIC_V_GAP * (kids.size() - 1);
-        double childTop = top + (block - kidsBlock) / 2;
-        for (String kid : kids) {
-            assignLogicPosition(kid, children, sizes, depth, columnX, subtreeHeight, childTop, positions);
-            childTop += subtreeHeight.getOrDefault(kid, heightOf(sizes, kid)) + LOGIC_V_GAP;
-        }
-    }
-
     /**
-     * 基础半径：保证最浅一层叶子所在圆周的弧长足以容纳节点外接尺寸。
-     * 叶子按叶权重均分 2π，最浅叶子所在层半径最小、约束最紧，据此反推基础半径。
+     * 逻辑图布局（XMind / Freeplane 双向风格）：根在中间，一级子节点按子树高度分列左右两侧，
+     * 右侧向右展开、左侧镜像向左展开。子树内部子节点 x 跟随父内容宽度推进，
+     * 兄弟子树用分段轮廓互相咬合，父节点在首末子节点中心之间垂直居中。
      */
-    private static double adaptiveRadius(String root, Map<String, List<String>> children,
-            Map<String, Integer> leafWeight, Map<String, Integer> depth, Map<String, double[]> sizes) {
-        int totalLeaves = leafWeight.getOrDefault(root, 1);
-        double maxExtent = 0;
-        int minLeafDepth = Integer.MAX_VALUE;
-        for (Map.Entry<String, Integer> entry : depth.entrySet()) {
-            if (children.get(entry.getKey()).isEmpty()) {
-                maxExtent = Math.max(maxExtent, Math.max(widthOf(sizes, entry.getKey()), heightOf(sizes, entry.getKey())));
-                minLeafDepth = Math.min(minLeafDepth, entry.getValue());
-            }
+    public static Map<String, double[]> layoutLogicChart(List<String> nodeIds, List<String[]> edges,
+            Map<String, double[]> sizes, Map<String, Integer> levels) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return new LinkedHashMap<>();
         }
-        // 单节点树（根即叶子）没有圆周间距需求
-        if (minLeafDepth <= 0) {
-            return BASE_RADIUS;
-        }
-        double minRadius = totalLeaves * (maxExtent + GAP) / TWO_PI - (minLeafDepth - 1) * LAYER_GAP;
-        return Math.max(BASE_RADIUS, minRadius);
-    }
-
-    /** BFS 计算每个节点相对根的深度（根=0，仅生成树可达节点） */
-    private static Map<String, Integer> computeDepths(String root, Map<String, List<String>> children) {
-        Map<String, Integer> depth = new HashMap<>();
-        Deque<String> queue = new ArrayDeque<>();
-        depth.put(root, 0);
-        queue.add(root);
-        while (!queue.isEmpty()) {
-            String node = queue.poll();
-            int d = depth.get(node);
-            for (String kid : children.getOrDefault(node, List.of())) {
-                depth.put(kid, d + 1);
-                queue.add(kid);
-            }
-        }
-        return depth;
-    }
-
-    /** 计算每个节点的叶子权重（子树叶子数）：叶子权重 1，内部节点为子节点权重之和 */
-    private static int computeLeafWeight(String node, Map<String, List<String>> children,
-            Map<String, Integer> weight) {
-        List<String> kids = children.getOrDefault(node, List.of());
-        if (kids.isEmpty()) {
-            weight.put(node, 1);
-            return 1;
-        }
-        int sum = 0;
-        for (String kid : kids) {
-            sum += computeLeafWeight(kid, children, weight);
-        }
-        weight.put(node, sum);
-        return sum;
-    }
-
-    /** 递归分配节点角度扇区并写入坐标（左上角，根中心在原点） */
-    private static void place(String node, Map<String, List<String>> children, Map<String, Integer> weight,
-            double angleStart, double angleEnd, int depth, double baseRadius, Map<String, double[]> sizes,
-            Map<String, double[]> positions) {
-        double mid = (angleStart + angleEnd) / 2;
-        double radius = depth <= 0 ? 0 : baseRadius + (depth - 1) * LAYER_GAP;
-        double cx = radius * Math.cos(mid);
-        double cy = radius * Math.sin(mid);
-        double w = widthOf(sizes, node);
-        double h = heightOf(sizes, node);
-        positions.put(node, new double[] { cx - w / 2, cy - h / 2 });
-        List<String> kids = children.getOrDefault(node, List.of());
-        if (kids.isEmpty()) {
-            return;
-        }
-        double total = weight.getOrDefault(node, kids.size());
-        double span = angleEnd - angleStart;
-        double cursor = angleStart;
-        for (String kid : kids) {
-            double kidSpan = span * (weight.getOrDefault(kid, 1) / (double) total);
-            place(kid, children, weight, cursor, cursor + kidSpan, depth + 1, baseRadius, sizes, positions);
-            cursor += kidSpan;
-        }
+        log.info("逻辑图布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
+        SpanningTree tree = spanningTree(nodeIds, edges, levels);
+        Map<String, double[]> positions = LogicTreeLayout.layout(nodeIds, tree, sizes);
+        normalize(positions);
+        return positions;
     }
 
     /**
@@ -512,22 +334,6 @@ public final class GraphLayoutService {
             }
         }
         return count == 0 ? Double.NaN : sum / count;
-    }
-
-    /** 坐标包围盒 [minX, minY, maxX, maxY]，尺寸按节点实际宽高计算 */
-    private static double[] bounds(Map<String, double[]> positions, Map<String, double[]> sizes) {
-        double minX = Double.MAX_VALUE;
-        double minY = Double.MAX_VALUE;
-        double maxX = -Double.MAX_VALUE;
-        double maxY = -Double.MAX_VALUE;
-        for (Map.Entry<String, double[]> entry : positions.entrySet()) {
-            double[] pos = entry.getValue();
-            minX = Math.min(minX, pos[0]);
-            minY = Math.min(minY, pos[1]);
-            maxX = Math.max(maxX, pos[0] + widthOf(sizes, entry.getKey()));
-            maxY = Math.max(maxY, pos[1] + heightOf(sizes, entry.getKey()));
-        }
-        return new double[] { minX, minY, maxX, maxY };
     }
 
     /** 把整组坐标平移到左上角 (0, 0) */

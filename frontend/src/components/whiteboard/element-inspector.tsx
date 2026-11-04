@@ -321,6 +321,10 @@ function inspect(editor: TldrawEditor): SelectedInfo | null {
     return null;
   }
   const first = shapes[0];
+  // 逻辑图 fork 节点/贝塞尔连线是固定格式，没有可调样式，不显示样式面板
+  if (first.type !== "geo" && first.type !== "arrow") {
+    return null;
+  }
   const props = first.props as Record<string, unknown>;
   const width = typeof props.w === "number" ? props.w : 340;
   const height = typeof props.h === "number" ? props.h : 220;

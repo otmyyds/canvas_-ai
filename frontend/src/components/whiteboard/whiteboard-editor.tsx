@@ -5,8 +5,6 @@ import {
   Tldraw,
   createShapeId,
   createTLStore,
-  defaultBindingUtils,
-  defaultShapeUtils,
   parseTldrawJsonFile,
   serializeTldrawJson,
   toRichText
@@ -42,7 +40,8 @@ import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
-import { mergeMissingShapes, shapeStateFingerprint, syncExistingShapes } from "@/lib/whiteboard/shape-render";
+import { shapeStateFingerprint, syncGraphVisuals } from "@/lib/whiteboard/shape-render";
+import { whiteboardBindingUtils, whiteboardShapeUtils } from "@/lib/whiteboard/mindmap-shapes";
 
 /** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -146,15 +145,15 @@ export function WhiteboardEditor({
 }: WhiteboardEditorProps) {
   /**
    * tldraw store：画布的底层数据源。
-   * - 默认图形 utils（defaultShapeUtils）
+   * - 默认图形 utils + 逻辑图自定义图形（mindmap-node/mindmap-edge）
    * - 图片资产上传到后端（RustFS）
    * 注意：useMemo 保证 store 只创建一次（随 boardId 变化重建）
    */
   const store = useMemo(
     () =>
       createTLStore({
-        shapeUtils: defaultShapeUtils,
-        bindingUtils: defaultBindingUtils,
+        shapeUtils: whiteboardShapeUtils,
+        bindingUtils: whiteboardBindingUtils,
         assets: {
           async upload(_asset, file) {
             const uploaded = await api.uploadFile(boardId, file);
@@ -201,7 +200,7 @@ export function WhiteboardEditor({
   // 水合完成后建立回写基线：记录当前所有 AI 图形节点的状态指纹，避免首次编辑被当成基线而丢失
   const seedSyncedShapes = useCallback((editor: TldrawEditor) => {
     for (const shape of editor.getCurrentPageShapes()) {
-      if (shape.type !== "geo") {
+      if (shape.type !== "geo" && shape.type !== "mindmap-node") {
         continue;
       }
       const rawId = String(shape.id).replace(/^shape:/, "");
@@ -365,19 +364,19 @@ export function WhiteboardEditor({
         });
         if (parsed.ok) {
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
-          const shapeAdded = mergeMissingShapes(editor, currentShapes, currentEdges);
+          // 快照里的标题/尺寸可能落后于后端（AI 改过标题但没重新存过快照），此处对账；
+          // 同时按当前布局风格把节点/连线转换成对应类型
+          const synced = syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
           // 快照可能残留已被后端删除的节点，清理掉避免刷新复活
           const removed = removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
-          // 快照里的标题/尺寸可能落后于后端（AI 改过标题但没重新存过快照），此处对账
-          const updated = syncExistingShapes(editor, currentShapes, syncedShapeRef.current);
           editor.clearHistory();
           editor.selectNone();
           hydratedBoardRef.current = boardId;
           mountedRef.current = true;
           seedSyncedShapes(editor);
           const assetAdded = await mergeAssets(editor, assetsRef.current);
-          if (shapeAdded > 0 || removed > 0 || updated > 0 || assetAdded > 0) {
-            setMessage(`已载入画布快照，同步 ${shapeAdded} 个节点，更新 ${updated} 个节点，清理 ${removed} 个残留`);
+          if (synced > 0 || removed > 0 || assetAdded > 0) {
+            setMessage(`已载入画布快照，同步 ${synced} 个元素，清理 ${removed} 个残留`);
             queueSave();
           } else {
             setMessage("已载入画布快照");
@@ -386,16 +385,15 @@ export function WhiteboardEditor({
         }
       }
 
-      mergeMissingShapes(editor, currentShapes, currentEdges);
+      const synced = syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
       removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
-      const updated = syncExistingShapes(editor, currentShapes, syncedShapeRef.current);
       editor.clearHistory();
       editor.selectNone();
       hydratedBoardRef.current = boardId;
       mountedRef.current = true;
       seedSyncedShapes(editor);
       const assetAdded = await mergeAssets(editor, assetsRef.current);
-      if (assetAdded > 0 || updated > 0) {
+      if (assetAdded > 0 || synced > 0) {
         queueSave();
       }
       setMessage("已载入原始内容");
@@ -406,7 +404,7 @@ export function WhiteboardEditor({
     return () => {
       cancelled = true;
     };
-  }, [boardId, boardTitle, editorReady, mergeAssets, queueSave]);
+  }, [boardId, boardTitle, editorReady, layoutStyle, mergeAssets, queueSave]);
 
   // 计划结束时处理执行期间挂起的保存：成功的计划才落盘；
   // 失败/中断时后端已回退画布，由 reloadSignal 载入恢复后的快照，本地状态直接丢弃
@@ -455,9 +453,8 @@ export function WhiteboardEditor({
         }
       }
       // 快照与后端表对账：补齐缺失节点、清理回退后已不存在的残留、恢复后端字段
-      mergeMissingShapes(editor, shapesRef.current, edgesRef.current);
+      syncGraphVisuals(editor, shapesRef.current, edgesRef.current, layoutStyle);
       removeOrphanShapes(editor, shapesRef.current, edgesRef.current, assetsRef.current);
-      syncExistingShapes(editor, shapesRef.current, syncedShapeRef.current);
       await mergeAssets(editor, assetsRef.current);
       if (cancelled) {
         return;
@@ -475,7 +472,7 @@ export function WhiteboardEditor({
     return () => {
       cancelled = true;
     };
-  }, [reloadSignal, boardId, editorReady, mergeAssets, queueSave, seedSyncedShapes]);
+  }, [reloadSignal, boardId, editorReady, layoutStyle, mergeAssets, queueSave, seedSyncedShapes]);
 
   // AI 任务完成后把后端图形节点增量同步进 tldraw（新增 + 清理被删除的残留）
   useEffect(() => {
@@ -488,24 +485,20 @@ export function WhiteboardEditor({
       return;
     }
 
-    // 增量同步图形节点（思维导图/流程图节点）
-    const shapeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
-    const newShapes = shapes.filter((s) => !shapeIds.has(createShapeId(s.id)));
-    if (newShapes.length > 0) {
-      mergeMissingShapes(editor, newShapes, edges);
-    }
+    // 增量补齐后端新增的图形节点/连线；已有节点的数值由下一条 canvasRevision 对账 effect 负责
+    const synced = syncGraphVisuals(editor, shapes, edges, layoutStyle, { updateExisting: false });
     // 后端已删除、但 tldraw 快照里还残留的图形节点/连线需一并清理，
     // 否则下次刷新时快照会把已删节点"复活"
     const removed = removeOrphanShapes(editor, shapes, edges, assets);
-    if (newShapes.length > 0 || removed > 0) {
+    if (synced > 0 || removed > 0) {
       setMessage(
-        newShapes.length > 0
-          ? `已同步 ${newShapes.length} 个图形节点到画布`
+        synced > 0
+          ? `已同步 ${synced} 个图形元素到画布`
           : `已清理 ${removed} 个残留元素`
       );
       queueSave();
     }
-  }, [boardId, canvasRevision, edges, editorReady, queueSave, shapes]);
+  }, [boardId, canvasRevision, edges, editorReady, layoutStyle, queueSave, shapes]);
 
   // AI 任务完成后把新生成的图片资产并入画布
   useEffect(() => {
@@ -539,14 +532,16 @@ export function WhiteboardEditor({
     if (!editor) {
       return;
     }
-    const updated = syncExistingShapes(editor, shapes, syncedShapeRef.current);
+    const updated = syncGraphVisuals(editor, shapes, edges, layoutStyle, {
+      baseline: syncedShapeRef.current
+    });
     if (updated > 0) {
       // 同步后刷新回写基线，避免监听器把这些后端值当成用户编辑再写回去
       seedSyncedShapes(editor);
-      setMessage(`已同步 ${updated} 个图形节点的内容`);
+      setMessage(`已同步 ${updated} 个图形元素的样式`);
       queueSave();
     }
-  }, [canvasRevision, editorReady, shapes, boardId, queueSave, seedSyncedShapes]);
+  }, [canvasRevision, editorReady, shapes, edges, layoutStyle, boardId, queueSave, seedSyncedShapes]);
 
   // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
   useEffect(() => {
@@ -585,7 +580,7 @@ export function WhiteboardEditor({
   // 用户拖动/改字/改尺寸 AI 图形节点 → 防抖回写 shapes 表（统一 tldraw 快照与 shapes 双状态源）
   const collectUserEdits = useCallback((editor: TldrawEditor) => {
     for (const shape of editor.getCurrentPageShapes()) {
-      if (shape.type !== "geo") {
+      if (shape.type !== "geo" && shape.type !== "mindmap-node") {
         continue;
       }
       const rawId = String(shape.id).replace(/^shape:/, "");
@@ -664,7 +659,7 @@ export function WhiteboardEditor({
         if (!shape) {
           continue;
         }
-        if (shape.type === "geo") {
+        if (shape.type === "geo" || shape.type === "mindmap-node") {
           const rawId = String(id).replace(/^shape:/, "");
           if (UUID_PATTERN.test(rawId)) {
             shapeIds.add(rawId);
@@ -818,8 +813,8 @@ export function WhiteboardEditor({
       if (!UUID_PATTERN.test(rawId)) {
         continue;
       }
-      // 图形节点（思维导图/流程图节点）→ 删 shapes 表记录
-      if (shape.type === "geo") {
+      // 图形节点（思维导图/流程图节点，含逻辑图 fork 节点）→ 删 shapes 表记录
+      if (shape.type === "geo" || shape.type === "mindmap-node") {
         shapeIdsToDelete.push(rawId);
       }
       // 图片（AI 生成资产）→ 删 assets 表记录 + RustFS 对象
@@ -940,7 +935,7 @@ export function WhiteboardEditor({
       let title = node.title;
       if (editor) {
         const shape = editor.getShape(createShapeId(node.id));
-        if (shape && shape.type === "geo") {
+        if (shape && (shape.type === "geo" || shape.type === "mindmap-node")) {
           title = editor.getShapeUtil(shape).getText(shape) ?? node.title;
         }
       }
@@ -1067,7 +1062,7 @@ export function WhiteboardEditor({
                   }`}
                 >
                   逻辑图
-                  <span className="ml-2 text-[10px] font-normal text-ink/45">从左到右，节点多时使用</span>
+                  <span className="ml-2 text-[10px] font-normal text-ink/45">根居中，分支左右展开</span>
                 </button>
                 <button
                   type="button"
@@ -1148,7 +1143,8 @@ export function WhiteboardEditor({
             hideUi
             autoFocus={false}
             className="h-full w-full"
-            shapeUtils={defaultShapeUtils}
+            shapeUtils={whiteboardShapeUtils}
+            bindingUtils={whiteboardBindingUtils}
           />
         </div>
 
@@ -1170,8 +1166,8 @@ export function WhiteboardEditor({
 /**
  * 清理 tldraw 里"后端已删除、但快照残留"的元素。
  * 只处理 AI 生成的元素（id 形如 shape:<uuid>）：
- * - geo 图形节点：uuid 不在后端 shapes 列表 → 删除
- * - arrow 连线：uuid 不在后端 edges 列表 → 删除
+ * - geo / mindmap-node 图形节点：uuid 不在后端 shapes 列表 → 删除
+ * - arrow / mindmap-edge 连线：uuid 不在后端 edges 列表 → 删除
  * - image 图片：uuid 不在后端 assets 列表 → 删除
  * 手动绘制的元素（id 非 uuid）不受影响。返回清理数量。
  */
@@ -1186,9 +1182,9 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
     if (!UUID_PATTERN.test(rawId)) {
       continue;
     }
-    if (shape.type === "geo" && !shapeUuids.has(rawId)) {
+    if ((shape.type === "geo" || shape.type === "mindmap-node") && !shapeUuids.has(rawId)) {
       toDelete.push(shape.id);
-    } else if (shape.type === "arrow" && !edgeUuids.has(rawId)) {
+    } else if ((shape.type === "arrow" || shape.type === "mindmap-edge") && !edgeUuids.has(rawId)) {
       toDelete.push(shape.id);
     } else if (shape.type === "image" && !assetUuids.has(rawId)) {
       toDelete.push(shape.id);

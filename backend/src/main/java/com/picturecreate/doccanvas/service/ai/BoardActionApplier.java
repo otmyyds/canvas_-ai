@@ -148,15 +148,11 @@ public class BoardActionApplier {
         if (graph.shapes().isEmpty()) {
             return;
         }
-        // 显式整理时按标题重新放大尺寸；只增不减，保留用户手动放大的节点
-        for (Shape shape : graph.shapes()) {
-            NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
-            shape.growTo(size.width(), size.height());
-        }
         double cursorX = MARGIN;
         for (List<String> component : graph.components()) {
+            // 分量布局内部会先按风格统一尺寸：逻辑图 fork 节点收缩，其他节点按 geo 标签放大
+            Map<String, double[]> positions = layoutComponent(board, graph, component);
             Map<String, double[]> sizes = sizesOf(graph, component);
-            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
             double[] box = bounds(positions, sizes);
             placeComponent(graph, component, positions, cursorX - box[0], MARGIN - box[1]);
             cursorX += (box[2] - box[0]) + GAP;
@@ -212,6 +208,10 @@ public class BoardActionApplier {
                     ordered.add(id);
                 }
             }
+            // 逐个节点按自身所属分量判定 fork，避免把同批的普通孤立节点也缩成 fork 尺寸
+            for (String id : ordered) {
+                sizeComponent(board, graph, List.of(id));
+            }
             Map<String, double[]> sizes = sizesOf(graph, ordered);
             Map<String, double[]> grid = gridLayout(ordered, sizes);
             double[] box = bounds(grid, sizes);
@@ -220,27 +220,65 @@ public class BoardActionApplier {
         }
 
         for (List<String> component : fresh) {
+            Map<String, double[]> positions = layoutComponent(board, graph, component);
             Map<String, double[]> sizes = sizesOf(graph, component);
-            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
             double[] box = bounds(positions, sizes);
             placeComponent(graph, component, positions, cursorX - box[0], baseY - box[1]);
             cursorX += (box[2] - box[0]) + GAP;
         }
 
         for (List<String> component : anchored) {
-            Map<String, double[]> sizes = sizesOf(graph, component);
-            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
-            double[] box = bounds(positions, sizes);
+            // 锚点按重排前的包围盒计算，避免 fork 收缩后整块位移
             double[] old = existingBoundsOfComponent(graph, component, newIds);
+            Map<String, double[]> positions = layoutComponent(board, graph, component);
+            Map<String, double[]> sizes = sizesOf(graph, component);
+            double[] box = bounds(positions, sizes);
             placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
         }
         log.info("增量重排：boardId={} 原地分量={} 新分量={} 孤立新节点={}", board.getId(), anchored.size(),
                 fresh.size(), isolatedNew.size());
     }
 
+    /** 逻辑图里的思维导图分量：包含 level>0 的节点，使用 fork 节点和贝塞尔连线 */
+    private boolean isLogicForkComponent(Board board, Graph graph, List<String> component) {
+        if (board.getLayoutStyle() != BoardLayoutStyle.LOGIC) {
+            return false;
+        }
+        for (String id : component) {
+            Shape shape = graph.shapeById().get(id);
+            if (shape != null && shape.getLevel() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 按分量统一尺寸：
+     * 逻辑图 fork 节点按文字精确收缩（可大可小），其他节点按 geo 标签放大（保留用户手动放大）。
+     */
+    private void sizeComponent(Board board, Graph graph, List<String> component) {
+        boolean fork = isLogicForkComponent(board, graph, component);
+        for (String id : component) {
+            Shape shape = graph.shapeById().get(id);
+            if (shape == null) {
+                continue;
+            }
+            if (fork) {
+                NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimateFork(shape.getTitle());
+                shape.resizeTo(size.width(), size.height());
+            } else {
+                NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
+                shape.growTo(size.width(), size.height());
+            }
+        }
+    }
+
     /** 分量布局：思维导图按画布风格二选一，流程图永远分层 */
-    private Map<String, double[]> layoutComponent(Board board, Graph graph, List<String> component,
-            Map<String, double[]> sizes) {
+    private Map<String, double[]> layoutComponent(Board board, Graph graph, List<String> component) {
+        // 先统一尺寸，后续布局与包围盒都使用最终尺寸
+        sizeComponent(board, graph, component);
+        Map<String, double[]> sizes = sizesOf(graph, component);
         Map<String, Integer> levels = new HashMap<>();
         boolean mindmap = false;
         for (String id : component) {
@@ -289,12 +327,15 @@ public class BoardActionApplier {
         }
         Shape shape = found.get();
         int oldLevel = shape.getLevel();
+        String oldTitle = shape.getTitle();
         double oldWidth = shape.getWidth();
         double oldHeight = shape.getHeight();
         shape.applyAgentEdit(action.title(), action.shape(), action.level());
         NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
         shape.growTo(size.width(), size.height());
+        // 标题变化也重排：逻辑图 fork 节点需要按新文字精确收缩，growTo 只能放大
         boolean relayout = shape.getLevel() != oldLevel
+                || !shape.getTitle().equals(oldTitle)
                 || shape.getWidth() != oldWidth
                 || shape.getHeight() != oldHeight;
         log.info("更新节点：shapeId={} title={}", shapeId, shape.getTitle());

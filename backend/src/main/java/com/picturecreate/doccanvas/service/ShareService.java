@@ -82,6 +82,7 @@ public class ShareService {
                 .map(BoardSnapshot::getSnapshotJson)
                 .orElse(null);
         log.info("读取分享画布：token={} 图形数={} 连线数={}", token, shapes.size(), edges.size());
-        return new SharedBoardResponse(board.getId(), board.getTitle(), shapes, edges, snapshotJson);
+        return new SharedBoardResponse(board.getId(), board.getTitle(), shapes, edges, snapshotJson,
+                board.getLayoutStyle().name());
     }
 }

@@ -20,6 +20,7 @@ public final class ShareDtos {
             String title,
             List<ShapeResponse> shapes,
             List<BoardEdgeDtos.BoardEdgeResponse> edges,
-            String snapshotJson) {
+            String snapshotJson,
+            String layoutStyle) {
     }
 }
