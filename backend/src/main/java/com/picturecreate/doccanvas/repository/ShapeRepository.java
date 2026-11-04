@@ -13,4 +13,6 @@ import com.picturecreate.doccanvas.domain.Shape;
 public interface ShapeRepository extends JpaRepository<Shape, UUID> {
 
     List<Shape> findByBoardIdOrderByCreatedAtAsc(UUID boardId);
+
+    long countByBoardId(UUID boardId);
 }

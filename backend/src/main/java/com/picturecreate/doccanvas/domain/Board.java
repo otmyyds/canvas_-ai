@@ -30,6 +30,11 @@ public class Board extends BaseEntity {
     @Column(nullable = false)
     private BoardVisibility visibility = BoardVisibility.PRIVATE;
 
+    /** 思维导图排布风格（默认树形图；节点过多时只能使用逻辑图） */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "layout_style", nullable = false, length = 16)
+    private BoardLayoutStyle layoutStyle = BoardLayoutStyle.RADIAL;
+
     protected Board() {
     }
 
@@ -48,6 +53,14 @@ public class Board extends BaseEntity {
 
     public BoardVisibility getVisibility() {
         return visibility;
+    }
+
+    public BoardLayoutStyle getLayoutStyle() {
+        return layoutStyle;
+    }
+
+    public void changeLayoutStyle(BoardLayoutStyle layoutStyle) {
+        this.layoutStyle = layoutStyle;
     }
 
     public void rename(String title) {

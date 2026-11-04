@@ -20,6 +20,7 @@ import {
   Hand,
   Minus,
   MousePointer2,
+  Network,
   RefreshCw,
   Save,
   Shield,
@@ -27,7 +28,15 @@ import {
   Text,
   Trash2
 } from "lucide-react";
-import type { AiTask, AssistResult, BoardAsset, BoardEdge, BoardShape, SourceFile } from "@/lib/types";
+import type {
+  AiTask,
+  AssistResult,
+  BoardAsset,
+  BoardEdge,
+  BoardLayoutStyle,
+  BoardShape,
+  SourceFile
+} from "@/lib/types";
 import { api } from "@/lib/api";
 import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
@@ -64,6 +73,12 @@ type WhiteboardEditorProps = {
   onSelectionChange?: (selection: { shapeIds: string[] }) => void;
   /** 当前选中的元素数量（用于 AI 助手面板提示） */
   selectionCount?: number;
+  /** 当前画布的思维导图排布风格 */
+  layoutStyle?: BoardLayoutStyle;
+  /** 节点总数超过该值后只允许逻辑图 */
+  radialMaxNodes?: number;
+  /** 切换布局风格：父组件调用后端重排并刷新画布 */
+  onLayoutStyleChange?: (style: BoardLayoutStyle) => Promise<void>;
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -124,7 +139,10 @@ export function WhiteboardEditor({
   onUploadFile,
   onDeleteFile,
   onSelectionChange,
-  selectionCount = 0
+  selectionCount = 0,
+  layoutStyle = "RADIAL",
+  radialMaxNodes = 40,
+  onLayoutStyleChange
 }: WhiteboardEditorProps) {
   /**
    * tldraw store：画布的底层数据源。
@@ -869,6 +887,31 @@ export function WhiteboardEditor({
 
   const [shapeOpen, setShapeOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+  const [layoutBusy, setLayoutBusy] = useState(false);
+  // 任务执行中禁止切换布局：后端落库与布局重排共用画布行锁，避免互相覆盖
+  const taskRunning = tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status));
+  const radialDisabled = shapes.length > radialMaxNodes;
+
+  /** 切换排布风格：后端立即重排，父组件刷新 shapes 后由 canvasRevision 同步回 tldraw */
+  const changeLayout = useCallback(
+    async (style: BoardLayoutStyle) => {
+      setLayoutOpen(false);
+      if (!onLayoutStyleChange || layoutBusy) {
+        return;
+      }
+      setLayoutBusy(true);
+      try {
+        await onLayoutStyleChange(style);
+        setMessage(style === "RADIAL" ? "已切换为树形图布局" : "已切换为逻辑图布局");
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : "切换布局失败");
+      } finally {
+        setLayoutBusy(false);
+      }
+    },
+    [onLayoutStyleChange, layoutBusy]
+  );
 
   const exportPng = useCallback(async () => {
     const editor = editorRef.current;
@@ -1005,6 +1048,43 @@ export function WhiteboardEditor({
             <RefreshCw className="h-4 w-4" />
             刷新
           </GhostButton>
+          <div className="relative">
+            <GhostButton
+              onClick={() => setLayoutOpen((value) => !value)}
+              disabled={taskRunning || layoutBusy}
+              title={taskRunning ? "任务执行中，暂不能切换布局" : "切换思维导图排布"}
+            >
+              <Network className="h-4 w-4" />
+              布局
+            </GhostButton>
+            {layoutOpen ? (
+              <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-md border border-ink/10 bg-white p-1 shadow-md">
+                <button
+                  type="button"
+                  onClick={() => void changeLayout("LOGIC")}
+                  className={`block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-mist ${
+                    layoutStyle === "LOGIC" ? "bg-mist font-medium text-spruce" : "text-ink"
+                  }`}
+                >
+                  逻辑图
+                  <span className="ml-2 text-[10px] font-normal text-ink/45">从左到右，节点多时使用</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={radialDisabled}
+                  onClick={() => void changeLayout("RADIAL")}
+                  className={`block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-mist disabled:cursor-not-allowed disabled:opacity-45 ${
+                    layoutStyle === "RADIAL" ? "bg-mist font-medium text-spruce" : "text-ink"
+                  }`}
+                >
+                  树形图
+                  <span className="ml-2 text-[10px] font-normal text-ink/45">
+                    {radialDisabled ? `超过 ${radialMaxNodes} 个节点不可用` : "径向辐射"}
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <div className="relative">
             <GhostButton onClick={() => setExportOpen((value) => !value)} title="导出画布">
               <Download className="h-4 w-4" />

@@ -16,8 +16,12 @@ import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardLayoutRequest;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardRequest;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardResponse;
+import com.picturecreate.doccanvas.config.AppProperties;
+import com.picturecreate.doccanvas.domain.Board;
+import com.picturecreate.doccanvas.service.BoardLayoutService;
 import com.picturecreate.doccanvas.service.BoardService;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
@@ -32,11 +36,12 @@ import jakarta.servlet.http.HttpServletRequest;
  * 数据按 owner 隔离（BoardService 校验画布归属）。
  *
  * 接口一览（前缀 /api/boards）：
- * - GET    /            → 当前用户所有画布
- * - POST   /            → 新建画布
- * - GET    /{boardId}   → 单个画布详情
- * - PATCH  /{boardId}   → 重命名画布
- * - DELETE /{boardId}   → 删除画布（连带图形节点/快照/连线）
+ * - GET    /                  → 当前用户所有画布
+ * - POST   /                  → 新建画布
+ * - GET    /{boardId}         → 单个画布详情
+ * - PATCH  /{boardId}         → 重命名画布
+ * - PATCH  /{boardId}/layout  → 切换思维导图排布风格并立即重排
+ * - DELETE /{boardId}         → 删除画布（连带图形节点/快照/连线）
  */
 @RestController
 @RequestMapping("/api/boards")
@@ -45,11 +50,16 @@ public class BoardController {
     private static final Logger log = LoggerFactory.getLogger(BoardController.class);
 
     private final BoardService boardService;
+    private final BoardLayoutService boardLayoutService;
     private final CurrentUserService currentUserService;
+    private final AppProperties properties;
 
-    public BoardController(BoardService boardService, CurrentUserService currentUserService) {
+    public BoardController(BoardService boardService, BoardLayoutService boardLayoutService,
+            CurrentUserService currentUserService, AppProperties properties) {
         this.boardService = boardService;
+        this.boardLayoutService = boardLayoutService;
         this.currentUserService = currentUserService;
+        this.properties = properties;
     }
 
     /** 获取当前用户的全部画布，按更新时间倒序 */
@@ -57,7 +67,7 @@ public class BoardController {
     public List<BoardResponse> list(HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询画布列表：userId={}", user.id());
-        return boardService.list(user).stream().map(BoardResponse::from).toList();
+        return boardService.list(user).stream().map(this::toResponse).toList();
     }
 
     /** 新建画布（body: { title }） */
@@ -65,7 +75,7 @@ public class BoardController {
     public BoardResponse create(@RequestBody BoardRequest body, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("新建画布：title={}", body.title());
-        return BoardResponse.from(boardService.create(user, body.title()));
+        return toResponse(boardService.create(user, body.title()));
     }
 
     /** 获取单个画布详情（校验归属，非本人画布返回 404） */
@@ -73,7 +83,7 @@ public class BoardController {
     public BoardResponse get(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询画布详情：boardId={}", boardId);
-        return BoardResponse.from(boardService.getOwned(boardId, user));
+        return toResponse(boardService.getOwned(boardId, user));
     }
 
     /** 重命名画布 */
@@ -81,7 +91,16 @@ public class BoardController {
     public BoardResponse rename(@PathVariable UUID boardId, @RequestBody BoardRequest body, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("重命名画布：boardId={} title={}", boardId, body.title());
-        return BoardResponse.from(boardService.rename(boardId, user, body.title()));
+        return toResponse(boardService.rename(boardId, user, body.title()));
+    }
+
+    /** 切换思维导图排布风格（树形图 / 逻辑图），并立即按新风格重排画布 */
+    @PatchMapping("/{boardId}/layout")
+    public BoardResponse updateLayout(@PathVariable UUID boardId, @RequestBody BoardLayoutRequest body,
+            HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        log.info("切换画布布局：boardId={} style={}", boardId, body.layoutStyle());
+        return toResponse(boardLayoutService.updateLayoutStyle(boardId, user, body.layoutStyle()));
     }
 
     /**
@@ -96,5 +115,9 @@ public class BoardController {
         CurrentUser user = currentUserService.resolve(request);
         log.info("删除画布：boardId={}", boardId);
         boardService.delete(boardId, user);
+    }
+
+    private BoardResponse toResponse(Board board) {
+        return BoardResponse.from(board, properties.ai().layout().radialMaxNodes());
     }
 }

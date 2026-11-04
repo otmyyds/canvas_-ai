@@ -5,10 +5,17 @@
  */
 
 /** 画布：私有/只读分享 */
+/** 思维导图排布风格：RADIAL 树形图（径向）/ LOGIC 逻辑图（从左到右） */
+export type BoardLayoutStyle = "RADIAL" | "LOGIC";
+
 export type Board = {
   id: string;
   title: string;
   visibility: "PRIVATE" | "SHARED_READONLY";
+  /** 当前画布的思维导图排布风格 */
+  layoutStyle: BoardLayoutStyle;
+  /** 节点总数超过该值后只允许逻辑图 */
+  radialMaxNodes: number;
   createdAt: string;
   updatedAt: string;
 };

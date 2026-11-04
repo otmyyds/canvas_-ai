@@ -101,6 +101,16 @@ public class Shape extends BaseEntity {
         this.y = y;
     }
 
+    /** 按标题估算结果放大尺寸：只增不减，保留用户手动放大的节点 */
+    public void growTo(double width, double height) {
+        if (width > this.width) {
+            this.width = width;
+        }
+        if (height > this.height) {
+            this.height = height;
+        }
+    }
+
     /** 回写用户编辑：更新标题、位置与尺寸（标题为 null 时保持原值） */
     public void applyUserEdit(String title, double x, double y, double width, double height) {
         if (title != null) {

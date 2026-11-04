@@ -301,8 +301,7 @@ public class AgentPlanExecutor {
             if (!error.isEmpty()) {
                 throw new IllegalStateException("画布动作未通过校验：" + error);
             }
-            List<BoardAction> placed = actionApplier.layout(task.getBoardId(), actions);
-            ApplyReport report = actionApplier.apply(task.getBoardId(), placed);
+            ApplyReport report = actionApplier.apply(task.getBoardId(), actions);
             if (report.skipped() > 0) {
                 throw new IllegalStateException("有 " + report.skipped() + " 个动作引用了不存在或不属于画布的节点");
             }

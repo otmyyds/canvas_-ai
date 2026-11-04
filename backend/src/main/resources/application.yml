@@ -143,6 +143,9 @@ app:
       critic-max-rounds: ${AI_AGENT_CRITIC_MAX_ROUNDS:1}
       # 规模上限
       max-nodes-per-task: ${AI_AGENT_MAX_NODES_PER_TASK:80}
+    # 布局：画布节点总数超过上限后只允许逻辑图，树形图（径向）按钮禁用
+    layout:
+      radial-max-nodes: ${AI_LAYOUT_RADIAL_MAX_NODES:40}
     quota:
       daily-tokens-per-user: ${AI_QUOTA_DAILY_TOKENS_PER_USER:200000}
       daily-tasks-per-user: ${AI_QUOTA_DAILY_TASKS_PER_USER:30}

@@ -1,4 +1,14 @@
-import type { AiTask, AssistResult, Board, BoardAsset, BoardEdge, BoardShape, SharedBoard, SourceFile } from "@/lib/types";
+import type {
+  AiTask,
+  AssistResult,
+  Board,
+  BoardAsset,
+  BoardEdge,
+  BoardLayoutStyle,
+  BoardShape,
+  SharedBoard,
+  SourceFile
+} from "@/lib/types";
 
 /**
  * 后端 API 基地址（来自 .env 的 NEXT_PUBLIC_API_BASE，默认 localhost:8080）。
@@ -174,6 +184,12 @@ export const api = {
     method: "PATCH",
     body: JSON.stringify({ title })
   }),
+  /** 切换思维导图排布风格，后端立即重排并返回最新画布 */
+  updateBoardLayout: (boardId: string, layoutStyle: BoardLayoutStyle) =>
+    request<Board>(`/api/boards/${boardId}/layout`, {
+      method: "PATCH",
+      body: JSON.stringify({ layoutStyle })
+    }),
   deleteBoard: (boardId: string) => request<void>(`/api/boards/${boardId}`, { method: "DELETE" }),
 
   // ===== 快照 =====

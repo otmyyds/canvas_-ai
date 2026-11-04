@@ -11,7 +11,11 @@ public record AppProperties(Cors cors, Ai ai, RustFs rustfs) {
     public record Cors(List<String> allowedOrigins, List<String> allowedOriginPatterns) {
     }
 
-    public record Ai(Task task, Llm llm, Image image, WebSearch webSearch, Agent agent, Quota quota) {
+    public record Ai(Task task, Llm llm, Image image, WebSearch webSearch, Agent agent, Quota quota, Layout layout) {
+    }
+
+    /** 布局配置：画布节点总数超过上限后不再允许树形图（径向） */
+    public record Layout(int radialMaxNodes) {
     }
 
     /** 模型网关配置：默认模型、降级模型、按操作覆盖模型、重试策略 */

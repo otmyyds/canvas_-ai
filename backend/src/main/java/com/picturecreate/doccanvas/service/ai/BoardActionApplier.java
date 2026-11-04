@@ -6,6 +6,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,20 +16,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import com.picturecreate.doccanvas.config.AppProperties;
+import com.picturecreate.doccanvas.domain.Board;
 import com.picturecreate.doccanvas.domain.BoardEdge;
+import com.picturecreate.doccanvas.domain.BoardLayoutStyle;
 import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.repository.BoardEdgeRepository;
+import com.picturecreate.doccanvas.repository.BoardRepository;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 
 /**
- * 画布动作落库器：校验、布局、原子应用。
+ * 画布动作落库器：校验后的动作先原子落库，再按最终图重排受影响的连通分量。
  *
- * 布局模式由最终动作图决定，不再依赖任务类型：
- * - 全是新建节点且成树：径向树布局
- * - 全是新建节点但成环或含判断节点：分层布局
- * - 新建节点挂接到已有节点：新子图在锚点子树右侧展开
- * - 只有节点没有边：网格布局
- * - 只有更新/删除：不重排
+ * 布局模式由最终节点图决定：
+ * - 分量内存在 level > 0 的节点：思维导图，按画布设置走径向（树形图）或逻辑图；
+ * - 其余分量：流程图，永远自上而下分层。
+ * 新增节点挂到已有节点时重排整个分量，已有节点可以移动；未受影响的分量不动。
  *
  * 调用方负责开启事务：中途失败必须整体回滚，不能留下半张图。
  */
@@ -40,77 +43,43 @@ public class BoardActionApplier {
     /** 节点间距与画布边距 */
     private static final double GAP = 120;
     private static final double MARGIN = 120;
-    /** 网格布局列数与间距 */
+    /** 网格布局列数与节点间距（用于没有任何连线的并列节点） */
     private static final int GRID_COLUMNS = 5;
-    private static final double GRID_X_GAP = 220;
-    private static final double GRID_Y_GAP = 140;
+    private static final double GRID_GAP = 80;
+    /** 尺寸未知时的缺省节点宽高 */
+    private static final double DEFAULT_NODE_W = 140;
+    private static final double DEFAULT_NODE_H = 60;
 
     private final ShapeRepository shapeRepository;
     private final BoardEdgeRepository edgeRepository;
+    private final BoardRepository boardRepository;
+    private final AppProperties properties;
 
-    public BoardActionApplier(ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository) {
+    public BoardActionApplier(ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
+            BoardRepository boardRepository, AppProperties properties) {
         this.shapeRepository = shapeRepository;
         this.edgeRepository = edgeRepository;
+        this.boardRepository = boardRepository;
+        this.properties = properties;
     }
 
     /**
-     * 计算新建节点的坐标。返回的新动作列表只替换 create_shape 的 x/y，其他动作原样保留。
+     * 在调用方事务内应用动作；失败直接抛出，由事务整体回滚。返回实际生效数量供步骤检查。
+     *
+     * 先创建、更新、连线、删除，再读取最终图重排受影响的连通分量：
+     * 同一批动作里的标题/层级/删除都会参与布局计算。
      */
-    public List<BoardAction> layout(UUID boardId, List<BoardAction> actions) {
-        if (actions == null || actions.isEmpty()) {
-            return List.of();
-        }
-        List<BoardAction.CreateShape> creates = actions.stream()
-                .filter(action -> action instanceof BoardAction.CreateShape)
-                .map(action -> (BoardAction.CreateShape) action)
-                .filter(shape -> shape.id() != null && !shape.id().isBlank())
-                .toList();
-        if (creates.isEmpty()) {
-            return actions;
-        }
-        List<String[]> allEdges = new ArrayList<>();
-        List<String[]> newEdges = new ArrayList<>();
-        Set<String> createIds = new HashSet<>();
-        creates.forEach(shape -> createIds.add(shape.id()));
-        for (BoardAction action : actions) {
-            if (action instanceof BoardAction.Connect connect
-                    && connect.fromShapeId() != null && !connect.fromShapeId().isBlank()
-                    && connect.toShapeId() != null && !connect.toShapeId().isBlank()) {
-                String[] edge = new String[] { connect.fromShapeId(), connect.toShapeId() };
-                allEdges.add(edge);
-                if (createIds.contains(edge[0]) || createIds.contains(edge[1])) {
-                    newEdges.add(edge);
-                }
-            }
-        }
-        List<String> nodeIds = creates.stream().map(BoardAction.CreateShape::id).toList();
-        Map<String, double[]> sizes = new HashMap<>();
-        for (BoardAction.CreateShape shape : creates) {
-            sizes.put(shape.id(), new double[] { shape.width(), shape.height() });
-        }
-        Map<String, double[]> positions;
-        if (allEdges.isEmpty()) {
-            positions = gridLayout(nodeIds, sizes);
-            positions = offsetToRight(boardId, positions);
-        } else if (newEdges.isEmpty()) {
-            // 只有更新/删除或连线都落在已有节点上，不需要为新节点布局
-            return actions;
-        } else if (newEdges.size() == allEdges.size() && all(createIds, allEdges)) {
-            positions = layoutGraph(nodeIds, allEdges, sizes);
-            positions = offsetToRight(boardId, positions);
-        } else {
-            positions = layoutAttached(boardId, nodeIds, newEdges, sizes);
-        }
-        return rebuildWithPositions(actions, positions);
-    }
-
-    /** 在调用方事务内应用动作；失败直接抛出，由事务整体回滚。返回实际生效数量供步骤检查 */
     public ApplyReport apply(UUID boardId, List<BoardAction> actions) {
         if (actions == null || actions.isEmpty()) {
             return ApplyReport.empty();
         }
+        // 行锁：与「切换布局」接口串行，避免两边同时重排互相覆盖
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
         Map<String, UUID> shapeIdMap = new HashMap<>();
         List<ApplyReport.CreatedShape> createdNodes = new ArrayList<>();
+        Set<UUID> createdIds = new HashSet<>();
+        Set<UUID> updatedIds = new HashSet<>();
         int createdShapes = 0;
         int createdEdges = 0;
         int updatedShapes = 0;
@@ -124,6 +93,7 @@ public class BoardActionApplier {
                 createdNodes.add(new ApplyReport.CreatedShape(created, createShape.title(), createShape.level()));
                 if (createShape.id() != null && !createShape.id().isBlank()) {
                     shapeIdMap.put(createShape.id(), created);
+                    createdIds.add(created);
                 }
             }
         }
@@ -138,8 +108,12 @@ public class BoardActionApplier {
                     }
                 }
                 case BoardAction.UpdateShape update -> {
-                    if (update(boardId, update)) {
+                    UpdateOutcome outcome = update(boardId, update);
+                    if (outcome.applied()) {
                         updatedShapes++;
+                        if (outcome.relayout()) {
+                            updatedIds.add(outcome.shapeId());
+                        }
                     } else {
                         skipped++;
                     }
@@ -156,120 +130,175 @@ public class BoardActionApplier {
                 }
             }
         }
+        if (!createdIds.isEmpty() || !updatedIds.isEmpty()) {
+            relayoutTouched(board, createdIds, updatedIds);
+        }
         return new ApplyReport(createdShapes, createdEdges, updatedShapes, deletedShapes, skipped,
                 List.copyOf(createdNodes));
     }
 
     /**
      * 整理画布：按连通分量重新布局已有节点，不新增、不删除。
-     * 树结构用径向布局，其余用分层布局；多棵树从左到右排列。
+     * 显式整理允许整体重新打包，并从左上角依次排布。
      */
     public void layoutExistingBoard(UUID boardId) {
-        List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        if (shapes.isEmpty()) {
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Graph graph = loadGraph(boardId);
+        if (graph.shapes().isEmpty()) {
             return;
         }
-        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        Map<String, Shape> shapeById = new HashMap<>();
-        Map<String, double[]> sizes = new HashMap<>();
-        Map<String, Set<String>> undirected = new HashMap<>();
-        for (Shape shape : shapes) {
-            String id = shape.getId().toString();
-            shapeById.put(id, shape);
-            sizes.put(id, new double[] { shape.getWidth(), shape.getHeight() });
-            undirected.put(id, new HashSet<>());
-        }
-        for (BoardEdge edge : edges) {
-            String from = edge.getFromShapeId().toString();
-            String to = edge.getToShapeId().toString();
-            if (undirected.containsKey(from) && undirected.containsKey(to)) {
-                undirected.get(from).add(to);
-                undirected.get(to).add(from);
-            }
-        }
-        List<List<String>> components = new ArrayList<>();
-        Set<String> visited = new HashSet<>();
-        for (Shape shape : shapes) {
-            String start = shape.getId().toString();
-            if (!visited.add(start)) {
-                continue;
-            }
-            List<String> component = new ArrayList<>();
-            Deque<String> queue = new ArrayDeque<>();
-            queue.add(start);
-            while (!queue.isEmpty()) {
-                String current = queue.poll();
-                component.add(current);
-                for (String next : undirected.getOrDefault(current, Set.of())) {
-                    if (visited.add(next)) {
-                        queue.add(next);
-                    }
-                }
-            }
-            components.add(component);
+        // 显式整理时按标题重新放大尺寸；只增不减，保留用户手动放大的节点
+        for (Shape shape : graph.shapes()) {
+            NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
+            shape.growTo(size.width(), size.height());
         }
         double cursorX = MARGIN;
-        for (List<String> component : components) {
-            Set<String> nodeSet = new HashSet<>(component);
-            List<String[]> treeEdges = new ArrayList<>();
-            for (BoardEdge edge : edges) {
-                String from = edge.getFromShapeId().toString();
-                String to = edge.getToShapeId().toString();
-                if (nodeSet.contains(from) && nodeSet.contains(to)) {
-                    treeEdges.add(new String[] { from, to });
-                }
-            }
-            boolean isMindmapTree = GraphLayoutService.isTree(component, treeEdges)
-                    && component.stream().anyMatch(id -> shapeById.get(id).getLevel() > 0);
-            Map<String, double[]> positions = isMindmapTree
-                    ? GraphLayoutService.layoutMindmapTree(component, treeEdges, sizes)
-                    : GraphLayoutService.layoutFlowchart(component, treeEdges, sizes);
-            double[] box = boundingBox(positions);
-            double offsetX = cursorX - box[0];
-            double offsetY = MARGIN - box[1];
-            for (Map.Entry<String, double[]> entry : positions.entrySet()) {
-                Shape shape = shapeById.get(entry.getKey());
-                if (shape != null) {
-                    shape.update(entry.getValue()[0] + offsetX, entry.getValue()[1] + offsetY);
-                    shapeRepository.save(shape);
-                }
-            }
+        for (List<String> component : graph.components()) {
+            Map<String, double[]> sizes = sizesOf(graph, component);
+            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
+            double[] box = bounds(positions, sizes);
+            placeComponent(graph, component, positions, cursorX - box[0], MARGIN - box[1]);
             cursorX += (box[2] - box[0]) + GAP;
         }
-        log.info("整理画布：boardId={} 连通分量={} 节点={}", boardId, components.size(), shapes.size());
+        log.info("整理画布：boardId={} 连通分量={} 节点={}", boardId, graph.components().size(), graph.shapes().size());
     }
 
-    /** 新建节点；标题/类型缺省时给出可用默认值 */
+    /**
+     * 重排受本批动作影响的连通分量。
+     * - 含已有节点的分量：新布局的包围盒左上角对齐旧包围盒左上角，整块图原地整理；
+     * - 全新分量与孤立新节点：放到画布已有内容右侧；
+     * - 未受影响的分量不动。
+     */
+    private void relayoutTouched(Board board, Set<UUID> createdIds, Set<UUID> updatedIds) {
+        shapeRepository.flush();
+        Graph graph = loadGraph(board.getId());
+        Set<String> newIds = toStrings(createdIds);
+        Set<String> touched = toStrings(createdIds);
+        touched.addAll(toStrings(updatedIds));
+
+        List<List<String>> anchored = new ArrayList<>();
+        List<List<String>> fresh = new ArrayList<>();
+        List<String> isolatedNew = new ArrayList<>();
+        for (List<String> component : graph.components()) {
+            if (component.stream().noneMatch(touched::contains)) {
+                continue;
+            }
+            boolean allNew = component.stream().allMatch(newIds::contains);
+            if (allNew && component.size() == 1) {
+                isolatedNew.add(component.get(0));
+            } else if (allNew) {
+                fresh.add(component);
+            } else {
+                anchored.add(component);
+            }
+        }
+        if (anchored.isEmpty() && fresh.isEmpty() && isolatedNew.isEmpty()) {
+            return;
+        }
+        // 只有「按光标重新放置」的节点才排除出已有包围盒，原地重排的分量仍算已有内容
+        Set<String> cursorPlaced = new HashSet<>(isolatedNew);
+        fresh.forEach(cursorPlaced::addAll);
+        double[] existing = boundsExcluding(graph, cursorPlaced);
+        double cursorX = existing == null ? MARGIN : existing[2] + GAP;
+        double baseY = existing == null ? MARGIN : existing[1];
+
+        if (!isolatedNew.isEmpty()) {
+            Set<String> isolatedSet = new HashSet<>(isolatedNew);
+            List<String> ordered = new ArrayList<>();
+            for (Shape shape : graph.shapes()) {
+                String id = shape.getId().toString();
+                if (isolatedSet.contains(id)) {
+                    ordered.add(id);
+                }
+            }
+            Map<String, double[]> sizes = sizesOf(graph, ordered);
+            Map<String, double[]> grid = gridLayout(ordered, sizes);
+            double[] box = bounds(grid, sizes);
+            placeComponent(graph, ordered, grid, cursorX - box[0], baseY - box[1]);
+            cursorX += (box[2] - box[0]) + GAP;
+        }
+
+        for (List<String> component : fresh) {
+            Map<String, double[]> sizes = sizesOf(graph, component);
+            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
+            double[] box = bounds(positions, sizes);
+            placeComponent(graph, component, positions, cursorX - box[0], baseY - box[1]);
+            cursorX += (box[2] - box[0]) + GAP;
+        }
+
+        for (List<String> component : anchored) {
+            Map<String, double[]> sizes = sizesOf(graph, component);
+            Map<String, double[]> positions = layoutComponent(board, graph, component, sizes);
+            double[] box = bounds(positions, sizes);
+            double[] old = existingBoundsOfComponent(graph, component, newIds);
+            placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+        }
+        log.info("增量重排：boardId={} 原地分量={} 新分量={} 孤立新节点={}", board.getId(), anchored.size(),
+                fresh.size(), isolatedNew.size());
+    }
+
+    /** 分量布局：思维导图按画布风格二选一，流程图永远分层 */
+    private Map<String, double[]> layoutComponent(Board board, Graph graph, List<String> component,
+            Map<String, double[]> sizes) {
+        Map<String, Integer> levels = new HashMap<>();
+        boolean mindmap = false;
+        for (String id : component) {
+            Shape shape = graph.shapeById().get(id);
+            int level = shape == null ? 0 : shape.getLevel();
+            levels.put(id, level);
+            mindmap |= level > 0;
+        }
+        List<String[]> componentEdges = edgesWithin(graph, new HashSet<>(component));
+        if (!mindmap) {
+            return GraphLayoutService.layoutFlowchart(component, componentEdges, sizes);
+        }
+        int maxNodes = properties.ai().layout().radialMaxNodes();
+        boolean radial = board.getLayoutStyle() == BoardLayoutStyle.RADIAL && graph.shapes().size() <= maxNodes;
+        return radial
+                ? GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels)
+                : GraphLayoutService.layoutLogicChart(component, componentEdges, sizes, levels);
+    }
+
+    /** 新建节点；标题/类型缺省时给出可用默认值，尺寸按标题自适应且不小于动作给出的尺寸 */
     private UUID createShape(UUID boardId, BoardAction.CreateShape action) {
-        Shape shape = new Shape(boardId,
-                action.title() == null || action.title().isBlank() ? "节点" : action.title(),
+        String title = action.title() == null || action.title().isBlank() ? "节点" : action.title();
+        NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(title);
+        Shape shape = new Shape(boardId, title,
                 action.shape() == null || action.shape().isBlank() ? "ellipse" : action.shape(),
                 action.level(),
                 action.x(),
                 action.y(),
-                action.width() <= 0 ? 140 : action.width(),
-                action.height() <= 0 ? 60 : action.height());
+                Math.max(action.width(), size.width()),
+                Math.max(action.height(), size.height()));
         return shapeRepository.save(shape).getId();
     }
 
-    /** 更新已有节点：只支持真实 id，且必须属于当前画布；返回是否真正生效 */
-    private boolean update(UUID boardId, BoardAction.UpdateShape action) {
+    /** 更新已有节点：只支持真实 id，且必须属于当前画布；标题变长时同步放大尺寸 */
+    private UpdateOutcome update(UUID boardId, BoardAction.UpdateShape action) {
         UUID shapeId = parseUuid(action.shapeId());
         if (shapeId == null) {
             log.warn("忽略非法 update_shape 目标：{}", action.shapeId());
-            return false;
+            return UpdateOutcome.skipped();
         }
         var found = shapeRepository.findById(shapeId)
                 .filter(shape -> shape.getBoardId().equals(boardId));
         if (found.isEmpty()) {
             log.warn("更新目标不存在或不属于画布：shapeId={}", shapeId);
-            return false;
+            return UpdateOutcome.skipped();
         }
         Shape shape = found.get();
+        int oldLevel = shape.getLevel();
+        double oldWidth = shape.getWidth();
+        double oldHeight = shape.getHeight();
         shape.applyAgentEdit(action.title(), action.shape(), action.level());
-        shapeRepository.save(shape);
+        NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
+        shape.growTo(size.width(), size.height());
+        boolean relayout = shape.getLevel() != oldLevel
+                || shape.getWidth() != oldWidth
+                || shape.getHeight() != oldHeight;
         log.info("更新节点：shapeId={} title={}", shapeId, shape.getTitle());
-        return true;
+        return new UpdateOutcome(true, relayout, shapeId);
     }
 
     /** 连线：端点解析为真实 id，并校验两端都属于当前画布；返回是否真正生效 */
@@ -333,183 +362,197 @@ public class BoardActionApplier {
         }
     }
 
-    /** 全是新节点：树用径向，非树用分层 */
-    private Map<String, double[]> layoutGraph(List<String> nodeIds, List<String[]> edges,
-            Map<String, double[]> sizes) {
-        if (GraphLayoutService.isTree(nodeIds, edges)) {
-            return GraphLayoutService.layoutMindmapTree(nodeIds, edges, sizes);
-        }
-        return GraphLayoutService.layoutFlowchart(nodeIds, edges, sizes);
-    }
-
-    /** 新节点挂接到已有节点：对新建部分布局，再平移到锚点子树右侧 */
-    private Map<String, double[]> layoutAttached(UUID boardId, List<String> nodeIds, List<String[]> edges,
-            Map<String, double[]> sizes) {
-        Set<String> newNodeIds = new HashSet<>(nodeIds);
-        List<String[]> innerEdges = edges.stream()
-                .filter(edge -> newNodeIds.contains(edge[0]) && newNodeIds.contains(edge[1]))
-                .toList();
-        Map<String, double[]> positions = innerEdges.isEmpty()
-                ? gridLayout(nodeIds, sizes)
-                : layoutGraph(nodeIds, innerEdges, sizes);
-        double[] box = boundingBox(positions);
-        double[] anchorBounds = anchorBounds(boardId, edges, newNodeIds);
-        double offsetX;
-        double offsetY;
-        if (anchorBounds == null) {
-            double[] existing = existingBounds(boardId);
-            offsetX = existing == null ? MARGIN - box[0] : existing[2] + GAP - box[0];
-            offsetY = existing == null ? MARGIN - box[1] : existing[1] - box[1];
-        } else {
-            offsetX = anchorBounds[2] + GAP - box[0];
-            offsetY = anchorBounds[1] - box[1];
-        }
-        Map<String, double[]> shifted = new LinkedHashMap<>();
-        positions.forEach((id, pos) -> shifted.put(id, new double[] { pos[0] + offsetX, pos[1] + offsetY }));
-        return shifted;
-    }
-
-    /** 计算锚点及其已有子树的包围盒 */
-    private double[] anchorBounds(UUID boardId, List<String[]> edges, Set<String> newNodeIds) {
+    /** 读取整张图的节点、连线、无向邻接表与弱连通分量 */
+    private Graph loadGraph(UUID boardId) {
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        Map<UUID, Shape> shapeById = new HashMap<>();
-        shapes.forEach(shape -> shapeById.put(shape.getId(), shape));
-        List<BoardEdge> existingEdges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        Map<UUID, Set<UUID>> undirected = new HashMap<>();
-        shapeById.keySet().forEach(id -> undirected.put(id, new HashSet<>()));
-        for (BoardEdge edge : existingEdges) {
-            undirected.computeIfAbsent(edge.getFromShapeId(), key -> new HashSet<>()).add(edge.getToShapeId());
-            undirected.computeIfAbsent(edge.getToShapeId(), key -> new HashSet<>()).add(edge.getFromShapeId());
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        Map<String, Shape> shapeById = new LinkedHashMap<>();
+        Map<String, Set<String>> undirected = new LinkedHashMap<>();
+        for (Shape shape : shapes) {
+            String id = shape.getId().toString();
+            shapeById.put(id, shape);
+            undirected.put(id, new LinkedHashSet<>());
         }
-        List<UUID> anchors = new ArrayList<>();
-        for (String[] edge : edges) {
-            for (String endpoint : edge) {
-                if (newNodeIds.contains(endpoint)) {
-                    continue;
-                }
-                UUID id = parseUuid(endpoint);
-                if (id != null && shapeById.containsKey(id)) {
-                    anchors.add(id);
-                }
+        for (BoardEdge edge : edges) {
+            String from = edge.getFromShapeId().toString();
+            String to = edge.getToShapeId().toString();
+            if (undirected.containsKey(from) && undirected.containsKey(to)) {
+                undirected.get(from).add(to);
+                undirected.get(to).add(from);
             }
         }
-        if (anchors.isEmpty()) {
-            return null;
+        List<List<String>> components = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        for (Shape shape : shapes) {
+            String start = shape.getId().toString();
+            if (!visited.add(start)) {
+                continue;
+            }
+            List<String> component = new ArrayList<>();
+            Deque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String current = queue.poll();
+                component.add(current);
+                for (String next : undirected.getOrDefault(current, Set.of())) {
+                    if (visited.add(next)) {
+                        queue.add(next);
+                    }
+                }
+            }
+            components.add(component);
         }
-        Set<UUID> visited = new HashSet<>();
-        Deque<UUID> queue = new ArrayDeque<>(anchors);
+        return new Graph(shapes, edges, shapeById, undirected, components);
+    }
+
+    /** 分量内两端都在集合中的连线（保留方向） */
+    private List<String[]> edgesWithin(Graph graph, Set<String> nodes) {
+        List<String[]> result = new ArrayList<>();
+        for (BoardEdge edge : graph.edges()) {
+            String from = edge.getFromShapeId().toString();
+            String to = edge.getToShapeId().toString();
+            if (nodes.contains(from) && nodes.contains(to)) {
+                result.add(new String[] { from, to });
+            }
+        }
+        return result;
+    }
+
+    private Map<String, double[]> sizesOf(Graph graph, List<String> ids) {
+        Map<String, double[]> sizes = new LinkedHashMap<>();
+        for (String id : ids) {
+            Shape shape = graph.shapeById().get(id);
+            if (shape != null) {
+                sizes.put(id, new double[] { shape.getWidth(), shape.getHeight() });
+            }
+        }
+        return sizes;
+    }
+
+    private void placeComponent(Graph graph, List<String> component, Map<String, double[]> positions,
+            double offsetX, double offsetY) {
+        for (String id : component) {
+            Shape shape = graph.shapeById().get(id);
+            double[] pos = positions.get(id);
+            if (shape != null && pos != null) {
+                shape.update(pos[0] + offsetX, pos[1] + offsetY);
+            }
+        }
+    }
+
+    /** 分量内已有节点（非本批新建）的旧包围盒 */
+    private double[] existingBoundsOfComponent(Graph graph, List<String> component, Set<String> newIds) {
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
         double maxX = -Double.MAX_VALUE;
         double maxY = -Double.MAX_VALUE;
-        while (!queue.isEmpty()) {
-            UUID current = queue.poll();
-            if (!visited.add(current)) {
+        boolean found = false;
+        for (String id : component) {
+            if (newIds.contains(id)) {
                 continue;
             }
-            Shape shape = shapeById.get(current);
+            Shape shape = graph.shapeById().get(id);
             if (shape == null) {
                 continue;
             }
+            found = true;
             minX = Math.min(minX, shape.getX());
             minY = Math.min(minY, shape.getY());
             maxX = Math.max(maxX, shape.getX() + shape.getWidth());
             maxY = Math.max(maxY, shape.getY() + shape.getHeight());
-            for (UUID next : undirected.getOrDefault(current, Set.of())) {
-                if (!visited.contains(next)) {
-                    queue.add(next);
-                }
+        }
+        if (!found) {
+            throw new IllegalStateException("原地重排的分量缺少已有节点");
+        }
+        return new double[] { minX, minY, maxX, maxY };
+    }
+
+    /** 画布内容的包围盒（排除本次会按光标重新放置的节点）；空画布返回 null */
+    private double[] boundsExcluding(Graph graph, Set<String> excluded) {
+        double minX = Double.MAX_VALUE;
+        double minY = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE;
+        double maxY = -Double.MAX_VALUE;
+        boolean found = false;
+        for (Shape shape : graph.shapes()) {
+            if (excluded.contains(shape.getId().toString())) {
+                continue;
             }
+            found = true;
+            minX = Math.min(minX, shape.getX());
+            minY = Math.min(minY, shape.getY());
+            maxX = Math.max(maxX, shape.getX() + shape.getWidth());
+            maxY = Math.max(maxY, shape.getY() + shape.getHeight());
         }
-        return minX == Double.MAX_VALUE ? null : new double[] { minX, minY, maxX, maxY };
+        return found ? new double[] { minX, minY, maxX, maxY } : null;
     }
 
-    /** 网格布局，用于没有任何连线的并列节点 */
-    private Map<String, double[]> gridLayout(List<String> nodeIds, Map<String, double[]> sizes) {
-        Map<String, double[]> positions = new LinkedHashMap<>();
-        for (int index = 0; index < nodeIds.size(); index++) {
-            int row = index / GRID_COLUMNS;
-            int column = index % GRID_COLUMNS;
-            positions.put(nodeIds.get(index), new double[] { column * GRID_X_GAP, row * GRID_Y_GAP });
-        }
-        return positions;
-    }
-
-    /** 把一组坐标整体平移到画布已有内容右侧 */
-    private Map<String, double[]> offsetToRight(UUID boardId, Map<String, double[]> positions) {
-        double[] box = boundingBox(positions);
-        double[] existing = existingBounds(boardId);
-        double offsetX;
-        double offsetY;
-        if (existing == null) {
-            offsetX = MARGIN - box[0];
-            offsetY = MARGIN - box[1];
-        } else {
-            offsetX = existing[2] + GAP - box[0];
-            offsetY = existing[1] - box[1];
-        }
-        Map<String, double[]> shifted = new LinkedHashMap<>();
-        positions.forEach((id, pos) -> shifted.put(id, new double[] { pos[0] + offsetX, pos[1] + offsetY }));
-        return shifted;
-    }
-
-    /** 用布局坐标重建 create_shape 动作 */
-    private List<BoardAction> rebuildWithPositions(List<BoardAction> actions, Map<String, double[]> positions) {
-        return actions.stream().map(action -> {
-            if (action instanceof BoardAction.CreateShape shape && shape.id() != null) {
-                double[] pos = positions.get(shape.id());
-                if (pos != null) {
-                    return new BoardAction.CreateShape(shape.id(), shape.title(), shape.shape(), shape.level(),
-                            pos[0], pos[1],
-                            shape.width() <= 0 ? 140 : shape.width(),
-                            shape.height() <= 0 ? 60 : shape.height());
-                }
-            }
-            return action;
-        }).toList();
-    }
-
-    private boolean all(Set<String> ids, List<String[]> edges) {
-        for (String[] edge : edges) {
-            if (!ids.contains(edge[0]) || !ids.contains(edge[1])) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private double[] boundingBox(Map<String, double[]> positions) {
+    /** 布局结果的包围盒 [minX, minY, maxX, maxY] */
+    private double[] bounds(Map<String, double[]> positions, Map<String, double[]> sizes) {
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
         double maxX = -Double.MAX_VALUE;
         double maxY = -Double.MAX_VALUE;
         for (Map.Entry<String, double[]> entry : positions.entrySet()) {
             double[] pos = entry.getValue();
-            // 尺寸未知时按典型节点估算
             minX = Math.min(minX, pos[0]);
             minY = Math.min(minY, pos[1]);
-            maxX = Math.max(maxX, pos[0] + GRID_X_GAP / 2);
-            maxY = Math.max(maxY, pos[1] + GRID_Y_GAP / 2);
+            maxX = Math.max(maxX, pos[0] + widthOf(sizes, entry.getKey()));
+            maxY = Math.max(maxY, pos[1] + heightOf(sizes, entry.getKey()));
         }
         return new double[] { minX, minY, maxX, maxY };
     }
 
-    /** 画布已有节点的包围盒；空画布返回 null */
-    private double[] existingBounds(UUID boardId) {
-        List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        if (shapes.isEmpty()) {
-            return null;
+    /** 网格布局：按真实宽高排列，用于没有任何连线的并列新节点 */
+    private Map<String, double[]> gridLayout(List<String> nodeIds, Map<String, double[]> sizes) {
+        int rows = (nodeIds.size() + GRID_COLUMNS - 1) / GRID_COLUMNS;
+        double[] columnWidth = new double[GRID_COLUMNS];
+        double[] rowHeight = new double[rows];
+        for (int index = 0; index < nodeIds.size(); index++) {
+            String id = nodeIds.get(index);
+            columnWidth[index % GRID_COLUMNS] = Math.max(columnWidth[index % GRID_COLUMNS], widthOf(sizes, id));
+            rowHeight[index / GRID_COLUMNS] = Math.max(rowHeight[index / GRID_COLUMNS], heightOf(sizes, id));
         }
-        double minX = Double.MAX_VALUE;
-        double minY = Double.MAX_VALUE;
-        double maxX = -Double.MAX_VALUE;
-        double maxY = -Double.MAX_VALUE;
-        for (Shape shape : shapes) {
-            minX = Math.min(minX, shape.getX());
-            minY = Math.min(minY, shape.getY());
-            maxX = Math.max(maxX, shape.getX() + shape.getWidth());
-            maxY = Math.max(maxY, shape.getY() + shape.getHeight());
+        double[] columnX = new double[GRID_COLUMNS];
+        for (int column = 1; column < GRID_COLUMNS; column++) {
+            columnX[column] = columnX[column - 1] + columnWidth[column - 1] + GRID_GAP;
         }
-        return new double[] { minX, minY, maxX, maxY };
+        double[] rowY = new double[rows];
+        for (int row = 1; row < rows; row++) {
+            rowY[row] = rowY[row - 1] + rowHeight[row - 1] + GRID_GAP;
+        }
+        Map<String, double[]> positions = new LinkedHashMap<>();
+        for (int index = 0; index < nodeIds.size(); index++) {
+            positions.put(nodeIds.get(index), new double[] { columnX[index % GRID_COLUMNS], rowY[index / GRID_COLUMNS] });
+        }
+        return positions;
+    }
+
+    private static double widthOf(Map<String, double[]> sizes, String id) {
+        double[] size = sizes == null ? null : sizes.get(id);
+        return size == null || size[0] <= 0 ? DEFAULT_NODE_W : size[0];
+    }
+
+    private static double heightOf(Map<String, double[]> sizes, String id) {
+        double[] size = sizes == null ? null : sizes.get(id);
+        return size == null || size[1] <= 0 ? DEFAULT_NODE_H : size[1];
+    }
+
+    private Set<String> toStrings(Set<UUID> ids) {
+        Set<String> result = new HashSet<>();
+        for (UUID id : ids) {
+            result.add(id.toString());
+        }
+        return result;
+    }
+
+    private record Graph(List<Shape> shapes, List<BoardEdge> edges, Map<String, Shape> shapeById,
+            Map<String, Set<String>> undirected, List<List<String>> components) {
+    }
+
+    private record UpdateOutcome(boolean applied, boolean relayout, UUID shapeId) {
+        static UpdateOutcome skipped() {
+            return new UpdateOutcome(false, false, null);
+        }
     }
 }

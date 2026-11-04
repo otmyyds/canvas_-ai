@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Share2 } from "lucide-react";
 import { api, authRefresh } from "@/lib/api";
-import type { TaskEvent } from "@/lib/types";
+import type { BoardLayoutStyle, TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
 import { WhiteboardEditor } from "@/components/whiteboard/whiteboard-editor";
@@ -184,6 +184,16 @@ function BoardEditor({ boardId }: { boardId: string }) {
     return result;
   }
 
+  /** 切换思维导图排布：后端立即重排，重新拉取节点后由 canvasRevision 同步回 tldraw */
+  async function changeLayoutStyle(style: BoardLayoutStyle) {
+    const updated = await api.updateBoardLayout(boardId, style);
+    setBoard(updated);
+    const [edgeResult, shapeResult] = await Promise.all([api.listEdges(boardId), api.listShapes(boardId)]);
+    setEdges(edgeResult);
+    setShapes(shapeResult);
+    setCanvasRevision((value) => value + 1);
+  }
+
   async function abortTask(taskId: string) {
     await api.abortTask(taskId);
     setTasks(await api.listTasks(boardId));
@@ -282,6 +292,9 @@ function BoardEditor({ boardId }: { boardId: string }) {
           onDeleteFile={deleteFile}
           onSelectionChange={setSelection}
           selectionCount={selection.shapeIds.length}
+          layoutStyle={board?.layoutStyle}
+          radialMaxNodes={board?.radialMaxNodes}
+          onLayoutStyleChange={changeLayoutStyle}
         />
       )}
     </main>

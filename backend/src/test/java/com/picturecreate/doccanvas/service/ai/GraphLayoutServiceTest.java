@@ -9,14 +9,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * 布局分派判定测试。
+ * 布局引擎测试。
  *
- * 径向树布局沿 children 递归下探，边集一旦成环就会一路递归到栈溢出；
- * 而 StackOverflowError 是 Error 不是 Exception，会穿过链路上所有 catch(Exception)，
- * 最终被线程池的 FutureTask 吞掉——表现是 Redis Stream 消费者静默退出、AI 任务永久卡在 RUNNING。
- * 所以成环的边集必须在调用布局前就被 isTree 拦下来。
+ * 树类布局都先构建生成树，回边不进入递归；流程图用 Kahn 最长路径分层，
+ * 环上的节点由残余分量兜底。这里验证成环不会丢坐标，以及流程图始终自上而下。
  */
-@DisplayName("图形布局：树判定与分派")
+@DisplayName("图形布局：生成树、逻辑图与流程图")
 class GraphLayoutServiceTest {
 
     private static List<String[]> edges(String[]... pairs) {
@@ -28,48 +26,49 @@ class GraphLayoutServiceTest {
     }
 
     @Test
-    @DisplayName("真树通过")
-    void realTreeAccepted() {
-        assertThat(GraphLayoutService.isTree(List.of("A"), edges())).isTrue();
-        assertThat(GraphLayoutService.isTree(List.of("A", "B", "C"), edges(e("A", "B"), e("A", "C")))).isTrue();
-        assertThat(GraphLayoutService.isTree(List.of("A", "B", "C", "D"),
-                edges(e("A", "B"), e("B", "C"), e("B", "D")))).isTrue();
+    @DisplayName("树形图扛得住环：2 环、3 环每个节点都有坐标")
+    void mindmapHandlesCycle() {
+        Map<String, double[]> twoCycle = GraphLayoutService.layoutMindmapTree(List.of("A", "B"),
+                edges(e("A", "B"), e("B", "A")), null);
+        assertThat(twoCycle).containsOnlyKeys("A", "B");
+
+        Map<String, double[]> threeCycle = GraphLayoutService.layoutMindmapTree(List.of("A", "B", "C"),
+                edges(e("A", "B"), e("B", "C"), e("C", "A")), null);
+        assertThat(threeCycle).containsOnlyKeys("A", "B", "C");
     }
 
     @Test
-    @DisplayName("环一律被拒：2 环、3 环、根不在环内")
-    void cyclesRejected() {
-        assertThat(GraphLayoutService.isTree(List.of("A", "B"), edges(e("A", "B"), e("B", "A")))).isFalse();
-        assertThat(GraphLayoutService.isTree(List.of("A", "B", "C"),
-                edges(e("A", "B"), e("B", "C"), e("C", "A")))).isFalse();
-        assertThat(GraphLayoutService.isTree(List.of("R", "A", "B"),
-                edges(e("R", "A"), e("A", "B"), e("B", "A")))).isFalse();
+    @DisplayName("逻辑图扛得住环：每个节点都有坐标，子节点在父节点右侧")
+    void logicChartHandlesCycle() {
+        Map<String, double[]> positions = GraphLayoutService.layoutLogicChart(List.of("A", "B", "C"),
+                edges(e("A", "B"), e("B", "C"), e("C", "A")), null, Map.of("A", 0, "B", 1, "C", 2));
+        assertThat(positions).containsOnlyKeys("A", "B", "C");
+        assertThat(positions.get("B")[0]).isGreaterThan(positions.get("A")[0]);
     }
 
     @Test
-    @DisplayName("边数正好 n-1 但有环时同样被拒：只数边会漏掉孤立节点凑数的这种情况")
-    void nMinusOneEdgesWithCycleRejected() {
-        List<String> nodes = List.of("A", "B", "C", "D");
-        List<String[]> cyclic = edges(e("A", "B"), e("B", "C"), e("C", "A"));
-        assertThat(cyclic).hasSize(nodes.size() - 1);
-        assertThat(GraphLayoutService.isTree(nodes, cyclic)).isFalse();
-    }
-
-    @Test
-    @DisplayName("森林与重复边被拒，自环与悬空边直接忽略")
-    void otherShapesRejected() {
-        assertThat(GraphLayoutService.isTree(List.of("A", "B", "C", "D"),
-                edges(e("A", "B"), e("C", "D")))).isFalse();
-        assertThat(GraphLayoutService.isTree(List.of("A", "B"), edges(e("A", "B"), e("A", "B")))).isFalse();
-        assertThat(GraphLayoutService.isTree(List.of("A"), edges(e("A", "A")))).isTrue();
-        assertThat(GraphLayoutService.isTree(List.of("A"), edges(e("X", "Y")))).isTrue();
-    }
-
-    @Test
-    @DisplayName("流程图布局扛得住环：每个节点都能拿到坐标")
+    @DisplayName("流程图扛得住环：每个节点都能拿到坐标")
     void flowchartHandlesCycle() {
         Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(List.of("A", "B", "C"),
                 edges(e("A", "B"), e("B", "C"), e("C", "A")), null);
         assertThat(positions).containsOnlyKeys("A", "B", "C");
+    }
+
+    @Test
+    @DisplayName("流程图始终自上而下：链状节点的 y 逐层递增")
+    void flowchartIsVertical() {
+        Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(List.of("A", "B", "C"),
+                edges(e("A", "B"), e("B", "C")), null);
+        assertThat(positions.get("B")[1]).isGreaterThan(positions.get("A")[1]);
+        assertThat(positions.get("C")[1]).isGreaterThan(positions.get("B")[1]);
+    }
+
+    @Test
+    @DisplayName("流程图按最长路径分层：汇聚节点在所有前驱的下一层")
+    void flowchartUsesLongestPath() {
+        Map<String, double[]> positions = GraphLayoutService.layoutFlowchart(List.of("A", "B", "C", "D"),
+                edges(e("A", "B"), e("A", "C"), e("B", "D"), e("C", "D")), null);
+        assertThat(positions.get("B")[1]).isEqualTo(positions.get("C")[1]);
+        assertThat(positions.get("D")[1]).isGreaterThan(positions.get("B")[1]);
     }
 }
