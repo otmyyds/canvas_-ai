@@ -77,7 +77,7 @@ public class BoardReadTools {
         boardService.getOwned(boardId, context.user());
         String title = boardRepository.findById(boardId).map(board -> board.getTitle()).orElse("未命名画布");
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
         StringBuilder result = new StringBuilder("画布标题：").append(title).append('\n');
         result.append("节点数量：").append(shapes.size()).append("，连线数量：").append(edges.size()).append('\n');
         if (shapes.isEmpty()) {
@@ -153,7 +153,7 @@ public class BoardReadTools {
             shapes.put(shape.getId(), shape);
         }
         Map<UUID, List<BoardEdge>> children = new HashMap<>();
-        for (BoardEdge edge : edgeRepository.findByBoardIdOrderByCreatedAtAsc(context.boardId())) {
+        for (BoardEdge edge : edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(context.boardId())) {
             children.computeIfAbsent(edge.getFromShapeId(), key -> new ArrayList<>()).add(edge);
         }
         StringBuilder result = new StringBuilder("子树根：").append(root.get().getTitle()).append('\n');

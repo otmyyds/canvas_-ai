@@ -48,6 +48,10 @@ public class Shape extends BaseEntity {
     @Column(nullable = false)
     private double height;
 
+    /** 视觉属性 JSON（geo/color/fill/dash），纳管自由图形时保存，切回树形图时还原 */
+    @Column(name = "visual_json")
+    private String visualJson;
+
     protected Shape() {
     }
 
@@ -95,6 +99,10 @@ public class Shape extends BaseEntity {
         return height;
     }
 
+    public String getVisualJson() {
+        return visualJson;
+    }
+
     /** 更新节点坐标（思维导图扩展后整树重排时用） */
     public void update(double x, double y) {
         this.x = x;
@@ -126,6 +134,11 @@ public class Shape extends BaseEntity {
         this.y = y;
         this.width = width;
         this.height = height;
+    }
+
+    /** 保存视觉属性 JSON：传 null 表示清空（回到默认样式） */
+    public void applyVisual(String visualJson) {
+        this.visualJson = visualJson;
     }
 
     /** Agent 修改：只更新传入的非空字段，保留坐标和尺寸 */

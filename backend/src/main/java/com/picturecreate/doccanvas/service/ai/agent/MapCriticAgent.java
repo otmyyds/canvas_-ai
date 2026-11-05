@@ -182,7 +182,7 @@ public class MapCriticAgent {
                     .append(levels.getOrDefault(entry.getKey(), 0)).append(" | ").append(entry.getValue())
                     .append('\n');
         }
-        for (BoardEdge edge : edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)) {
+        for (BoardEdge edge : edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId)) {
             appendEdge(builder, titles, edge.getFromShapeId().toString(), edge.getToShapeId().toString(),
                     edge.getLabel());
         }

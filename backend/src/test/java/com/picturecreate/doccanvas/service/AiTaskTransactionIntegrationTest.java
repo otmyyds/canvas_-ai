@@ -169,7 +169,7 @@ class AiTaskTransactionIntegrationTest {
 
         // 事务回滚后检查点恢复把三张表原样重建：残留任何一张，元素都会在前端刷新后复活
         assertThat(shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)).hasSize(2);
-        assertThat(edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)).hasSize(1);
+        assertThat(edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId)).hasSize(1);
         assertThat(taskRepository.findById(taskId).orElseThrow().getStatus()).isEqualTo(AiTaskStatus.FAILED);
     }
 

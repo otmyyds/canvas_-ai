@@ -56,6 +56,16 @@ final class LogicTreeLayout {
      */
     static Map<String, double[]> layout(List<String> nodeIds, GraphLayoutService.SpanningTree tree,
             Map<String, double[]> sizes) {
+        return layout(nodeIds, tree, sizes, null);
+    }
+
+    /**
+     * 布局一棵或多棵树，按一级分支的指定侧分区。
+     *
+     * @param sideByChild 一级分支节点 id → LEFT/RIGHT；未指定或为 null 时按两侧高度自动均衡
+     */
+    static Map<String, double[]> layout(List<String> nodeIds, GraphLayoutService.SpanningTree tree,
+            Map<String, double[]> sizes, Map<String, String> sideByChild) {
         Map<String, Node> nodes = new LinkedHashMap<>();
         for (String id : nodeIds) {
             if (id != null && !id.isBlank() && !nodes.containsKey(id)) {
@@ -71,7 +81,7 @@ final class LogicTreeLayout {
                 continue;
             }
             buildChildren(root, tree.children(), nodes);
-            Map<String, double[]> treePositions = layoutRoot(root);
+            Map<String, double[]> treePositions = layoutRoot(root, sideByChild);
             double[] box = bounds(treePositions, nodes);
             // 每棵树独立布局，按包围盒左上角对齐后纵向堆叠
             double offsetX = -box[0];
@@ -86,10 +96,10 @@ final class LogicTreeLayout {
     }
 
     /**
-     * 单棵树：一级子节点按子树高度平衡分配到根左右两侧。
-     * 右侧子树直接向右展开；左侧子树先按右侧规则布局，再以根内容中轴镜像。
+     * 单棵树：一级子节点按指定侧分区；未指定侧的按子树高度平衡分到较矮的一侧。
+     * 侧内保持 children 顺序（即后端连线排序），右侧直接向右展开、左侧镜像向左展开。
      */
-    private static Map<String, double[]> layoutRoot(Node root) {
+    private static Map<String, double[]> layoutRoot(Node root, Map<String, String> sideByChild) {
         Map<String, double[]> positions = new LinkedHashMap<>();
         positions.put(root.id, new double[] { 0, 0 });
         if (root.children.isEmpty()) {
@@ -104,8 +114,17 @@ final class LogicTreeLayout {
         double rightHeight = 0;
         double leftHeight = 0;
         for (Node child : root.children) {
-            // 优先放到较矮的一侧，等高时放右侧，使两侧总高度接近
-            if (rightHeight <= leftHeight) {
+            String side = sideByChild == null ? null : sideByChild.get(child.id);
+            boolean toRight;
+            if ("LEFT".equalsIgnoreCase(side)) {
+                toRight = false;
+            } else if ("RIGHT".equalsIgnoreCase(side)) {
+                toRight = true;
+            } else {
+                // 未指定侧：优先放到较矮的一侧，等高时放右侧，使两侧总高度接近
+                toRight = rightHeight <= leftHeight;
+            }
+            if (toRight) {
                 right.add(child);
                 rightHeight += child.subtreeHeight + V_GAP;
             } else {

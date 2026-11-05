@@ -1,5 +1,12 @@
 import { createBindingId, createShapeId, toRichText } from "tldraw";
-import type { Editor as TldrawEditor, TLArrowBinding, TLGeoShape, TLShapeId, TLShapePartial } from "@tldraw/editor";
+import type {
+  Editor as TldrawEditor,
+  TLArrowBinding,
+  TLGeoShape,
+  TLShape,
+  TLShapeId,
+  TLShapePartial
+} from "@tldraw/editor";
 import type { BoardEdge, BoardLayoutStyle, BoardShape } from "@/lib/types";
 import {
   createMindmapEdgeBindings,
@@ -7,9 +14,31 @@ import {
 } from "@/lib/whiteboard/mindmap-shapes";
 import type { MindmapEdgeBinding, MindmapEdgeShape, MindmapNodeShape } from "@/lib/whiteboard/mindmap-shapes";
 
-/** 计算 AI 图形节点的状态指纹（位置/尺寸/标题），用于判断是否被改动 */
-export function shapeStateFingerprint(x: number, y: number, width: number, height: number, title: string): string {
-  return JSON.stringify([x, y, width, height, title]);
+/** 计算 AI 图形节点的状态指纹（位置/尺寸/标题/视觉属性），用于判断是否被改动 */
+export function shapeStateFingerprint(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  title: string,
+  visual = ""
+): string {
+  return JSON.stringify([x, y, width, height, title, visual]);
+}
+
+/** geo 视觉属性指纹：用户改颜色/填充/线型也要触发回写 */
+export function geoVisualFingerprint(props: {
+  geo?: string;
+  color?: string;
+  fill?: string;
+  dash?: string;
+}): string {
+  return JSON.stringify([props.geo ?? "", props.color ?? "", props.fill ?? "", props.dash ?? ""]);
+}
+
+/** 后端节点记录的视觉属性指纹，与 geoVisualFingerprint 保持同一格式 */
+export function nodeVisualFingerprint(node: BoardShape): string {
+  return node.visual ? geoVisualFingerprint(node.visual) : "";
 }
 
 type ShapeId = ReturnType<typeof createShapeId>;
@@ -78,6 +107,39 @@ export type SyncGraphOptions = {
 
 type NodeType = "geo" | "mindmap-node";
 type EdgeType = "arrow" | "mindmap-edge";
+
+/** tldraw geo 图形支持的全部形状，纳管自由图形时按原类型还原 */
+const GEO_TYPES = new Set<string>([
+  "arrow-down", "arrow-left", "arrow-right", "arrow-up", "check-box", "cloud", "diamond", "ellipse",
+  "heart", "hexagon", "octagon", "oval", "pentagon", "rectangle", "rhombus-2", "rhombus", "star",
+  "trapezoid", "triangle", "x-box"
+]);
+
+/** 节点实际使用的 geo 形状：纳管时保存的原始 geo 优先，否则按后端的 shape 字段映射 */
+function geoTypeOf(node: BoardShape): TLGeoShape["props"]["geo"] {
+  const raw = node.visual?.geo ?? node.shape;
+  return (GEO_TYPES.has(raw) ? raw : "rectangle") as TLGeoShape["props"]["geo"];
+}
+
+/**
+ * 强制删除图形：结构连线是锁定元素，普通 deleteShapes 会跳过它们，
+ * 类型转换、清空画布、孤儿清理都必须走这里。
+ */
+export function deleteShapesForced(editor: TldrawEditor, shapeIds: TLShapeId[]): void {
+  if (shapeIds.length === 0) {
+    return;
+  }
+  editor.run(() => editor.deleteShapes(shapeIds), { ignoreShapeLock: true });
+}
+
+/** 结构连线统一锁定：旧快照里的未锁连线在同步时补齐，用户只能拖节点不能拖连线 */
+function ensureEdgeLocked(editor: TldrawEditor, shape: TLShape): boolean {
+  if (shape.isLocked) {
+    return false;
+  }
+  editor.updateShape({ id: shape.id, type: shape.type, isLocked: true } as TLShapePartial);
+  return true;
+}
 
 type PendingNode = { node: BoardShape; type: NodeType };
 type PendingEdge = { edge: BoardEdge; type: EdgeType; fromId: ShapeId; toId: ShapeId };
@@ -155,7 +217,7 @@ async function runSyncGraphVisuals(
       }
       // 结构连线会随分量一起重建，用户手绘的箭头不在重建范围内，先记下绑定再恢复
       arrowBindingsToRestore.push(...editor.getBindingsToShape<TLArrowBinding>(shapeId, "arrow"));
-      editor.deleteShapes([shapeId]);
+      deleteShapesForced(editor, [shapeId]);
       deletedIds.push(shapeId);
       pendingNodes.push({ node, type: desiredType });
       changed++;
@@ -184,11 +246,15 @@ async function runSyncGraphVisuals(
       continue;
     }
     if (existing.type !== desiredType) {
-      editor.deleteShapes([edgeId]);
+      deleteShapesForced(editor, [edgeId]);
       deletedIds.push(edgeId);
       pendingEdges.push({ edge, type: desiredType, fromId, toId });
       changed++;
       continue;
+    }
+    // 结构连线是固定格式：锁定后不能选中/拖动/删除，端点跟随由节点几何实时计算
+    if (ensureEdgeLocked(editor, existing)) {
+      changed++;
     }
     if (desiredType === "mindmap-edge") {
       if (ensureMindmapEdgeBindings(editor, edgeId, fromId, toId)) {
@@ -281,10 +347,8 @@ function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
     });
     return;
   }
-  const geoType = node.shape === "ellipse" ? "ellipse"
-    : node.shape === "oval" ? "oval"
-    : node.shape === "diamond" ? "diamond"
-    : "rectangle";
+  // 纳管自由图形时保存的视觉属性优先，没有记录则按层级给默认配色
+  const visual = node.visual ?? null;
   const isCenter = node.level === 0;
   editor.createShape({
     id: shapeId,
@@ -292,16 +356,16 @@ function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
     x: node.x,
     y: node.y,
     props: {
-      geo: geoType,
-      dash: "solid",
+      geo: geoTypeOf(node),
+      dash: (visual?.dash ?? "solid") as TLGeoShape["props"]["dash"],
       url: "",
       w: node.width,
       h: node.height,
       growY: 0,
       scale: 1,
       labelColor: "black",
-      color: isCenter ? "green" : "blue",
-      fill: isCenter ? "solid" : "semi",
+      color: (visual?.color ?? (isCenter ? "green" : "blue")) as TLGeoShape["props"]["color"],
+      fill: (visual?.fill ?? (isCenter ? "solid" : "semi")) as TLGeoShape["props"]["fill"],
       size: "m",
       font: "draw",
       align: "middle",
@@ -324,6 +388,9 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
   }
   const titleChanged = editor.getShapeUtil(shape).getText(shape) !== node.title;
   const moved = shape.x !== node.x || shape.y !== node.y;
+  // 纳管自由图形时保存的视觉属性优先，没有记录则按层级给默认配色
+  const visual = node.visual ?? null;
+  const isCenter = node.level === 0;
 
   if (type === "mindmap-node") {
     const props = shape.props as MindmapNodeShape["props"];
@@ -371,6 +438,22 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
   if (props.h !== node.height) {
     propsUpdate.h = node.height;
   }
+  const desiredGeo = geoTypeOf(node);
+  if (props.geo !== desiredGeo) {
+    propsUpdate.geo = desiredGeo;
+  }
+  const desiredColor = (visual?.color ?? (isCenter ? "green" : "blue")) as TLGeoShape["props"]["color"];
+  if (props.color !== desiredColor) {
+    propsUpdate.color = desiredColor;
+  }
+  const desiredFill = (visual?.fill ?? (isCenter ? "solid" : "semi")) as TLGeoShape["props"]["fill"];
+  if (props.fill !== desiredFill) {
+    propsUpdate.fill = desiredFill;
+  }
+  const desiredDash = (visual?.dash ?? "solid") as TLGeoShape["props"]["dash"];
+  if (props.dash !== desiredDash) {
+    propsUpdate.dash = desiredDash;
+  }
   const sizeChanged = propsUpdate.w !== undefined || propsUpdate.h !== undefined;
   if (sizeChanged) {
     // 后端尺寸已经按 tldraw 的标签参数算好，清掉旧尺寸留下的文字溢出高度
@@ -380,7 +463,8 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
     return false;
   }
   // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写
-  baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title));
+  baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title,
+    nodeVisualFingerprint(node)));
   editor.updateShape<TLGeoShape>({
     id: shapeId,
     type: "geo",
@@ -403,6 +487,7 @@ function createMindmapEdge(editor: TldrawEditor, edgeId: ShapeId, parentId: Shap
     type: "mindmap-edge",
     x: 0,
     y: 0,
+    isLocked: true,
     props: {
       startX: 0,
       startY: 0,
@@ -455,6 +540,7 @@ function createArrowEdge(
   editor.createShape({
     id: arrowId,
     type: "arrow",
+    isLocked: true,
     props: {
       kind: "arc",
       labelColor: "black",

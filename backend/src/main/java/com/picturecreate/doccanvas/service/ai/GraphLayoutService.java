@@ -164,12 +164,22 @@ public final class GraphLayoutService {
      */
     public static Map<String, double[]> layoutLogicChart(List<String> nodeIds, List<String[]> edges,
             Map<String, double[]> sizes, Map<String, Integer> levels) {
+        return layoutLogicChart(nodeIds, edges, sizes, levels, null);
+    }
+
+    /**
+     * 逻辑图布局，支持固定一级分支的左右侧。
+     *
+     * @param sideByChild 一级分支 id → LEFT/RIGHT；null 或未指定的分支按两侧高度自动均衡
+     */
+    public static Map<String, double[]> layoutLogicChart(List<String> nodeIds, List<String[]> edges,
+            Map<String, double[]> sizes, Map<String, Integer> levels, Map<String, String> sideByChild) {
         if (nodeIds == null || nodeIds.isEmpty()) {
             return new LinkedHashMap<>();
         }
         log.info("逻辑图布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
         SpanningTree tree = spanningTree(nodeIds, edges, levels);
-        Map<String, double[]> positions = LogicTreeLayout.layout(nodeIds, tree, sizes);
+        Map<String, double[]> positions = LogicTreeLayout.layout(nodeIds, tree, sizes, sideByChild);
         normalize(positions);
         return positions;
     }

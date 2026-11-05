@@ -1,12 +1,18 @@
 package com.picturecreate.doccanvas.service;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.picturecreate.doccanvas.domain.BoardEdge;
 import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.service.ai.BoardActionApplier;
+import com.picturecreate.doccanvas.service.ai.BoardActionApplier.AdoptEdge;
+import com.picturecreate.doccanvas.service.ai.BoardActionApplier.AdoptNode;
+import com.picturecreate.doccanvas.service.ai.BoardActionApplier.AdoptionResult;
+import com.picturecreate.doccanvas.service.ai.BoardActionApplier.ChildOrder;
 
 /**
  * 用户手动编辑画布结构：新建子节点、删除节点（思维导图连带子树）。
@@ -35,5 +41,20 @@ public class ShapeEditService {
     public void delete(UUID boardId, CurrentUser user, UUID shapeId) {
         boardService.getOwned(boardId, user);
         actionApplier.deleteForUser(boardId, shapeId);
+    }
+
+    /** 调整同级顺序（逻辑图一级分支同时提交左右侧），重排该分量 */
+    @Transactional
+    public List<BoardEdge> reorderChildren(UUID boardId, CurrentUser user, UUID parentId,
+            List<ChildOrder> children) {
+        boardService.getOwned(boardId, user);
+        return actionApplier.reorderChildren(boardId, parentId, children);
+    }
+
+    /** 纳管画布上手绘的自由图形与连线，保持原坐标尺寸，不触发布局 */
+    @Transactional
+    public AdoptionResult adopt(UUID boardId, CurrentUser user, List<AdoptNode> nodes, List<AdoptEdge> edges) {
+        boardService.getOwned(boardId, user);
+        return actionApplier.adopt(boardId, nodes, edges);
     }
 }

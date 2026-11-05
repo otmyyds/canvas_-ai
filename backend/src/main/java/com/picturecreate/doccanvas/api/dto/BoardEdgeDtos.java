@@ -19,11 +19,14 @@ public final class BoardEdgeDtos {
             String style,
             String color,
             Integer weight,
+            Integer sortOrder,
+            String side,
             Instant createdAt) {
 
         public static BoardEdgeResponse from(BoardEdge edge) {
             return new BoardEdgeResponse(edge.getId(), edge.getBoardId(), edge.getFromShapeId(), edge.getToShapeId(),
-                    edge.getLabel(), edge.getStyle(), edge.getColor(), edge.getWeight(), edge.getCreatedAt());
+                    edge.getLabel(), edge.getStyle(), edge.getColor(), edge.getWeight(), edge.getSortOrder(),
+                    edge.getSide(), edge.getCreatedAt());
         }
     }
 }

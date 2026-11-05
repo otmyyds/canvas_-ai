@@ -324,7 +324,7 @@ public class AgentPlanExecutor {
         transactionTemplate.executeWithoutResult(status -> {
             cancellation.assertNotCancelled(task.getId());
             List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
-            List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
+            List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(task.getBoardId());
             shapeRepository.deleteAll(shapes);
             edgeRepository.deleteAll(edges);
             snapshotRepository.deleteByBoardId(task.getBoardId());
@@ -337,7 +337,7 @@ public class AgentPlanExecutor {
         if (!shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).isEmpty()) {
             throw new IllegalStateException("清空后画布仍有节点");
         }
-        if (!edgeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId()).isEmpty()) {
+        if (!edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(task.getBoardId()).isEmpty()) {
             throw new IllegalStateException("清空后画布仍有连线");
         }
         if (!assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(task.getBoardId(), task.getOwnerId())
@@ -649,7 +649,7 @@ public class AgentPlanExecutor {
     }
 
     private int countEdges(UUID boardId) {
-        return edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId).size();
+        return edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId).size();
     }
 
     private String describe(ApplyReport report) {

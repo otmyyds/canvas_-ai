@@ -30,6 +30,10 @@ export type BoardEdge = {
   style?: string;
   color?: string;
   weight?: number;
+  /** 同一父节点下的兄弟顺序，布局按它排列 */
+  sortOrder: number;
+  /** 逻辑图一级分支的固定侧；null 表示按两侧高度自动分配 */
+  side?: "LEFT" | "RIGHT" | null;
   createdAt: string;
 };
 
@@ -44,6 +48,8 @@ export type BoardShape = {
   y: number;
   width: number;
   height: number;
+  /** 纳管自由图形时保存的视觉属性（geo/color/fill/dash），切回树形图时还原 */
+  visual?: Record<string, string> | null;
 };
 
 /** 分享画布的只读数据（标题 + 图形节点 + 连线 + 快照 + 布局风格） */

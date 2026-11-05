@@ -35,6 +35,10 @@ public class Board extends BaseEntity {
     @Column(name = "layout_style", nullable = false, length = 16)
     private BoardLayoutStyle layoutStyle = BoardLayoutStyle.RADIAL;
 
+    /** 树形图排列记忆 JSON：切到逻辑图前保存，切回且结构未变时还原 */
+    @Column(name = "radial_layout_json")
+    private String radialLayoutJson;
+
     protected Board() {
     }
 
@@ -59,8 +63,16 @@ public class Board extends BaseEntity {
         return layoutStyle;
     }
 
+    public String getRadialLayoutJson() {
+        return radialLayoutJson;
+    }
+
     public void changeLayoutStyle(BoardLayoutStyle layoutStyle) {
         this.layoutStyle = layoutStyle;
+    }
+
+    public void rememberRadialLayout(String radialLayoutJson) {
+        this.radialLayoutJson = radialLayoutJson;
     }
 
     public void rename(String title) {

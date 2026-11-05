@@ -66,7 +66,7 @@ public class BoardCheckpointService {
     public void capture(AiTask task) {
         UUID boardId = task.getBoardId();
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
         List<Asset> assets = assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId,
                 task.getOwnerId());
         String snapshotJson = snapshotRepository.findFirstByBoardIdOrderByCreatedAtDesc(boardId)

@@ -1,6 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
@@ -15,6 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.BoardService;
@@ -35,13 +39,15 @@ public class ShapeController {
     private final BoardService boardService;
     private final ShapeEditService shapeEditService;
     private final CurrentUserService currentUserService;
+    private final ObjectMapper objectMapper;
 
     public ShapeController(ShapeRepository shapeRepository, BoardService boardService,
-            ShapeEditService shapeEditService, CurrentUserService currentUserService) {
+            ShapeEditService shapeEditService, CurrentUserService currentUserService, ObjectMapper objectMapper) {
         this.shapeRepository = shapeRepository;
         this.boardService = boardService;
         this.shapeEditService = shapeEditService;
         this.currentUserService = currentUserService;
+        this.objectMapper = objectMapper;
     }
 
     /** 在指定父节点下新建子节点（body: { parentId, title }），并重排所属分量 */
@@ -75,6 +81,10 @@ public class ShapeController {
                 .orElseThrow(() -> new NotFoundException("图形节点不存在"));
         boardService.getOwned(shape.getBoardId(), user);
         shape.applyUserEdit(body.title(), body.x(), body.y(), body.width(), body.height());
+        // 视觉属性只在前端显式提交时更新；null 表示本次不改
+        if (body.visual() != null) {
+            shape.applyVisual(writeVisual(body.visual()));
+        }
         Shape saved = shapeRepository.save(shape);
         log.info("更新图形节点：shapeId={} title={} pos=({},{}) size={}x{}", shapeId, saved.getTitle(),
                 saved.getX(), saved.getY(), saved.getWidth(), saved.getHeight());
@@ -107,19 +117,46 @@ public class ShapeController {
             double x,
             double y,
             double width,
-            double height) {
+            double height,
+            Map<String, String> visual) {
+
+        /** 仅用于解析库里存的视觉属性 JSON，字段都是字符串，不需要全局序列化配置 */
+        private static final ObjectMapper VISUAL_MAPPER = new ObjectMapper();
 
         public static ShapeResponse from(Shape shape) {
             return new ShapeResponse(shape.getId(), shape.getBoardId(), shape.getTitle(), shape.getShape(),
-                    shape.getLevel(), shape.getX(), shape.getY(), shape.getWidth(), shape.getHeight());
+                    shape.getLevel(), shape.getX(), shape.getY(), shape.getWidth(), shape.getHeight(),
+                    readVisual(shape.getVisualJson()));
+        }
+
+        private static Map<String, String> readVisual(String visualJson) {
+            if (visualJson == null || visualJson.isBlank()) {
+                return null;
+            }
+            try {
+                return VISUAL_MAPPER.readValue(visualJson, new TypeReference<Map<String, String>>() {
+                });
+            } catch (JsonProcessingException exception) {
+                return null;
+            }
         }
     }
 
-    /** 用户编辑图形节点的请求体（标题/位置/尺寸） */
-    public record ShapeUpdateRequest(String title, double x, double y, double width, double height) {
+    /** 用户编辑图形节点的请求体（标题/位置/尺寸/视觉属性） */
+    public record ShapeUpdateRequest(String title, double x, double y, double width, double height,
+            Map<String, String> visual) {
     }
 
     /** 新建子节点的请求体：父节点 id + 可选标题 */
     public record ShapeCreateRequest(UUID parentId, String title) {
+    }
+
+    /** 视觉属性序列化：写入前转成库里的 JSON 文本 */
+    private String writeVisual(Map<String, String> visual) {
+        try {
+            return objectMapper.writeValueAsString(visual);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalArgumentException("视觉属性格式不正确", exception);
+        }
     }
 }

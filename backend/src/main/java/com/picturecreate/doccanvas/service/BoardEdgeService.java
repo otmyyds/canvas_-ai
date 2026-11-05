@@ -29,6 +29,6 @@ public class BoardEdgeService {
     public List<BoardEdge> list(UUID boardId, CurrentUser user) {
         boardService.getOwned(boardId, user);
         log.info("查询连线列表：boardId={}", boardId);
-        return edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        return edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
     }
 }

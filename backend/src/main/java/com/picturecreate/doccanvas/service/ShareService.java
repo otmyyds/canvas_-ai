@@ -75,7 +75,7 @@ public class ShareService {
         List<ShapeResponse> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(link.getBoardId()).stream()
                 .map(ShapeResponse::from)
                 .toList();
-        List<BoardEdgeResponse> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(link.getBoardId()).stream()
+        List<BoardEdgeResponse> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(link.getBoardId()).stream()
                 .map(BoardEdgeResponse::from)
                 .toList();
         String snapshotJson = snapshotRepository.findFirstByBoardIdOrderByCreatedAtDesc(link.getBoardId())

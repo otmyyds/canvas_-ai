@@ -41,8 +41,19 @@ import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
-import { shapeStateFingerprint, syncGraphVisuals } from "@/lib/whiteboard/shape-render";
+import {
+  deleteShapesForced,
+  geoVisualFingerprint,
+  shapeStateFingerprint,
+  syncGraphVisuals
+} from "@/lib/whiteboard/shape-render";
 import { whiteboardBindingUtils, whiteboardShapeUtils } from "@/lib/whiteboard/mindmap-shapes";
+import {
+  clearReorderCommit,
+  setReorderCommit,
+  setStructureContext
+} from "@/lib/whiteboard/logic-reorder";
+import { adoptFreeStructures } from "@/lib/whiteboard/structure-adoption";
 
 /** 匹配 AI 元素的真实 id（标准 uuid），用于区分 AI 生成的图形节点与手动绘制的元素 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -83,8 +94,16 @@ type WhiteboardEditorProps = {
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
-/** 回写后端的图形节点编辑体（标题/位置/尺寸） */
-type ShapeUpdate = { title: string; x: number; y: number; width: number; height: number };
+/** 回写后端的图形节点编辑体（标题/位置/尺寸/视觉属性） */
+type ShapeUpdate = {
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** geo 的视觉属性；mindmap-node 传 null 表示不改 */
+  visual: Record<string, string> | null;
+};
 
 const SHAPE_TYPES: Array<{ value: string; label: string; icon: string }> = [
   { value: "rectangle", label: "矩形", icon: "▭" },
@@ -208,10 +227,11 @@ export function WhiteboardEditor({
       if (!UUID_PATTERN.test(rawId)) {
         continue;
       }
-      const props = shape.props as { w?: number; h?: number };
+      const props = shape.props as { w?: number; h?: number; geo?: string; color?: string; fill?: string; dash?: string };
       const title = editor.getShapeUtil(shape).getText(shape) ?? "";
+      const visual = shape.type === "geo" ? geoVisualFingerprint(props) : "";
       syncedShapeRef.current.set(rawId,
-        shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title));
+        shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title, visual));
     }
   }, []);
 
@@ -575,7 +595,8 @@ export function WhiteboardEditor({
     }
     const shapeIds = [...editor.getCurrentPageShapeIds()];
     if (shapeIds.length > 0) {
-      editor.deleteShapes(shapeIds);
+      // 结构连线已锁定，清空必须忽略锁
+      deleteShapesForced(editor, shapeIds);
     }
     editor.clearHistory();
     setMessage("画布已清空");
@@ -608,9 +629,14 @@ export function WhiteboardEditor({
       if (!UUID_PATTERN.test(rawId)) {
         continue;
       }
-      const props = shape.props as { w?: number; h?: number };
+      const props = shape.props as { w?: number; h?: number; geo?: string; color?: string; fill?: string; dash?: string };
       const title = editor.getShapeUtil(shape).getText(shape) ?? "";
-      const fingerprint = shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title);
+      const isGeo = shape.type === "geo";
+      const visual = isGeo
+        ? { geo: props.geo ?? "", color: props.color ?? "", fill: props.fill ?? "", dash: props.dash ?? "" }
+        : null;
+      const fingerprint = shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title,
+        visual ? geoVisualFingerprint(visual) : "");
       const prev = syncedShapeRef.current.get(rawId);
       syncedShapeRef.current.set(rawId, fingerprint);
       if (prev === undefined || prev === fingerprint) {
@@ -621,7 +647,8 @@ export function WhiteboardEditor({
         x: shape.x,
         y: shape.y,
         width: props.w ?? 0,
-        height: props.h ?? 0
+        height: props.h ?? 0,
+        visual
       });
     }
     if (pendingShapeSyncRef.current.size > 0 && shapeSyncTimerRef.current == null) {
@@ -653,6 +680,30 @@ export function WhiteboardEditor({
       }
     };
   }, [collectUserEdits, store]);
+
+  /**
+   * 逻辑图拖动排序的上下文与提交回调：
+   * 拖拽过程中按当前结构（后端 shapes/edges）计算目标顺序，松手后提交并刷新画布。
+   */
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    setStructureContext(editor, { shapes, edges });
+    setReorderCommit(editor, (plan) => {
+      void api.reorderChildren(boardId, {
+        parentId: plan.parentId,
+        children: plan.children.map((child) => ({ edgeId: child.edgeId, side: child.side }))
+      })
+        .then(() => onRefresh())
+        .catch((err) => setMessage(err instanceof Error ? err.message : "调整顺序失败"));
+    });
+    return () => clearReorderCommit(editor);
+  }, [boardId, edges, editorReady, onRefresh, shapes]);
 
   const onMount = useCallback((editor: TldrawEditor) => {
     editorRef.current = editor;
@@ -969,6 +1020,14 @@ export function WhiteboardEditor({
       }
       setLayoutBusy(true);
       try {
+        // 切换前先纳管画布上手绘的图形与箭头，让它们参与布局
+        const editor = editorRef.current;
+        if (editor) {
+          const adopted = await adoptFreeStructures(editor, boardId, { shapes, edges });
+          if (adopted > 0) {
+            setMessage(`已纳管 ${adopted} 个自由图形，正在按新布局重排`);
+          }
+        }
         await onLayoutStyleChange(style);
         setMessage(style === "RADIAL" ? "已切换为树形图布局" : "已切换为逻辑图布局");
       } catch (err) {
@@ -977,7 +1036,7 @@ export function WhiteboardEditor({
         setLayoutBusy(false);
       }
     },
-    [onLayoutStyleChange, layoutBusy]
+    [boardId, edges, layoutBusy, onLayoutStyleChange, shapes]
   );
 
   const exportPng = useCallback(async () => {
@@ -1270,7 +1329,8 @@ function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: B
     }
   }
   if (toDelete.length > 0) {
-    editor.deleteShapes(toDelete);
+    // 后端已删除的结构连线仍是锁定元素，普通删除会跳过
+    deleteShapesForced(editor, toDelete);
   }
   return toDelete.length;
 }

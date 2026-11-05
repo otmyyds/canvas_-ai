@@ -17,6 +17,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturecreate.doccanvas.config.AppProperties;
 import com.picturecreate.doccanvas.domain.Board;
 import com.picturecreate.doccanvas.domain.BoardEdge;
@@ -55,13 +57,35 @@ public class BoardActionApplier {
     private final BoardEdgeRepository edgeRepository;
     private final BoardRepository boardRepository;
     private final AppProperties properties;
+    private final ObjectMapper objectMapper;
 
     public BoardActionApplier(ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
-            BoardRepository boardRepository, AppProperties properties) {
+            BoardRepository boardRepository, AppProperties properties, ObjectMapper objectMapper) {
         this.shapeRepository = shapeRepository;
         this.edgeRepository = edgeRepository;
         this.boardRepository = boardRepository;
         this.properties = properties;
+        this.objectMapper = objectMapper;
+    }
+
+    /** 用户调整同级顺序时提交的一项：连线 id + 逻辑图一级分支的目标侧 */
+    public record ChildOrder(UUID edgeId, String side) {
+    }
+
+    /** 纳管画布上手绘的自由图形：本地 tldraw id + 节点内容 */
+    public record AdoptNode(String localId, String title, String shape, int level, double x, double y,
+            double width, double height, Map<String, String> visual) {
+    }
+
+    /** 纳管画布上手绘的自由连线：两端为本地 tldraw id */
+    public record AdoptEdge(String fromLocalId, String toLocalId) {
+    }
+
+    /** 纳管结果：本地 id → 落库后的节点，供前端替换本地图形 */
+    public record AdoptedNode(String localId, Shape shape) {
+    }
+
+    public record AdoptionResult(List<AdoptedNode> nodes, List<BoardEdge> edges) {
     }
 
     /**
@@ -78,6 +102,8 @@ public class BoardActionApplier {
         Board board = boardRepository.findByIdForUpdate(boardId)
                 .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
         Map<String, UUID> shapeIdMap = new HashMap<>();
+        // 本批新连线追加到各父节点末尾，保持 AI 给出的兄弟顺序
+        Map<UUID, Integer> nextSortOrders = nextSortOrders(boardId);
         List<ApplyReport.CreatedShape> createdNodes = new ArrayList<>();
         Set<UUID> createdIds = new HashSet<>();
         Set<UUID> updatedIds = new HashSet<>();
@@ -102,7 +128,7 @@ public class BoardActionApplier {
         for (BoardAction action : actions) {
             switch (action) {
                 case BoardAction.Connect connect -> {
-                    if (connect(boardId, connect, shapeIdMap)) {
+                    if (connect(boardId, connect, shapeIdMap, nextSortOrders)) {
                         createdEdges++;
                     } else {
                         skipped++;
@@ -238,6 +264,152 @@ public class BoardActionApplier {
         }
         log.info("删除节点：boardId={} shapeId={} 连带删除={} mindmap={}", boardId, shapeId, deletedIds.size(), mindmap);
         return deletedIds;
+    }
+
+    /**
+     * 用户调整某个节点的子节点顺序（逻辑图一级分支同时提交左右侧）。
+     * 逐项写入 sortOrder/side 后重排该节点所在分量，整块图按原包围盒左上角锚定。
+     * 调用方负责开启事务。
+     */
+    @Transactional
+    public List<BoardEdge> reorderChildren(UUID boardId, UUID parentId, List<ChildOrder> children) {
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Shape parent = shapeRepository.findById(parentId)
+                .filter(shape -> shape.getBoardId().equals(boardId))
+                .orElseThrow(() -> new IllegalArgumentException("父节点不存在：" + parentId));
+        if (children == null || children.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, BoardEdge> byId = new LinkedHashMap<>();
+        for (ChildOrder order : children) {
+            if (order == null || order.edgeId() == null || byId.containsKey(order.edgeId())) {
+                continue;
+            }
+            BoardEdge edge = edgeRepository.findById(order.edgeId())
+                    .filter(found -> found.getBoardId().equals(boardId)
+                            && found.getFromShapeId().equals(parentId))
+                    .orElseThrow(() -> new IllegalArgumentException("连线不属于该父节点：" + order.edgeId()));
+            byId.put(order.edgeId(), edge);
+        }
+        if (byId.isEmpty()) {
+            return List.of();
+        }
+        // side 只对一级分支有意义，其余层级统一清空
+        boolean rootBranches = parent.getLevel() == 0;
+        List<BoardEdge> ordered = new ArrayList<>();
+        int index = 1;
+        for (ChildOrder order : children) {
+            if (order == null) {
+                continue;
+            }
+            BoardEdge edge = byId.get(order.edgeId());
+            if (edge == null) {
+                continue;
+            }
+            edge.reorder(index++, rootBranches ? normalizeSide(order.side()) : null);
+            ordered.add(edge);
+        }
+        edgeRepository.flush();
+
+        Graph graph = loadGraph(boardId);
+        List<String> component = componentOf(graph, parentId.toString());
+        double[] old = boundsOf(graph, component);
+        Map<String, double[]> positions = layoutComponent(board, graph, component);
+        Map<String, double[]> sizes = sizesOf(graph, component);
+        double[] box = bounds(positions, sizes);
+        placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+        log.info("调整同级顺序：boardId={} parentId={} 子节点={}", boardId, parentId, ordered.size());
+        return ordered;
+    }
+
+    /**
+     * 纳管画布上手绘的自由图形与连线：按前端给出的坐标尺寸原样落库，不触发布局。
+     * 前端随后删除本地图形，改由结构同步统一渲染；调用方负责开启事务。
+     */
+    @Transactional
+    public AdoptionResult adopt(UUID boardId, List<AdoptNode> nodes, List<AdoptEdge> edges) {
+        boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        if (nodes == null || nodes.isEmpty()) {
+            return new AdoptionResult(List.of(), List.of());
+        }
+        Map<UUID, Integer> nextSortOrders = nextSortOrders(boardId);
+        Map<String, Shape> createdByLocalId = new LinkedHashMap<>();
+        List<AdoptedNode> adoptedNodes = new ArrayList<>();
+        for (AdoptNode node : nodes) {
+            if (node == null || node.localId() == null || node.localId().isBlank()
+                    || createdByLocalId.containsKey(node.localId())) {
+                continue;
+            }
+            Shape shape = adoptNode(boardId, node);
+            shapeRepository.save(shape);
+            createdByLocalId.put(node.localId(), shape);
+            adoptedNodes.add(new AdoptedNode(node.localId(), shape));
+        }
+        List<BoardEdge> adoptedEdges = new ArrayList<>();
+        if (edges != null) {
+            for (AdoptEdge edge : edges) {
+                if (edge == null) {
+                    continue;
+                }
+                UUID fromId = resolveAdoptId(edge.fromLocalId(), createdByLocalId, boardId);
+                UUID toId = resolveAdoptId(edge.toLocalId(), createdByLocalId, boardId);
+                if (fromId == null || toId == null || fromId.equals(toId)) {
+                    continue;
+                }
+                BoardEdge created = new BoardEdge(boardId, fromId, toId, null, "curve", null, 2);
+                int sortOrder = nextSortOrders.getOrDefault(fromId, 1);
+                nextSortOrders.put(fromId, sortOrder + 1);
+                created.reorder(sortOrder, null);
+                edgeRepository.save(created);
+                adoptedEdges.add(created);
+            }
+        }
+        log.info("纳管自由图形：boardId={} 节点={} 连线={}", boardId, adoptedNodes.size(), adoptedEdges.size());
+        return new AdoptionResult(adoptedNodes, adoptedEdges);
+    }
+
+    private Shape adoptNode(UUID boardId, AdoptNode node) {
+        String title = node.title() == null || node.title().isBlank() ? "节点" : node.title().trim();
+        NodeSizeEstimator.NodeSize estimate = NodeSizeEstimator.estimate(title);
+        double width = node.width() > 0 ? node.width() : estimate.width();
+        double height = node.height() > 0 ? node.height() : estimate.height();
+        Shape shape = new Shape(boardId, title,
+                node.shape() == null || node.shape().isBlank() ? "rectangle" : node.shape(),
+                Math.max(node.level(), 0), node.x(), node.y(), width, height);
+        if (node.visual() != null && !node.visual().isEmpty()) {
+            try {
+                shape.applyVisual(objectMapper.writeValueAsString(node.visual()));
+            } catch (JsonProcessingException exception) {
+                throw new IllegalStateException("视觉属性序列化失败", exception);
+            }
+        }
+        return shape;
+    }
+
+    /** 纳管连线端点：优先匹配本次新纳管的本地 id，其次按已有节点 UUID 解析 */
+    private UUID resolveAdoptId(String localId, Map<String, Shape> createdByLocalId, UUID boardId) {
+        if (localId == null || localId.isBlank()) {
+            return null;
+        }
+        Shape created = createdByLocalId.get(localId);
+        if (created != null) {
+            return created.getId();
+        }
+        UUID existing = parseUuid(localId);
+        if (existing == null) {
+            return null;
+        }
+        return nodeExistsInBoard(existing, boardId) ? existing : null;
+    }
+
+    private String normalizeSide(String side) {
+        if (side == null) {
+            return null;
+        }
+        String value = side.trim().toUpperCase(java.util.Locale.ROOT);
+        return "LEFT".equals(value) || "RIGHT".equals(value) ? value : null;
     }
 
     /** 节点所在的无向连通分量；找不到时返回只含自身 */
@@ -423,9 +595,19 @@ public class BoardActionApplier {
         }
         int maxNodes = properties.ai().layout().radialMaxNodes();
         boolean radial = board.getLayoutStyle() == BoardLayoutStyle.RADIAL && graph.shapes().size() <= maxNodes;
-        return radial
-                ? GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels)
-                : GraphLayoutService.layoutLogicChart(component, componentEdges, sizes, levels);
+        if (radial) {
+            return GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels);
+        }
+        // 逻辑图一级分支的固定侧：由用户拖动排序时写入，未写入的按两侧高度自动分配
+        Set<String> componentSet = new HashSet<>(component);
+        Map<String, String> sideByChild = new HashMap<>();
+        for (BoardEdge edge : graph.edges()) {
+            String to = edge.getToShapeId().toString();
+            if (edge.getSide() != null && componentSet.contains(to)) {
+                sideByChild.put(to, edge.getSide());
+            }
+        }
+        return GraphLayoutService.layoutLogicChart(component, componentEdges, sizes, levels, sideByChild);
     }
 
     /** 新建节点；标题/类型缺省时给出可用默认值，尺寸按标题自适应且不小于动作给出的尺寸 */
@@ -473,7 +655,8 @@ public class BoardActionApplier {
     }
 
     /** 连线：端点解析为真实 id，并校验两端都属于当前画布；返回是否真正生效 */
-    private boolean connect(UUID boardId, BoardAction.Connect action, Map<String, UUID> shapeIdMap) {
+    private boolean connect(UUID boardId, BoardAction.Connect action, Map<String, UUID> shapeIdMap,
+            Map<UUID, Integer> nextSortOrders) {
         UUID fromShapeId = resolveShapeId(action.fromShapeId(), shapeIdMap);
         UUID toShapeId = resolveShapeId(action.toShapeId(), shapeIdMap);
         if (fromShapeId == null || toShapeId == null || fromShapeId.equals(toShapeId)) {
@@ -483,9 +666,22 @@ public class BoardActionApplier {
             log.warn("忽略悬空连线：{} -> {}", fromShapeId, toShapeId);
             return false;
         }
-        edgeRepository.save(new BoardEdge(boardId, fromShapeId, toShapeId, action.label(),
-                action.style(), action.color(), action.weight() == null ? 2 : action.weight()));
+        BoardEdge edge = new BoardEdge(boardId, fromShapeId, toShapeId, action.label(),
+                action.style(), action.color(), action.weight() == null ? 2 : action.weight());
+        int sortOrder = nextSortOrders.getOrDefault(fromShapeId, 1);
+        nextSortOrders.put(fromShapeId, sortOrder + 1);
+        edge.reorder(sortOrder, null);
+        edgeRepository.save(edge);
         return true;
+    }
+
+    /** 每个父节点下一个可用的兄弟顺序：已有最大 sortOrder + 1，没有子节点时从 1 开始 */
+    private Map<UUID, Integer> nextSortOrders(UUID boardId) {
+        Map<UUID, Integer> next = new HashMap<>();
+        for (BoardEdge edge : edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId)) {
+            next.merge(edge.getFromShapeId(), edge.getSortOrder() + 1, Math::max);
+        }
+        return next;
     }
 
     /** 删除节点及其连线；只允许删除当前画布的节点；返回是否真正生效 */
@@ -536,7 +732,7 @@ public class BoardActionApplier {
     /** 读取整张图的节点、连线、无向邻接表与弱连通分量 */
     private Graph loadGraph(UUID boardId) {
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
-        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
+        List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
         Map<String, Shape> shapeById = new LinkedHashMap<>();
         // 建立无向邻接表
         Map<String, Set<String>> undirected = new LinkedHashMap<>();

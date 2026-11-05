@@ -206,8 +206,45 @@ export const api = {
   /** 回写用户手动编辑（拖动位置/改标题/改尺寸），统一 tldraw 快照与 shapes 表 */
   updateShape: (
     shapeId: string,
-    body: { title: string; x: number; y: number; width: number; height: number }
+    body: {
+      title: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      /** 视觉属性；不传表示本次不改 */
+      visual?: Record<string, string> | null;
+    }
   ) => request<BoardShape>(`/api/shapes/${shapeId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  /** 调整某个节点的子节点顺序；逻辑图一级分支同时提交左右侧，后端重排该分量 */
+  reorderChildren: (
+    boardId: string,
+    body: { parentId: string; children: { edgeId: string; side?: "LEFT" | "RIGHT" | null }[] }
+  ) => request<BoardEdge[]>(`/api/boards/${boardId}/structure/order`, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  }),
+  /** 纳管画布上手绘的图形与连线（原坐标尺寸落库，不触发布局） */
+  adoptStructure: (
+    boardId: string,
+    body: {
+      nodes: {
+        localId: string;
+        title: string;
+        shape?: string;
+        level?: number;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        visual?: Record<string, string>;
+      }[];
+      edges: { fromLocalId: string; toLocalId: string }[];
+    }
+  ) => request<{ nodes: { localId: string; shape: BoardShape }[]; edges: BoardEdge[] }>(
+    `/api/boards/${boardId}/structure/adopt`,
+    { method: "POST", body: JSON.stringify(body) }
+  ),
 
   // ===== AI 任务 =====
   listTasks: (boardId: string) => request<AiTask[]>(`/api/boards/${boardId}/ai-tasks`),

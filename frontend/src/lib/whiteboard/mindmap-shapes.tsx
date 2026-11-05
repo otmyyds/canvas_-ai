@@ -26,8 +26,16 @@ import type {
   TLBaseBinding,
   TLBaseShape,
   TLRichText,
-  TLShapeId
+  TLShapeId,
+  TLShapePartial
 } from "tldraw";
+import {
+  commitReorder,
+  computeReorder,
+  hideReorderIndicator,
+  showReorderIndicator
+} from "@/lib/whiteboard/logic-reorder";
+import type { ReorderPlan } from "@/lib/whiteboard/logic-reorder";
 
 /**
  * 逻辑图（Freeplane fork 风格）专用的自定义图形：
@@ -101,8 +109,11 @@ function MindmapNodeLabel({ editor, shape }: { editor: TldrawEditor; shape: Mind
   );
 }
 
-/** 拖拽中的子树：记录后代节点在拖拽开始时的位置 */
-type SubtreeDrag = { positions: Map<TLShapeId, { x: number; y: number }> };
+/** 拖拽中的子树：记录后代节点在拖拽开始时的位置，以及实时计算的排序结果 */
+type SubtreeDrag = {
+  positions: Map<TLShapeId, { x: number; y: number }>;
+  plan: ReorderPlan | null;
+};
 const subtreeDrags = new WeakMap<TldrawEditor, SubtreeDrag>();
 
 /**
@@ -142,7 +153,10 @@ function collectDescendantIds(editor: TldrawEditor, rootId: TLShapeId): TLShapeI
   return result;
 }
 
-/** 拖拽开始时记录子树位置；多选或没有后代时不跟随 */
+/**
+ * 拖拽开始时记录子树位置；多选时为 null（不整棵跟随，也不参与排序）。
+ * 叶子节点也要记录：逻辑图里它的拖动等价于排序，松手时可能需要还原。
+ */
 function beginSubtreeDrag(editor: TldrawEditor, shape: MindmapNodeShape): SubtreeDrag | null {
   if (editor.getSelectedShapeIds().length !== 1) {
     return null;
@@ -158,7 +172,7 @@ function beginSubtreeDrag(editor: TldrawEditor, shape: MindmapNodeShape): Subtre
       positions.set(id, { x: descendant.x, y: descendant.y });
     }
   }
-  return positions.size > 0 ? { positions } : null;
+  return { positions, plan: null };
 }
 
 /** 按拖拽总位移移动后代节点，连线由绑定的重算负责跟随 */
@@ -223,7 +237,11 @@ export class MindmapNodeShapeUtil extends BaseBoxShapeUtil<MindmapNodeShape> {
     return false;
   }
 
-  /** 拖动 fork 节点时整棵子树跟随，避免父子连线被拉断 */
+  /**
+   * 逻辑图固定格式：节点不能自由移动。
+   * 拖动时整棵子树跟随预览，同时按指针位置计算同级排序并显示插入线；
+   * 松手提交排序，位置没有变化则还原到原位。
+   */
   onTranslateStart(shape: MindmapNodeShape): void {
     const drag = beginSubtreeDrag(this.editor, shape);
     if (drag) {
@@ -235,13 +253,33 @@ export class MindmapNodeShapeUtil extends BaseBoxShapeUtil<MindmapNodeShape> {
 
   onTranslate(initial: MindmapNodeShape, current: MindmapNodeShape): void {
     moveSubtree(this.editor, initial, current);
+    const drag = subtreeDrags.get(this.editor);
+    if (!drag) {
+      return;
+    }
+    drag.plan = computeReorder(this.editor, current);
+    showReorderIndicator(this.editor, drag.plan);
   }
 
-  onTranslateEnd(): void {
+  onTranslateEnd(initial: MindmapNodeShape): TLShapePartial<MindmapNodeShape> | void {
+    hideReorderIndicator();
+    const drag = subtreeDrags.get(this.editor);
+    if (!drag) {
+      return;
+    }
+    if (drag.plan?.changed) {
+      subtreeDrags.delete(this.editor);
+      commitReorder(this.editor, drag.plan);
+      return;
+    }
+    // 顺序没变：子树与自身都回到原位，节点位置始终由后端布局决定
+    resetSubtree(this.editor);
     subtreeDrags.delete(this.editor);
+    return { id: initial.id, type: "mindmap-node", x: initial.x, y: initial.y };
   }
 
   onTranslateCancel(): void {
+    hideReorderIndicator();
     resetSubtree(this.editor);
     subtreeDrags.delete(this.editor);
   }
@@ -459,13 +497,16 @@ export function updateMindmapEdgeGeometry(editor: TldrawEditor, edgeShapeId: TLS
   if (sameProps && Math.abs(edgeShape.x - minX) < 0.01 && Math.abs(edgeShape.y - minY) < 0.01) {
     return false;
   }
-  editor.updateShape<MindmapEdgeShape>({
-    id: edgeShapeId,
-    type: "mindmap-edge",
-    x: minX,
-    y: minY,
-    props
-  });
+  // 结构连线是锁定元素：updateShape 默认跳过锁定图形，几何写回必须显式忽略锁
+  editor.run(() => {
+    editor.updateShape<MindmapEdgeShape>({
+      id: edgeShapeId,
+      type: "mindmap-edge",
+      x: minX,
+      y: minY,
+      props
+    });
+  }, { ignoreShapeLock: true });
   return true;
 }
 

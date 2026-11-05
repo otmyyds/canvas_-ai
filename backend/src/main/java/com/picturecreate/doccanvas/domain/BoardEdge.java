@@ -43,6 +43,14 @@ public class BoardEdge extends BaseEntity {
     @Column(nullable = false)
     private int weight = 2;
 
+    /** 同一父节点下的兄弟顺序：布局按它排序，0 表示未手动排序 */
+    @Column(name = "sort_order", nullable = false)
+    private int sortOrder = 0;
+
+    /** 逻辑图一级分支的左右侧：LEFT / RIGHT，NULL 表示按两侧高度自动分配 */
+    @Column(length = 8)
+    private String side;
+
     protected BoardEdge() {
     }
 
@@ -89,9 +97,23 @@ public class BoardEdge extends BaseEntity {
         return weight;
     }
 
+    public int getSortOrder() {
+        return sortOrder;
+    }
+
+    public String getSide() {
+        return side;
+    }
+
     /** 更新连线端点（连线重定向用） */
     public void updateEndpoints(UUID fromShapeId, UUID toShapeId) {
         this.fromShapeId = fromShapeId;
         this.toShapeId = toShapeId;
+    }
+
+    /** 设置同级顺序与逻辑图分侧；side 仅一级分支使用，其余传 null */
+    public void reorder(int sortOrder, String side) {
+        this.sortOrder = Math.max(sortOrder, 0);
+        this.side = side;
     }
 }
