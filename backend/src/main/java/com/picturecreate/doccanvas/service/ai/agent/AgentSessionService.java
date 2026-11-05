@@ -80,6 +80,7 @@ public class AgentSessionService {
             return SessionMemory.empty();
         }
         int window = Math.max(1, properties.ai().agent().sessionWindowMessages());
+        // 按时间升序获取会话内所有消息
         List<AgentMessage> all = messageRepository.findBySessionIdAndOwnerIdOrderByCreatedAtAsc(
                 session.getId(), session.getOwnerId());
         int from = Math.max(0, all.size() - window);

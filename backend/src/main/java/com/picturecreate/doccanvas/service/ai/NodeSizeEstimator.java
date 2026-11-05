@@ -64,6 +64,7 @@ public final class NodeSizeEstimator {
         return estimate(title, FORK_H_PADDING, FORK_V_PADDING, FORK_MIN_W, FORK_MIN_H, FORK_MAX_W);
     }
 
+    /** 计算出这个节点title占满一整行需要的宽度和高度 **/
     private static NodeSize estimate(String title, double hPadding, double vPadding, double minW,
             double minH, double maxW) {
         String text = title == null ? "" : title;

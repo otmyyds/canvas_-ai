@@ -99,7 +99,7 @@ public class LlmGateway {
             return execute(fallback, request, true);
         }
     }
-
+    // 执行一次逻辑模型调用，可重试
     private LlmResult execute(String model, LlmRequest request, boolean degraded) {
         try {
             return retryTemplate.execute(context -> doCall(model, request, degraded));
@@ -196,7 +196,7 @@ public class LlmGateway {
             throw exception;
         }
     }
-
+    // 轨迹写入成功则计入指标
     private LlmResult toResult(ChatResponse response, LlmRequest request, String requestedModel,
             boolean degraded, long startNanos, int prompt, int completion) {
         LlmOperation operation = request.operation();
@@ -225,12 +225,15 @@ public class LlmGateway {
         // 完整打印本次响应；工具循环的每一轮都会各打一次，便于还原模型实际看到了什么
         log.info("""
                 ===== 模型响应 =====
-                操作: {} | 模型: {} | 耗时: {}ms | 用量: prompt={} completion={} | 结束原因: {}
+                操作: {} | 模型: {} | 耗时: {}ms |
+                用量: prompt={} completion={} | 结束原因: {}
                 工具调用: {}
                 ----- content -----
                 {}
-                ====================""", operation, model, TimeUnit.NANOSECONDS.toMillis(latencyNanos),
-                prompt, completion, finishReason, toolCalls(message), content);
+                ====================""",
+                operation, model, TimeUnit.NANOSECONDS.toMillis(latencyNanos),
+                prompt, completion, finishReason, toolCalls(message),
+                content);
         notifyModelCall(request, new ModelCallTrace(operation, model, degraded,
                 toolNames(request.tools()), request.system(), request.user(), content, finishReason,
                 prompt, completion, TimeUnit.NANOSECONDS.toMillis(latencyNanos), null));

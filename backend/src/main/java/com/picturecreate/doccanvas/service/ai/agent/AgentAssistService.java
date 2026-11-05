@@ -78,17 +78,23 @@ public class AgentAssistService {
         AgentSession session = sessionService.open(boardId, user, sessionId, prompt);
         // 先读历史再写入本轮用户消息，避免当前需求在提示词里出现两次
         SessionMemory memory = sessionService.loadMemory(session.getId());
+        // 从配置中读取预检参数
         AppProperties.Agent agentConfig = properties.ai().agent();
+        // 创建开始运行的时间
         TaskRuntime runtime = TaskRuntime.start(null, agentConfig.preflightMaxModelCalls(),
                 agentConfig.preflightMaxToolCalls(), agentConfig.preflightMaxDurationSeconds(),
                 agentConfig.maxTotalTokens(), () -> {
                 }, null);
+        // 创建一个运行记录
         AgentRun run = recorder.startRun(null, session.getId(), null, user.id(), boardId, AgentRole.SUPERVISOR,
                 null, null);
         UUID runId = run.getId();
+        // 写入用户消息
         sessionService.appendUser(session.getId(), prompt, runId);
+        // 创建一个执行上下文
         AgentExecutionContext context = new AgentExecutionContext(null, boardId, user, session.getId(), runId,
                 AgentRole.SUPERVISOR, null, prompt, selectedShapeIds, runtime, null);
+        // 开始预检
         long startNanos = System.nanoTime();
         try {
             String system = promptCatalog.agentPreflightPrompt(boardId, toolRegistry.preflightToolNames(),
@@ -99,6 +105,7 @@ public class AgentAssistService {
                     recorder.modelCallListener(runId));
             log.info("预检开始：boardId={} sessionId={} runId={} 需求长度={} 选中节点={}", boardId,
                     session.getId(), runId, prompt.length(), selectedShapeIds.size());
+            // 统一调用模型
             LlmResult result = gateway.call(request);
             // 配额异常可能被工具调用层转成错误文本，此时模型仍会正常返回；在记账前把它还原成 429
             if (context.quotaError() != null) {

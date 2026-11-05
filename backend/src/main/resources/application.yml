@@ -81,9 +81,9 @@ app:
     llm:
       # 默认模型与降级模型；具体模型名通过请求级 OpenAiChatOptions 传入
       default-model: ${AI_MODEL_PLANNER:qwen-plus}
-      fallback-model: ${AI_MODEL_FALLBACK:qwen-turbo}
+      fallback-model: ${AI_MODEL_FALLBACK:qwen-max}
       operations:
-        # 预检也走 qwen-plus：当前账号 qwen-turbo 额度受限，直接 429
+        # 预检也走 qwen-plus
         preflight: ${AI_MODEL_PREFLIGHT:qwen-plus}
         agent: ${AI_MODEL_AGENT:qwen-plus}
         tool: ${AI_MODEL_TOOL:qwen-plus}
