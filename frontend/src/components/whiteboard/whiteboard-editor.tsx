@@ -15,6 +15,7 @@ import {
   Download,
   FileImage,
   FolderOpen,
+  GitBranch,
   Hand,
   Minus,
   MousePointer2,
@@ -366,7 +367,7 @@ export function WhiteboardEditor({
           editor.loadSnapshot(parsed.value.getStoreSnapshot());
           // 快照里的标题/尺寸可能落后于后端（AI 改过标题但没重新存过快照），此处对账；
           // 同时按当前布局风格把节点/连线转换成对应类型
-          const synced = syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
+          const synced = await syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
           // 快照可能残留已被后端删除的节点，清理掉避免刷新复活
           const removed = removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
           editor.clearHistory();
@@ -385,7 +386,7 @@ export function WhiteboardEditor({
         }
       }
 
-      const synced = syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
+      const synced = await syncGraphVisuals(editor, currentShapes, currentEdges, layoutStyle);
       removeOrphanShapes(editor, currentShapes, currentEdges, assetsRef.current);
       editor.clearHistory();
       editor.selectNone();
@@ -453,7 +454,7 @@ export function WhiteboardEditor({
         }
       }
       // 快照与后端表对账：补齐缺失节点、清理回退后已不存在的残留、恢复后端字段
-      syncGraphVisuals(editor, shapesRef.current, edgesRef.current, layoutStyle);
+      await syncGraphVisuals(editor, shapesRef.current, edgesRef.current, layoutStyle);
       removeOrphanShapes(editor, shapesRef.current, edgesRef.current, assetsRef.current);
       await mergeAssets(editor, assetsRef.current);
       if (cancelled) {
@@ -486,18 +487,28 @@ export function WhiteboardEditor({
     }
 
     // 增量补齐后端新增的图形节点/连线；已有节点的数值由下一条 canvasRevision 对账 effect 负责
-    const synced = syncGraphVisuals(editor, shapes, edges, layoutStyle, { updateExisting: false });
-    // 后端已删除、但 tldraw 快照里还残留的图形节点/连线需一并清理，
-    // 否则下次刷新时快照会把已删节点"复活"
-    const removed = removeOrphanShapes(editor, shapes, edges, assets);
-    if (synced > 0 || removed > 0) {
-      setMessage(
-        synced > 0
-          ? `已同步 ${synced} 个图形元素到画布`
-          : `已清理 ${removed} 个残留元素`
-      );
-      queueSave();
-    }
+    let cancelled = false;
+    const sync = async () => {
+      const synced = await syncGraphVisuals(editor, shapes, edges, layoutStyle, { updateExisting: false });
+      if (cancelled || !mountedRef.current) {
+        return;
+      }
+      // 后端已删除、但 tldraw 快照里还残留的图形节点/连线需一并清理，
+      // 否则下次刷新时快照会把已删节点"复活"
+      const removed = removeOrphanShapes(editor, shapes, edges, assets);
+      if (synced > 0 || removed > 0) {
+        setMessage(
+          synced > 0
+            ? `已同步 ${synced} 个图形元素到画布`
+            : `已清理 ${removed} 个残留元素`
+        );
+        queueSave();
+      }
+    };
+    void sync();
+    return () => {
+      cancelled = true;
+    };
   }, [boardId, canvasRevision, edges, editorReady, layoutStyle, queueSave, shapes]);
 
   // AI 任务完成后把新生成的图片资产并入画布
@@ -532,15 +543,25 @@ export function WhiteboardEditor({
     if (!editor) {
       return;
     }
-    const updated = syncGraphVisuals(editor, shapes, edges, layoutStyle, {
-      baseline: syncedShapeRef.current
-    });
-    if (updated > 0) {
-      // 同步后刷新回写基线，避免监听器把这些后端值当成用户编辑再写回去
-      seedSyncedShapes(editor);
-      setMessage(`已同步 ${updated} 个图形元素的样式`);
-      queueSave();
-    }
+    let cancelled = false;
+    const sync = async () => {
+      const updated = await syncGraphVisuals(editor, shapes, edges, layoutStyle, {
+        baseline: syncedShapeRef.current
+      });
+      if (cancelled || !mountedRef.current) {
+        return;
+      }
+      if (updated > 0) {
+        // 同步后刷新回写基线，避免监听器把这些后端值当成用户编辑再写回去
+        seedSyncedShapes(editor);
+        setMessage(`已同步 ${updated} 个图形元素的样式`);
+        queueSave();
+      }
+    };
+    void sync();
+    return () => {
+      cancelled = true;
+    };
   }, [canvasRevision, editorReady, shapes, edges, layoutStyle, boardId, queueSave, seedSyncedShapes]);
 
   // 清空画布：CLEAR_CANVAS 任务完成时清空 tldraw 全部元素，并保存空快照
@@ -746,6 +767,37 @@ export function WhiteboardEditor({
     []
   );
 
+  /** 在选中节点下新建子节点：后端负责建节点/连线/重排，前端重新拉取后由同步写回画布 */
+  const addChildNode = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const selected = editor.getSelectedShapeIds();
+    if (selected.length !== 1) {
+      setMessage("请先选中一个节点作为父节点");
+      return;
+    }
+    const shape = editor.getShape(selected[0]);
+    if (!shape || (shape.type !== "geo" && shape.type !== "mindmap-node")) {
+      setMessage("请先选中一个图形节点作为父节点");
+      return;
+    }
+    const parentId = String(selected[0]).replace(/^shape:/, "");
+    if (!UUID_PATTERN.test(parentId)) {
+      setMessage("该元素不是画布结构节点，无法新建子节点");
+      return;
+    }
+    const parentTitle = editor.getShapeUtil(shape).getText(shape) || "选中节点";
+    try {
+      const created = await api.createShape(boardId, { parentId, title: "新节点" });
+      await onRefresh();
+      setMessage(`已在「${parentTitle}」下新建节点：${created.title}`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "新建节点失败");
+    }
+  }, [boardId, onRefresh]);
+
   const addLine = useCallback(() => {
     setTool("line", "已切换到线条工具");
   }, [setTool]);
@@ -800,9 +852,13 @@ export function WhiteboardEditor({
       setMessage("请先选中要删除的元素");
       return;
     }
+    // 结构连线（mindmap-edge 或后端连线对应的箭头）是节点结构的产物，不允许单独删除
+    const edgeIds = new Set(edges.map((edge) => edge.id));
     // 同步删除后端记录（图形节点 + 图片资产），避免刷新后 mergeMissingShapes/mergeAssets 让已删元素复活
     const shapeIdsToDelete: string[] = [];
     const assetIdsToDelete: string[] = [];
+    const deleteIds: (typeof ids)[number][] = [];
+    let blockedEdges = 0;
     for (const id of ids) {
       const shape = editor.getShape(id);
       if (!shape) {
@@ -811,32 +867,48 @@ export function WhiteboardEditor({
       // shape.id 是 "shape:<uuid>" 格式，去掉前缀取真实 UUID
       const rawId = String(id).replace(/^shape:/, "");
       if (!UUID_PATTERN.test(rawId)) {
+        deleteIds.push(id);
         continue;
       }
       // 图形节点（思维导图/流程图节点，含逻辑图 fork 节点）→ 删 shapes 表记录
       if (shape.type === "geo" || shape.type === "mindmap-node") {
         shapeIdsToDelete.push(rawId);
+        deleteIds.push(id);
       }
       // 图片（AI 生成资产）→ 删 assets 表记录 + RustFS 对象
       else if (shape.type === "image") {
         assetIdsToDelete.push(rawId);
+        deleteIds.push(id);
+      }
+      // 结构连线只能通过删除节点移除
+      else if (shape.type === "mindmap-edge" || edgeIds.has(rawId)) {
+        blockedEdges++;
+      } else {
+        deleteIds.push(id);
       }
     }
+    if (deleteIds.length === 0) {
+      setMessage(blockedEdges > 0 ? "连线由结构决定，请删除节点" : "请先选中要删除的元素");
+      return;
+    }
     if (shapeIdsToDelete.length > 0) {
-      void Promise.allSettled(shapeIdsToDelete.map((shapeId) => api.deleteShape(shapeId)));
+      // 思维导图节点由后端连带删除子树和连线，删完重新拉取画布对账
+      void Promise.allSettled(shapeIdsToDelete.map((shapeId) => api.deleteShape(shapeId))).then(() => onRefresh());
     }
     if (assetIdsToDelete.length > 0) {
       void Promise.allSettled(assetIdsToDelete.map((assetId) => api.deleteAsset(boardId, assetId)));
     }
 
-    editor.deleteShapes(ids);
+    editor.deleteShapes(deleteIds);
     const syncedCount = shapeIdsToDelete.length + assetIdsToDelete.length;
     setMessage(
-      syncedCount > 0
-        ? `已删除 ${ids.length} 个元素（同步后端）`
-        : "已删除选中元素"
+      blockedEdges > 0
+        ? "连线由结构决定，已删除节点，连线随结构一起移除"
+        : syncedCount > 0
+          ? `已删除 ${deleteIds.length} 个元素（同步后端）`
+          : "已删除选中元素"
     );
-  }, [boardId]);
+  }, [boardId, edges, onRefresh]);
 
   // 全局 Delete/Backspace 删除选中的元素（hideUi 移除了 tldraw 内置快捷键）
   const deleteRef = useRef(deleteSelected);
@@ -1023,6 +1095,13 @@ export function WhiteboardEditor({
               </div>
             ) : null}
           </div>
+          <GhostButton
+            onClick={() => void addChildNode()}
+            title="在选中的节点下新建子节点"
+          >
+            <GitBranch className="h-4 w-4" />
+            节点
+          </GhostButton>
           <GhostButton onClick={addLine}>
             <Minus className="h-4 w-4" />
             线条

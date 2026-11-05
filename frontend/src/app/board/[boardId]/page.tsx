@@ -125,6 +125,15 @@ function BoardEditor({ boardId }: { boardId: string }) {
       .finally(() => setLoading(false));
   }, [loadAll]);
 
+  /**
+   * 手动刷新：重新拉取后端数据后递增 canvasRevision。
+   * 删除节点（后端会连带删子树并重排）与手动新建节点都靠这次完整同步把坐标/元素写回画布。
+   */
+  const refreshBoard = useCallback(async () => {
+    await loadAll();
+    setCanvasRevision((value) => value + 1);
+  }, [loadAll]);
+
   const onTaskEvent = useCallback(
     async (event: TaskEvent) => {
       if (event.boardId !== boardId) {
@@ -184,13 +193,17 @@ function BoardEditor({ boardId }: { boardId: string }) {
     return result;
   }
 
-  /** 切换思维导图排布：后端立即重排，重新拉取节点后由 canvasRevision 同步回 tldraw */
+  /**
+   * 切换思维导图排布：后端立即重排，重新拉取节点后由 canvasRevision 同步回 tldraw。
+   * 先取数据再一次性更新状态：提前 setBoard 会让 layoutStyle 先变、shapes/edges 还是旧的，
+   * 白板会拿旧坐标按新类型同步一轮，表现为节点错位。
+   */
   async function changeLayoutStyle(style: BoardLayoutStyle) {
     const updated = await api.updateBoardLayout(boardId, style);
-    setBoard(updated);
     const [edgeResult, shapeResult] = await Promise.all([api.listEdges(boardId), api.listShapes(boardId)]);
     setEdges(edgeResult);
     setShapes(shapeResult);
+    setBoard(updated);
     setCanvasRevision((value) => value + 1);
   }
 
@@ -285,7 +298,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           canvasRevision={canvasRevision}
           clearSignal={canvasClear}
           reloadSignal={canvasReload}
-          onRefresh={loadAll}
+          onRefresh={refreshBoard}
           onAssist={assist}
           onAbortTask={abortTask}
           onUploadFile={uploadFile}

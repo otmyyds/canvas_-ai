@@ -1,5 +1,5 @@
 import { createBindingId, createShapeId, toRichText } from "tldraw";
-import type { Editor as TldrawEditor, TLGeoShape, TLShapeId, TLShapePartial } from "@tldraw/editor";
+import type { Editor as TldrawEditor, TLArrowBinding, TLGeoShape, TLShapeId, TLShapePartial } from "@tldraw/editor";
 import type { BoardEdge, BoardLayoutStyle, BoardShape } from "@/lib/types";
 import {
   createMindmapEdgeBindings,
@@ -76,13 +76,26 @@ export type SyncGraphOptions = {
   updateExisting?: boolean;
 };
 
+type NodeType = "geo" | "mindmap-node";
+type EdgeType = "arrow" | "mindmap-edge";
+
+type PendingNode = { node: BoardShape; type: NodeType };
+type PendingEdge = { edge: BoardEdge; type: EdgeType; fromId: ShapeId; toId: ShapeId };
+
+/** 每个编辑器一条串行队列：两阶段转换期间不能插入另一轮同步，否则会拿到半成品状态 */
+const syncQueues = new WeakMap<TldrawEditor, Promise<number>>();
+
 /**
  * 把后端图形数据同步到 tldraw：创建缺失元素、转换类型、更新位置/尺寸/标题。
  * 类型由当前布局风格决定：
  * - LOGIC 且属于思维导图分量 → mindmap-node / mindmap-edge（Freeplane fork 风格）；
  * - 其他情况 → geo / arrow（原有样式）。
- * 先处理节点再处理连线，保证节点类型转换删掉的绑定会被重新建立。
- * 返回发生变更的元素数量。
+ *
+ * 同一 shape id 换类型时不能在同一帧里删了又建：tldraw 的图形组件按 id 复用 React fiber，
+ * 而 geo/arrow 与自定义 util 在 component 里调用的 hooks 数量不同，会抛 hooks 顺序错误并被
+ * 错误边界锁死。所以先删除类型不符的元素，等 React 提交卸载后，再按新类型重建。
+ *
+ * 同一编辑器上的调用会串行执行，返回发生变更的元素数量。
  */
 export function syncGraphVisuals(
   editor: TldrawEditor,
@@ -90,21 +103,49 @@ export function syncGraphVisuals(
   edges: BoardEdge[],
   layoutStyle: BoardLayoutStyle,
   options: SyncGraphOptions = {}
-): number {
+): Promise<number> {
+  const previous = syncQueues.get(editor) ?? Promise.resolve(0);
+  // 前一轮失败不影响后续同步
+  const next = previous.catch(() => 0).then(() => runSyncGraphVisuals(editor, shapes, edges, layoutStyle, options));
+  syncQueues.set(editor, next);
+  const cleanup = () => {
+    if (syncQueues.get(editor) === next) {
+      syncQueues.delete(editor);
+    }
+  };
+  void next.then(cleanup, cleanup);
+  return next;
+}
+
+async function runSyncGraphVisuals(
+  editor: TldrawEditor,
+  shapes: BoardShape[],
+  edges: BoardEdge[],
+  layoutStyle: BoardLayoutStyle,
+  options: SyncGraphOptions
+): Promise<number> {
   const { baseline, updateExisting = true } = options;
   const forkIds = collectForkNodeIds(shapes, edges, layoutStyle);
   const editingShapeId = editor.getEditingShapeId();
   const shapeIdByNode = new Map<string, ShapeId>();
+  const nodeIds = new Set(shapes.map((node) => node.id));
   let changed = 0;
+
+  // 阶段一：删除类型不符的元素并登记待建项；缺失的元素直接登记
+  const pendingNodes: PendingNode[] = [];
+  const pendingEdges: PendingEdge[] = [];
+  const deletedIds: TLShapeId[] = [];
+  const arrowBindingsToRestore: TLArrowBinding[] = [];
+  // 转换会删除选中元素，先记下来，重建后恢复选中状态
+  const selectedIds = new Set(editor.getSelectedShapeIds().map(String));
 
   for (const node of shapes) {
     const shapeId = createShapeId(node.id);
     shapeIdByNode.set(node.id, shapeId);
-    const desiredType = forkIds.has(node.id) ? "mindmap-node" : "geo";
+    const desiredType: NodeType = forkIds.has(node.id) ? "mindmap-node" : "geo";
     const existing = editor.getShape(shapeId);
     if (!existing) {
-      createGraphShape(editor, node, shapeId, desiredType);
-      changed++;
+      pendingNodes.push({ node, type: desiredType });
       continue;
     }
     if (existing.type !== desiredType) {
@@ -112,8 +153,11 @@ export function syncGraphVisuals(
       if (shapeId === editingShapeId) {
         continue;
       }
+      // 结构连线会随分量一起重建，用户手绘的箭头不在重建范围内，先记下绑定再恢复
+      arrowBindingsToRestore.push(...editor.getBindingsToShape<TLArrowBinding>(shapeId, "arrow"));
       editor.deleteShapes([shapeId]);
-      createGraphShape(editor, node, shapeId, desiredType);
+      deletedIds.push(shapeId);
+      pendingNodes.push({ node, type: desiredType });
       changed++;
       continue;
     }
@@ -124,27 +168,25 @@ export function syncGraphVisuals(
   }
 
   for (const edge of edges) {
-    const fromId = shapeIdByNode.get(edge.fromShapeId) ?? createShapeId(edge.fromShapeId);
-    const toId = shapeIdByNode.get(edge.toShapeId) ?? createShapeId(edge.toShapeId);
-    if (!editor.getShape(fromId) || !editor.getShape(toId)) {
+    // 两端不在后端节点列表里的连线直接忽略
+    if (!nodeIds.has(edge.fromShapeId) || !nodeIds.has(edge.toShapeId)) {
       continue;
     }
+    const fromId = shapeIdByNode.get(edge.fromShapeId) as ShapeId;
+    const toId = shapeIdByNode.get(edge.toShapeId) as ShapeId;
     const edgeId = createShapeId(edge.id);
-    const desiredType = layoutStyle === "LOGIC"
-      && forkIds.has(edge.fromShapeId)
-      && forkIds.has(edge.toShapeId)
+    const desiredType: EdgeType = forkIds.has(edge.fromShapeId) && forkIds.has(edge.toShapeId)
       ? "mindmap-edge"
       : "arrow";
     const existing = editor.getShape(edgeId);
-    if (!existing || existing.type !== desiredType) {
-      if (existing) {
-        editor.deleteShapes([edgeId]);
-      }
-      if (desiredType === "mindmap-edge") {
-        createMindmapEdge(editor, edgeId, fromId, toId);
-      } else {
-        createArrowEdge(editor, edge, edgeId, fromId, toId);
-      }
+    if (!existing) {
+      pendingEdges.push({ edge, type: desiredType, fromId, toId });
+      continue;
+    }
+    if (existing.type !== desiredType) {
+      editor.deleteShapes([edgeId]);
+      deletedIds.push(edgeId);
+      pendingEdges.push({ edge, type: desiredType, fromId, toId });
       changed++;
       continue;
     }
@@ -157,7 +199,69 @@ export function syncGraphVisuals(
       }
     }
   }
+
+  // 阶段二：等被删元素的 React 组件真正卸载后再重建，避免同 id 复用旧 fiber 导致 hooks 数量变化
+  await waitForShapesUnmounted(editor, deletedIds);
+  for (const { node, type } of pendingNodes) {
+    createGraphShape(editor, node, createShapeId(node.id), type);
+    changed++;
+  }
+  for (const { edge, type, fromId, toId } of pendingEdges) {
+    const edgeId = createShapeId(edge.id);
+    if (type === "mindmap-edge") {
+      createMindmapEdge(editor, edgeId, fromId, toId);
+    } else {
+      createArrowEdge(editor, edge, edgeId, fromId, toId);
+    }
+    changed++;
+  }
+  // 节点重建会断开用户手绘箭头的绑定，按原绑定恢复。
+  // 结构连线可能已经从 arrow 转成 mindmap-edge，这种箭头本身已不复存在，不能再挂绑定
+  const bindingsRestored = arrowBindingsToRestore.filter((binding) => {
+    const arrow = editor.getShape(binding.fromId);
+    return arrow?.type === "arrow" && editor.getShape(binding.toId) !== undefined;
+  });
+  if (bindingsRestored.length > 0) {
+    editor.createBindings(bindingsRestored);
+  }
+  if (deletedIds.length > 0 && selectedIds.size > 0) {
+    const restored = [...selectedIds]
+      .map((id) => createShapeId(id.replace(/^shape:/, "")))
+      .filter((id) => editor.getShape(id));
+    if (restored.length > 0) {
+      editor.setSelectedShapes(restored);
+    }
+  }
   return changed;
+}
+
+/**
+ * 等待这些图形对应的 DOM 节点从画布移除，说明 React 已提交卸载。
+ * 画布外的图形由 tldraw 用 display:none 处理，DOM 节点仍在，所以按 data-shape-id 判断可靠。
+ * 最多等 2 秒，避免画布未挂载时卡住同步。
+ */
+function waitForShapesUnmounted(editor: TldrawEditor, shapeIds: TLShapeId[]): Promise<void> {
+  if (shapeIds.length === 0) {
+    return Promise.resolve();
+  }
+  const target = new Set(shapeIds.map(String));
+  const container = editor.getContainer();
+  const deadline = performance.now() + 2000;
+  return new Promise((resolve) => {
+    const check = () => {
+      const stillMounted = [...container.querySelectorAll(".tl-shape")].some((element) => {
+        const id = element.getAttribute("data-shape-id");
+        return id !== null && target.has(id);
+      });
+      if (!stillMounted || performance.now() > deadline) {
+        resolve();
+        return;
+      }
+      // 用定时器而不是 rAF：后台标签页里 rAF 会被暂停，同步队列不能因此卡死
+      window.setTimeout(check, 16);
+    };
+    check();
+  });
 }
 
 /** 按节点期望类型创建图形 */

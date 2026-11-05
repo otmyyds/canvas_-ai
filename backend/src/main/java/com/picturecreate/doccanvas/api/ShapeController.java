@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,6 +21,7 @@ import com.picturecreate.doccanvas.service.BoardService;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.NotFoundException;
+import com.picturecreate.doccanvas.service.ShapeEditService;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -31,13 +33,25 @@ public class ShapeController {
 
     private final ShapeRepository shapeRepository;
     private final BoardService boardService;
+    private final ShapeEditService shapeEditService;
     private final CurrentUserService currentUserService;
 
     public ShapeController(ShapeRepository shapeRepository, BoardService boardService,
-            CurrentUserService currentUserService) {
+            ShapeEditService shapeEditService, CurrentUserService currentUserService) {
         this.shapeRepository = shapeRepository;
         this.boardService = boardService;
+        this.shapeEditService = shapeEditService;
         this.currentUserService = currentUserService;
+    }
+
+    /** 在指定父节点下新建子节点（body: { parentId, title }），并重排所属分量 */
+    @PostMapping("/api/boards/{boardId}/shapes")
+    public ShapeResponse create(@PathVariable UUID boardId, @RequestBody ShapeCreateRequest body,
+            HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        log.info("新建图形节点：boardId={} parentId={} title={}", boardId, body.parentId(), body.title());
+        Shape shape = shapeEditService.createChild(boardId, user, body.parentId(), body.title());
+        return ShapeResponse.from(shape);
     }
 
     @GetMapping("/api/boards/{boardId}/shapes")
@@ -80,8 +94,8 @@ public class ShapeController {
         log.info("删除图形节点：shapeId={}", shapeId);
         Shape shape = shapeRepository.findById(shapeId)
                 .orElseThrow(() -> new NotFoundException("图形节点不存在"));
-        boardService.getOwned(shape.getBoardId(), user);
-        shapeRepository.delete(shape);
+        // 思维导图分量删整棵子树并清理连线，剩余节点原地重排
+        shapeEditService.delete(shape.getBoardId(), user, shapeId);
     }
 
     public record ShapeResponse(
@@ -103,5 +117,9 @@ public class ShapeController {
 
     /** 用户编辑图形节点的请求体（标题/位置/尺寸） */
     public record ShapeUpdateRequest(String title, double x, double y, double width, double height) {
+    }
+
+    /** 新建子节点的请求体：父节点 id + 可选标题 */
+    public record ShapeCreateRequest(UUID parentId, String title) {
     }
 }

@@ -87,10 +87,11 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
       }
       // 快照里的标题可能落后于后端（AI 改过标题但所有者还没重新保存快照），按后端数据对账；
       // 同时按分享画布的布局风格把思维导图分量转换成 fork 节点 + 贝塞尔连线
-      syncGraphVisuals(editor, board.shapes, board.edges, board.layoutStyle);
-      editor.clearHistory();
-      editor.updateInstanceState({ isReadonly: true });
-      editor.zoomToFit();
+      void syncGraphVisuals(editor, board.shapes, board.edges, board.layoutStyle).then(() => {
+        editor.clearHistory();
+        editor.updateInstanceState({ isReadonly: true });
+        editor.zoomToFit();
+      });
     },
     [board]
   );

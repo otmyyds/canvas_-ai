@@ -198,8 +198,11 @@ export const api = {
   // ===== 图形节点（思维导图/流程图节点） =====
   listEdges: (boardId: string) => request<BoardEdge[]>(`/api/boards/${boardId}/edges`),
   listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
-  /** 删除图形节点（白板删除元素时同步调用，避免刷新复活） */
+  /** 删除图形节点（白板删除元素时同步调用，避免刷新复活）；思维导图会连带删除子树与连线 */
   deleteShape: (shapeId: string) => request<void>(`/api/shapes/${shapeId}`, { method: "DELETE" }),
+  /** 在父节点下新建子节点，后端生成节点与连线并重排所属分量 */
+  createShape: (boardId: string, body: { parentId: string; title?: string }) =>
+    request<BoardShape>(`/api/boards/${boardId}/shapes`, { method: "POST", body: JSON.stringify(body) }),
   /** 回写用户手动编辑（拖动位置/改标题/改尺寸），统一 tldraw 快照与 shapes 表 */
   updateShape: (
     shapeId: string,

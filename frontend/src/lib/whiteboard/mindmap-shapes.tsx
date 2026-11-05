@@ -101,6 +101,100 @@ function MindmapNodeLabel({ editor, shape }: { editor: TldrawEditor; shape: Mind
   );
 }
 
+/** 拖拽中的子树：记录后代节点在拖拽开始时的位置 */
+type SubtreeDrag = { positions: Map<TLShapeId, { x: number; y: number }> };
+const subtreeDrags = new WeakMap<TldrawEditor, SubtreeDrag>();
+
+/**
+ * 收集节点在逻辑图里的所有后代：沿着 mindmap-edge 的 start（父）→ end（子）向下遍历。
+ * 只走连线关系，不依赖 level，用户手动新建的节点同样适用。
+ */
+function collectDescendantIds(editor: TldrawEditor, rootId: TLShapeId): TLShapeId[] {
+  const childrenOf = new Map<string, string[]>();
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (shape.type !== "mindmap-edge") {
+      continue;
+    }
+    const bindings = editor.getBindingsFromShape<MindmapEdgeBinding>(shape.id, "mindmap-edge");
+    const start = bindings.find((binding) => binding.props.terminal === "start");
+    const end = bindings.find((binding) => binding.props.terminal === "end");
+    if (!start || !end) {
+      continue;
+    }
+    const key = String(start.toId);
+    const children = childrenOf.get(key) ?? [];
+    children.push(String(end.toId));
+    childrenOf.set(key, children);
+  }
+  const result: TLShapeId[] = [];
+  const visited = new Set<string>([String(rootId)]);
+  const queue = [String(rootId)];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    for (const child of childrenOf.get(current) ?? []) {
+      if (!visited.has(child)) {
+        visited.add(child);
+        result.push(child as TLShapeId);
+        queue.push(child);
+      }
+    }
+  }
+  return result;
+}
+
+/** 拖拽开始时记录子树位置；多选或没有后代时不跟随 */
+function beginSubtreeDrag(editor: TldrawEditor, shape: MindmapNodeShape): SubtreeDrag | null {
+  if (editor.getSelectedShapeIds().length !== 1) {
+    return null;
+  }
+  const selected = new Set(editor.getSelectedShapeIds().map(String));
+  const positions = new Map<TLShapeId, { x: number; y: number }>();
+  for (const id of collectDescendantIds(editor, shape.id)) {
+    if (selected.has(String(id))) {
+      continue;
+    }
+    const descendant = editor.getShape(id);
+    if (descendant) {
+      positions.set(id, { x: descendant.x, y: descendant.y });
+    }
+  }
+  return positions.size > 0 ? { positions } : null;
+}
+
+/** 按拖拽总位移移动后代节点，连线由绑定的重算负责跟随 */
+function moveSubtree(editor: TldrawEditor, initial: MindmapNodeShape, current: MindmapNodeShape) {
+  const drag = subtreeDrags.get(editor);
+  if (!drag) {
+    return;
+  }
+  const dx = current.x - initial.x;
+  const dy = current.y - initial.y;
+  editor.updateShapes(
+    [...drag.positions].map(([id, position]) => ({
+      id,
+      type: "mindmap-node" as const,
+      x: position.x + dx,
+      y: position.y + dy
+    }))
+  );
+}
+
+/** 取消拖拽时把后代放回原位 */
+function resetSubtree(editor: TldrawEditor) {
+  const drag = subtreeDrags.get(editor);
+  if (!drag) {
+    return;
+  }
+  editor.updateShapes(
+    [...drag.positions].map(([id, position]) => ({
+      id,
+      type: "mindmap-node" as const,
+      x: position.x,
+      y: position.y
+    }))
+  );
+}
+
 /** fork 节点：只渲染文字，双击原地编辑 */
 export class MindmapNodeShapeUtil extends BaseBoxShapeUtil<MindmapNodeShape> {
   static type = "mindmap-node" as const;
@@ -127,6 +221,29 @@ export class MindmapNodeShapeUtil extends BaseBoxShapeUtil<MindmapNodeShape> {
   /** 固定格式：不允许拖拽改尺寸，尺寸由后端按标题重算 */
   canResize(): boolean {
     return false;
+  }
+
+  /** 拖动 fork 节点时整棵子树跟随，避免父子连线被拉断 */
+  onTranslateStart(shape: MindmapNodeShape): void {
+    const drag = beginSubtreeDrag(this.editor, shape);
+    if (drag) {
+      subtreeDrags.set(this.editor, drag);
+    } else {
+      subtreeDrags.delete(this.editor);
+    }
+  }
+
+  onTranslate(initial: MindmapNodeShape, current: MindmapNodeShape): void {
+    moveSubtree(this.editor, initial, current);
+  }
+
+  onTranslateEnd(): void {
+    subtreeDrags.delete(this.editor);
+  }
+
+  onTranslateCancel(): void {
+    resetSubtree(this.editor);
+    subtreeDrags.delete(this.editor);
   }
 
   getText(shape: MindmapNodeShape): string {

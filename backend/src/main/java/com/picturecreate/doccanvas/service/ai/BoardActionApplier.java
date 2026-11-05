@@ -15,6 +15,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.picturecreate.doccanvas.config.AppProperties;
 import com.picturecreate.doccanvas.domain.Board;
@@ -161,6 +162,132 @@ public class BoardActionApplier {
     }
 
     /**
+     * 用户在画布上手动新建子节点：挂到父节点下并自动连线。
+     * 层级跟随所属分量：思维导图取父层级 + 1，流程图（全为 level 0）保持同层，
+     * 避免给流程图补一个节点就把整个分量判定成思维导图。
+     *
+     * 建完后重排整个分量，新节点由布局算法放置；调用方负责开启事务。
+     */
+    @Transactional
+    public Shape createChild(UUID boardId, UUID parentId, String title) {
+        boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Shape parent = shapeRepository.findById(parentId)
+                .filter(shape -> shape.getBoardId().equals(boardId))
+                .orElseThrow(() -> new IllegalArgumentException("父节点不存在：" + parentId));
+        Graph graph = loadGraph(boardId);
+        boolean mindmap = componentOf(graph, parentId.toString()).stream()
+                .map(id -> graph.shapeById().get(id))
+                .anyMatch(shape -> shape != null && shape.getLevel() > 0);
+        int level = mindmap ? parent.getLevel() + 1 : parent.getLevel();
+        String nodeTitle = title == null || title.isBlank() ? "新节点" : title.trim();
+        // 临时 id 让同一批动作里的 connect 能引用到这个新节点
+        String tempId = "new-" + UUID.randomUUID();
+        ApplyReport report = apply(boardId, List.of(
+                new BoardAction.CreateShape(tempId, nodeTitle, parent.getShape(), level,
+                        parent.getX(), parent.getY(), 0, 0),
+                new BoardAction.Connect(parentId.toString(), tempId, null, "curve", null, 2)));
+        UUID createdId = report.createdNodes().get(0).id();
+        log.info("手动新建节点：boardId={} parentId={} shapeId={} level={}", boardId, parentId, createdId, level);
+        return shapeRepository.findById(createdId)
+                .orElseThrow(() -> new IllegalStateException("新建节点失败：" + createdId));
+    }
+
+    /**
+     * 用户删除节点：思维导图分量沿父子方向删掉整棵子树，其他分量（流程图 / 孤立节点）只删节点本身；
+     * 关联连线一并删除，剩余节点按删除后的连通分组原地重排，不留空洞。
+     * 调用方负责开启事务。
+     */
+    @Transactional
+    public List<UUID> deleteForUser(UUID boardId, UUID shapeId) {
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Graph graph = loadGraph(boardId);
+        if (!graph.shapeById().containsKey(shapeId.toString())) {
+            return List.of();
+        }
+        List<String> component = componentOf(graph, shapeId.toString());
+        boolean mindmap = component.stream()
+                .map(id -> graph.shapeById().get(id))
+                .anyMatch(shape -> shape != null && shape.getLevel() > 0);
+        Set<String> targets = new LinkedHashSet<>();
+        targets.add(shapeId.toString());
+        if (mindmap) {
+            collectSubtree(graph, shapeId.toString(), targets);
+        }
+        Set<String> componentSet = new LinkedHashSet<>(component);
+        List<UUID> deletedIds = targets.stream().map(UUID::fromString).toList();
+        edgeRepository.deleteAll(graph.edges().stream()
+                .filter(edge -> targets.contains(edge.getFromShapeId().toString())
+                        || targets.contains(edge.getToShapeId().toString()))
+                .toList());
+        shapeRepository.deleteAllById(deletedIds);
+        shapeRepository.flush();
+
+        // 删除后分量可能拆成多块：每块按删除前的包围盒锚定，原地整理
+        Graph after = loadGraph(boardId);
+        for (List<String> group : after.components()) {
+            if (group.isEmpty() || !componentSet.containsAll(group)) {
+                continue;
+            }
+            double[] old = boundsOf(graph, group);
+            Map<String, double[]> positions = layoutComponent(board, after, group);
+            Map<String, double[]> sizes = sizesOf(after, group);
+            double[] box = bounds(positions, sizes);
+            placeComponent(after, group, positions, old[0] - box[0], old[1] - box[1]);
+        }
+        log.info("删除节点：boardId={} shapeId={} 连带删除={} mindmap={}", boardId, shapeId, deletedIds.size(), mindmap);
+        return deletedIds;
+    }
+
+    /** 节点所在的无向连通分量；找不到时返回只含自身 */
+    private List<String> componentOf(Graph graph, String shapeId) {
+        for (List<String> component : graph.components()) {
+            if (component.contains(shapeId)) {
+                return component;
+            }
+        }
+        return List.of(shapeId);
+    }
+
+    /** 沿连线方向（父 → 子）收集整棵子树，包含起点自身 */
+    private void collectSubtree(Graph graph, String rootId, Set<String> targets) {
+        Deque<String> queue = new ArrayDeque<>();
+        queue.add(rootId);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            for (BoardEdge edge : graph.edges()) {
+                if (!edge.getFromShapeId().toString().equals(current)) {
+                    continue;
+                }
+                String child = edge.getToShapeId().toString();
+                if (targets.add(child)) {
+                    queue.add(child);
+                }
+            }
+        }
+    }
+
+    /** 指定节点集合的包围盒 [minX, minY, maxX, maxY]（集合非空） */
+    private double[] boundsOf(Graph graph, List<String> ids) {
+        double minX = Double.MAX_VALUE;
+        double minY = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE;
+        double maxY = -Double.MAX_VALUE;
+        for (String id : ids) {
+            Shape shape = graph.shapeById().get(id);
+            if (shape == null) {
+                continue;
+            }
+            minX = Math.min(minX, shape.getX());
+            minY = Math.min(minY, shape.getY());
+            maxX = Math.max(maxX, shape.getX() + shape.getWidth());
+            maxY = Math.max(maxY, shape.getY() + shape.getHeight());
+        }
+        return new double[] { minX, minY, maxX, maxY };
+    }
+
+    /**
      * 重排受本批动作影响的连通分量。
      * - 含已有节点的分量：新布局的包围盒左上角对齐旧包围盒左上角，整块图原地整理；
      * - 全新分量与孤立新节点：放到画布已有内容右侧；
@@ -258,6 +385,7 @@ public class BoardActionApplier {
      * 逻辑图 fork 节点按文字精确收缩（可大可小），其他节点按 geo 标签放大（保留用户手动放大）。
      */
     private void sizeComponent(Board board, Graph graph, List<String> component) {
+        // 是否为逻辑图非中心节点
         boolean fork = isLogicForkComponent(board, graph, component);
         for (String id : component) {
             Shape shape = graph.shapeById().get(id);
@@ -265,7 +393,9 @@ public class BoardActionApplier {
                 continue;
             }
             if (fork) {
+                // 逻辑图fork节点的文字精确收缩
                 NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimateFork(shape.getTitle());
+                // 重置fork节点边框大小
                 shape.resizeTo(size.width(), size.height());
             } else {
                 NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
@@ -408,15 +538,20 @@ public class BoardActionApplier {
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         Map<String, Shape> shapeById = new LinkedHashMap<>();
+        // 建立无向邻接表
         Map<String, Set<String>> undirected = new LinkedHashMap<>();
         for (Shape shape : shapes) {
+            // 将节点加入映射
             String id = shape.getId().toString();
+            // 初始化邻接表条目
             shapeById.put(id, shape);
             undirected.put(id, new LinkedHashSet<>());
         }
         for (BoardEdge edge : edges) {
+            // 获取连线的两端节点
             String from = edge.getFromShapeId().toString();
             String to = edge.getToShapeId().toString();
+            // 如果两端节点都在映射中，则加入邻接表
             if (undirected.containsKey(from) && undirected.containsKey(to)) {
                 undirected.get(from).add(to);
                 undirected.get(to).add(from);
@@ -425,17 +560,26 @@ public class BoardActionApplier {
         List<List<String>> components = new ArrayList<>();
         Set<String> visited = new HashSet<>();
         for (Shape shape : shapes) {
+            // 从一个未访问过的节点开始广度优先搜索
             String start = shape.getId().toString();
+            // 如果已经访问过，则跳过
             if (!visited.add(start)) {
                 continue;
             }
+            // 连通分量
             List<String> component = new ArrayList<>();
+            // 广度优先搜索
             Deque<String> queue = new ArrayDeque<>();
+            // 将起始节点加入队列
             queue.add(start);
             while (!queue.isEmpty()) {
+                // 从队列中取出一个节点
                 String current = queue.poll();
+                // 将其加入当前连通分量
                 component.add(current);
+                // 遍历其所有未访问过的邻居节点
                 for (String next : undirected.getOrDefault(current, Set.of())) {
+                    // 如果邻居节点未访问过，则加入队列
                     if (visited.add(next)) {
                         queue.add(next);
                     }
