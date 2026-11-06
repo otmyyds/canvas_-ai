@@ -115,10 +115,13 @@ public class BoardActionApplier {
         // 第一遍：创建节点，记录临时 id -> 真实 id
         for (BoardAction action : actions) {
             if (action instanceof BoardAction.CreateShape createShape) {
+                // 得到创建节点后的真实 id
                 UUID created = createShape(boardId, createShape);
                 createdShapes++;
+                // 将真实 id 记入结果
                 createdNodes.add(new ApplyReport.CreatedShape(created, createShape.title(), createShape.level()));
                 if (createShape.id() != null && !createShape.id().isBlank()) {
+                    // 建立虚拟id与真实id的映射
                     shapeIdMap.put(createShape.id(), created);
                     createdIds.add(created);
                 }
@@ -128,9 +131,12 @@ public class BoardActionApplier {
         for (BoardAction action : actions) {
             switch (action) {
                 case BoardAction.Connect connect -> {
+                    // 判断新建的图形id是否在画布中
                     if (connect(boardId, connect, shapeIdMap, nextSortOrders)) {
+                        // 如果存在就需要建立一条连线
                         createdEdges++;
                     } else {
+                        // 不存在则跳过
                         skipped++;
                     }
                 }
@@ -175,13 +181,20 @@ public class BoardActionApplier {
         if (graph.shapes().isEmpty()) {
             return;
         }
+        // 获取可见节点，隐藏节点不参与
+        Set<String> visible = visibleNodes(graph);
         double cursorX = MARGIN;
         for (List<String> component : graph.components()) {
+            // 折叠节点的后代不参与布局：整块图按剩余可见节点重新打包
+            List<String> shown = visibleIn(visible, component);
+            if (shown.isEmpty()) {
+                continue;
+            }
             // 分量布局内部会先按风格统一尺寸：逻辑图 fork 节点收缩，其他节点按 geo 标签放大
-            Map<String, double[]> positions = layoutComponent(board, graph, component);
-            Map<String, double[]> sizes = sizesOf(graph, component);
+            Map<String, double[]> positions = layoutComponent(board, graph, shown);
+            Map<String, double[]> sizes = sizesOf(graph, shown);
             double[] box = bounds(positions, sizes);
-            placeComponent(graph, component, positions, cursorX - box[0], MARGIN - box[1]);
+            placeComponent(graph, shown, positions, cursorX - box[0], MARGIN - box[1]);
             cursorX += (box[2] - box[0]) + GAP;
         }
         log.info("整理画布：boardId={} 连通分量={} 节点={}", boardId, graph.components().size(), graph.shapes().size());
@@ -201,6 +214,8 @@ public class BoardActionApplier {
         Shape parent = shapeRepository.findById(parentId)
                 .filter(shape -> shape.getBoardId().equals(boardId))
                 .orElseThrow(() -> new IllegalArgumentException("父节点不存在：" + parentId));
+        // 新节点必须可见：父节点折叠时先展开
+        parent.collapse(false);
         Graph graph = loadGraph(boardId);
         boolean mindmap = componentOf(graph, parentId.toString()).stream()
                 .map(id -> graph.shapeById().get(id))
@@ -252,15 +267,17 @@ public class BoardActionApplier {
 
         // 删除后分量可能拆成多块：每块按删除前的包围盒锚定，原地整理
         Graph after = loadGraph(boardId);
+        Set<String> visible = visibleNodes(after);
         for (List<String> group : after.components()) {
-            if (group.isEmpty() || !componentSet.containsAll(group)) {
+            List<String> shown = visibleIn(visible, group);
+            if (shown.isEmpty() || !componentSet.containsAll(group)) {
                 continue;
             }
-            double[] old = boundsOf(graph, group);
-            Map<String, double[]> positions = layoutComponent(board, after, group);
-            Map<String, double[]> sizes = sizesOf(after, group);
+            double[] old = boundsOf(graph, shown);
+            Map<String, double[]> positions = layoutComponent(board, after, shown);
+            Map<String, double[]> sizes = sizesOf(after, shown);
             double[] box = bounds(positions, sizes);
-            placeComponent(after, group, positions, old[0] - box[0], old[1] - box[1]);
+            placeComponent(after, shown, positions, old[0] - box[0], old[1] - box[1]);
         }
         log.info("删除节点：boardId={} shapeId={} 连带删除={} mindmap={}", boardId, shapeId, deletedIds.size(), mindmap);
         return deletedIds;
@@ -313,7 +330,10 @@ public class BoardActionApplier {
         edgeRepository.flush();
 
         Graph graph = loadGraph(boardId);
-        List<String> component = componentOf(graph, parentId.toString());
+        List<String> component = visibleIn(visibleNodes(graph), componentOf(graph, parentId.toString()));
+        if (component.isEmpty()) {
+            return ordered;
+        }
         double[] old = boundsOf(graph, component);
         Map<String, double[]> positions = layoutComponent(board, graph, component);
         Map<String, double[]> sizes = sizesOf(graph, component);
@@ -321,6 +341,38 @@ public class BoardActionApplier {
         placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
         log.info("调整同级顺序：boardId={} parentId={} 子节点={}", boardId, parentId, ordered.size());
         return ordered;
+    }
+
+    /**
+     * 折叠/展开节点：折叠后全部后代不参与布局，剩余可见节点按原包围盒锚定重排。
+     * 调用方负责开启事务。
+     */
+    @Transactional
+    public Shape setCollapsed(UUID boardId, UUID shapeId, boolean collapsed) {
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Shape shape = shapeRepository.findById(shapeId)
+                .filter(found -> found.getBoardId().equals(boardId))
+                .orElseThrow(() -> new IllegalArgumentException("节点不存在：" + shapeId));
+        if (shape.isCollapsed() == collapsed) {
+            return shape;
+        }
+        shape.collapse(collapsed);
+        shapeRepository.flush();
+
+        Graph graph = loadGraph(boardId);
+        List<String> component = visibleIn(visibleNodes(graph), componentOf(graph, shapeId.toString()));
+        if (component.isEmpty()) {
+            return shape;
+        }
+        double[] old = boundsOf(graph, component);
+        Map<String, double[]> positions = layoutComponent(board, graph, component);
+        Map<String, double[]> sizes = sizesOf(graph, component);
+        double[] box = bounds(positions, sizes);
+        placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+        log.info("切换节点折叠：boardId={} shapeId={} collapsed={} 可见节点={}",
+                boardId, shapeId, collapsed, component.size());
+        return shape;
     }
 
     /**
@@ -440,6 +492,30 @@ public class BoardActionApplier {
         }
     }
 
+    /** 可见节点：折叠节点的全部后代都不参与布局与渲染 */
+    private Set<String> visibleNodes(Graph graph) {
+        Set<String> hidden = new HashSet<>();
+        for (Shape shape : graph.shapes()) {
+            if (shape.isCollapsed()) {
+                collectSubtree(graph, shape.getId().toString(), hidden);
+            }
+        }
+        Set<String> visible = new LinkedHashSet<>(graph.shapeById().keySet());
+        visible.removeAll(hidden);
+        return visible;
+    }
+
+    /** 按可见集合过滤分量，保留原有顺序 */
+    private static List<String> visibleIn(Set<String> visible, List<String> ids) {
+        List<String> result = new ArrayList<>();
+        for (String id : ids) {
+            if (visible.contains(id)) {
+                result.add(id);
+            }
+        }
+        return result;
+    }
+
     /** 指定节点集合的包围盒 [minX, minY, maxX, maxY]（集合非空） */
     private double[] boundsOf(Graph graph, List<String> ids) {
         double minX = Double.MAX_VALUE;
@@ -467,35 +543,51 @@ public class BoardActionApplier {
      */
     private void relayoutTouched(Board board, Set<UUID> createdIds, Set<UUID> updatedIds) {
         shapeRepository.flush();
+        // 获取整个画布的信息包括节点、连线、连通分量等
         Graph graph = loadGraph(board.getId());
         Set<String> newIds = toStrings(createdIds);
         Set<String> touched = toStrings(createdIds);
+        // 将更新的节点加入受影响的集合
         touched.addAll(toStrings(updatedIds));
-
+        Set<String> visible = visibleNodes(graph);
+        // 按受影响程度分类
+        // 分类：锚点固定、全新、孤立新节点
         List<List<String>> anchored = new ArrayList<>();
         List<List<String>> fresh = new ArrayList<>();
         List<String> isolatedNew = new ArrayList<>();
-        for (List<String> component : graph.components()) {
+        for (List<String> fullComponent : graph.components()) {
+            // 过滤出可见节点
+            List<String> component = visibleIn(visible, fullComponent);
+            // 如果分量中没有受影响的节点，则跳过
             if (component.stream().noneMatch(touched::contains)) {
                 continue;
             }
+            // 判断分量是否全部由新建节点组成
             boolean allNew = component.stream().allMatch(newIds::contains);
+            // 如果分量中只有一个节点且是新建的，则判断为孤立新节点
             if (allNew && component.size() == 1) {
                 isolatedNew.add(component.get(0));
             } else if (allNew) {
+                // 如果分量全部由新建节点组成，则判断为全新分量
                 fresh.add(component);
             } else {
+                // 否则判断为锚点固定分量
                 anchored.add(component);
             }
         }
+        // 如果没有需要重排的分量，则返回
+        // 由于调用这个函数前会检查，该情况基本不可能发生（防御编程）
         if (anchored.isEmpty() && fresh.isEmpty() && isolatedNew.isEmpty()) {
             return;
         }
         // 只有「按光标重新放置」的节点才排除出已有包围盒，原地重排的分量仍算已有内容
+        // 孤立新节点和全新分量不参与已有内容的包围盒计算
         Set<String> cursorPlaced = new HashSet<>(isolatedNew);
         fresh.forEach(cursorPlaced::addAll);
-        double[] existing = boundsExcluding(graph, cursorPlaced);
+        double[] existing = boundsExcluding(graph, cursorPlaced, visible);
+        // 最右加边距
         double cursorX = existing == null ? MARGIN : existing[2] + GAP;
+        // 最上加边距
         double baseY = existing == null ? MARGIN : existing[1];
 
         if (!isolatedNew.isEmpty()) {
@@ -511,6 +603,7 @@ public class BoardActionApplier {
             for (String id : ordered) {
                 sizeComponent(board, graph, List.of(id));
             }
+            // 计算孤立节点的尺寸
             Map<String, double[]> sizes = sizesOf(graph, ordered);
             Map<String, double[]> grid = gridLayout(ordered, sizes);
             double[] box = bounds(grid, sizes);
@@ -626,6 +719,7 @@ public class BoardActionApplier {
 
     /** 更新已有节点：只支持真实 id，且必须属于当前画布；标题变长时同步放大尺寸 */
     private UpdateOutcome update(UUID boardId, BoardAction.UpdateShape action) {
+        // 将 shapeId 从字符串解析为 UUID
         UUID shapeId = parseUuid(action.shapeId());
         if (shapeId == null) {
             log.warn("忽略非法 update_shape 目标：{}", action.shapeId());
@@ -644,6 +738,7 @@ public class BoardActionApplier {
         double oldHeight = shape.getHeight();
         shape.applyAgentEdit(action.title(), action.shape(), action.level());
         NodeSizeEstimator.NodeSize size = NodeSizeEstimator.estimate(shape.getTitle());
+        // 标题变长时同步放大尺寸
         shape.growTo(size.width(), size.height());
         // 标题变化也重排：逻辑图 fork 节点需要按新文字精确收缩，growTo 只能放大
         boolean relayout = shape.getLevel() != oldLevel
@@ -666,6 +761,10 @@ public class BoardActionApplier {
             log.warn("忽略悬空连线：{} -> {}", fromShapeId, toShapeId);
             return false;
         }
+        // 新子节点必须可见：父节点折叠时先展开
+        shapeRepository.findById(fromShapeId)
+                .filter(parent -> parent.isCollapsed())
+                .ifPresent(parent -> parent.collapse(false));
         BoardEdge edge = new BoardEdge(boardId, fromShapeId, toShapeId, action.label(),
                 action.style(), action.color(), action.weight() == null ? 2 : action.weight());
         int sortOrder = nextSortOrders.getOrDefault(fromShapeId, 1);
@@ -710,6 +809,7 @@ public class BoardActionApplier {
                 .orElse(false);
     }
 
+    /** 解析节点 ID：先在映射中查找，再解析字符串；失败时返回 null **/
     private UUID resolveShapeId(String shapeId, Map<String, UUID> shapeIdMap) {
         if (shapeId == null || shapeId.isBlank()) {
             return null;
@@ -717,7 +817,7 @@ public class BoardActionApplier {
         UUID mapped = shapeIdMap.get(shapeId);
         return mapped != null ? mapped : parseUuid(shapeId);
     }
-
+    // 将字符串解析为 UUID，失败时返回 null
     private UUID parseUuid(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -783,6 +883,7 @@ public class BoardActionApplier {
             }
             components.add(component);
         }
+        log.info("该画布的连通分量数量为{}",components.size());
         return new Graph(shapes, edges, shapeById, undirected, components);
     }
 
@@ -848,23 +949,30 @@ public class BoardActionApplier {
         return new double[] { minX, minY, maxX, maxY };
     }
 
-    /** 画布内容的包围盒（排除本次会按光标重新放置的节点）；空画布返回 null */
-    private double[] boundsExcluding(Graph graph, Set<String> excluded) {
+    /** 画布内容的包围盒（排除本次会按光标重新放置的节点与折叠隐藏的节点）；空画布返回 null
+    * @param graph 画布的图结构
+    * @param excluded 排除的节点集合
+    * @param visible 可见的节点集合
+    * */
+    private double[] boundsExcluding(Graph graph, Set<String> excluded, Set<String> visible) {
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
         double maxX = -Double.MAX_VALUE;
         double maxY = -Double.MAX_VALUE;
         boolean found = false;
         for (Shape shape : graph.shapes()) {
-            if (excluded.contains(shape.getId().toString())) {
+            String id = shape.getId().toString();
+            if (excluded.contains(id) || !visible.contains(id)) {
                 continue;
             }
             found = true;
+            // 得到该可见节点的最坐标
             minX = Math.min(minX, shape.getX());
             minY = Math.min(minY, shape.getY());
             maxX = Math.max(maxX, shape.getX() + shape.getWidth());
             maxY = Math.max(maxY, shape.getY() + shape.getHeight());
         }
+        // 左 上 右 下
         return found ? new double[] { minX, minY, maxX, maxY } : null;
     }
 

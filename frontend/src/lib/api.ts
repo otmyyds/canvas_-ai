@@ -224,6 +224,12 @@ export const api = {
     method: "PATCH",
     body: JSON.stringify(body)
   }),
+  /** 折叠/展开节点：折叠后后端重排该分量，前端隐藏其后代 */
+  setCollapsed: (boardId: string, shapeId: string, collapsed: boolean) =>
+    request<BoardShape>(`/api/boards/${boardId}/structure/collapse`, {
+      method: "PATCH",
+      body: JSON.stringify({ shapeId, collapsed })
+    }),
   /** 纳管画布上手绘的图形与连线（原坐标尺寸落库，不触发布局） */
   adoptStructure: (
     boardId: string,

@@ -144,6 +144,38 @@ function ensureEdgeLocked(editor: TldrawEditor, shape: TLShape): boolean {
 type PendingNode = { node: BoardShape; type: NodeType };
 type PendingEdge = { edge: BoardEdge; type: EdgeType; fromId: ShapeId; toId: ShapeId };
 
+/**
+ * 折叠节点的全部后代（不含折叠节点自身）。
+ * 用独立 visited 阻断环，保证折叠节点自己不会被当成后代隐藏。
+ */
+export function hiddenShapeIds(shapes: BoardShape[], edges: BoardEdge[]): Set<string> {
+  const roots = shapes.filter((shape) => shape.collapsed).map((shape) => shape.id);
+  if (roots.length === 0) {
+    return new Set();
+  }
+  const childrenOf = new Map<string, string[]>();
+  for (const edge of edges) {
+    const children = childrenOf.get(edge.fromShapeId) ?? [];
+    children.push(edge.toShapeId);
+    childrenOf.set(edge.fromShapeId, children);
+  }
+  const hidden = new Set<string>();
+  for (const root of roots) {
+    const visited = new Set<string>([root]);
+    const queue = [...(childrenOf.get(root) ?? [])];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      hidden.add(current);
+      queue.push(...(childrenOf.get(current) ?? []));
+    }
+  }
+  return hidden;
+}
+
 /** 每个编辑器一条串行队列：两阶段转换期间不能插入另一轮同步，否则会拿到半成品状态 */
 const syncQueues = new WeakMap<TldrawEditor, Promise<number>>();
 
@@ -187,6 +219,12 @@ async function runSyncGraphVisuals(
   options: SyncGraphOptions
 ): Promise<number> {
   const { baseline, updateExisting = true } = options;
+  // 折叠节点的后代不渲染：先按结构算出隐藏集合，再过滤节点与连线
+  const hidden = hiddenShapeIds(shapes, edges);
+  if (hidden.size > 0) {
+    shapes = shapes.filter((node) => !hidden.has(node.id));
+    edges = edges.filter((edge) => !hidden.has(edge.fromShapeId) && !hidden.has(edge.toShapeId));
+  }
   const forkIds = collectForkNodeIds(shapes, edges, layoutStyle);
   const editingShapeId = editor.getEditingShapeId();
   const shapeIdByNode = new Map<string, ShapeId>();

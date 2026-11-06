@@ -52,6 +52,10 @@ public class Shape extends BaseEntity {
     @Column(name = "visual_json")
     private String visualJson;
 
+    /** 是否折叠：折叠后全部后代不参与布局，前端只渲染该节点自身 */
+    @Column(nullable = false)
+    private boolean collapsed;
+
     protected Shape() {
     }
 
@@ -101,6 +105,15 @@ public class Shape extends BaseEntity {
 
     public String getVisualJson() {
         return visualJson;
+    }
+
+    public boolean isCollapsed() {
+        return collapsed;
+    }
+
+    /** 设置折叠状态：折叠后后代节点由布局层排除 */
+    public void collapse(boolean collapsed) {
+        this.collapsed = collapsed;
     }
 
     /** 更新节点坐标（思维导图扩展后整树重排时用） */

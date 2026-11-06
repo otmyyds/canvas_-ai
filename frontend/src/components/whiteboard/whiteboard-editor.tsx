@@ -41,9 +41,11 @@ import { GhostButton, IconButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
+import { MindmapCollapse } from "@/components/whiteboard/mindmap-collapse";
 import {
   deleteShapesForced,
   geoVisualFingerprint,
+  hiddenShapeIds,
   shapeStateFingerprint,
   syncGraphVisuals
 } from "@/lib/whiteboard/shape-render";
@@ -1007,6 +1009,22 @@ export function WhiteboardEditor({
   const [exportOpen, setExportOpen] = useState(false);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [layoutBusy, setLayoutBusy] = useState(false);
+  const [collapseBusy, setCollapseBusy] = useState(false);
+
+  /** 折叠/展开节点：后端重排后刷新画布，隐藏的后代由同步流程统一删除 */
+  const toggleCollapse = useCallback(
+    (shapeId: string, collapsed: boolean) => {
+      if (collapseBusy) {
+        return;
+      }
+      setCollapseBusy(true);
+      void api.setCollapsed(boardId, shapeId, collapsed)
+        .then(() => onRefresh())
+        .catch((err) => setMessage(err instanceof Error ? err.message : "折叠失败"))
+        .finally(() => setCollapseBusy(false));
+    },
+    [boardId, collapseBusy, onRefresh]
+  );
   // 任务执行中禁止切换布局：后端落库与布局重排共用画布行锁，避免互相覆盖
   const taskRunning = tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status));
   const radialDisabled = shapes.length > radialMaxNodes;
@@ -1284,6 +1302,16 @@ export function WhiteboardEditor({
             shapeUtils={whiteboardShapeUtils}
             bindingUtils={whiteboardBindingUtils}
           />
+          {/* 逻辑图折叠控件：覆盖在画布上，按节点位置实时定位 */}
+          {layoutStyle === "LOGIC" && editorReady ? (
+            <MindmapCollapse
+              editor={editorRef.current}
+              shapes={shapes}
+              edges={edges}
+              busy={collapseBusy}
+              onToggle={toggleCollapse}
+            />
+          ) : null}
         </div>
 
         {editorReady ? <ElementInspector editor={editorRef.current} /> : null}
@@ -1311,8 +1339,12 @@ export function WhiteboardEditor({
  */
 function removeOrphanShapes(editor: TldrawEditor, shapes: BoardShape[], edges: BoardEdge[],
     assets: BoardAsset[]): number {
-  const shapeUuids = new Set(shapes.map((s) => s.id));
-  const edgeUuids = new Set(edges.map((e) => e.id));
+  // 折叠节点的后代按"不存在"处理：本地删除，展开后由后端数据重建
+  const hidden = hiddenShapeIds(shapes, edges);
+  const shapeUuids = new Set(shapes.filter((s) => !hidden.has(s.id)).map((s) => s.id));
+  const edgeUuids = new Set(edges
+    .filter((e) => !hidden.has(e.fromShapeId) && !hidden.has(e.toShapeId))
+    .map((e) => e.id));
   const assetUuids = new Set(assets.map((a) => a.id));
   const toDelete: ReturnType<typeof createShapeId>[] = [];
   for (const shape of editor.getCurrentPageShapes()) {

@@ -51,6 +51,13 @@ public class ShapeEditService {
         return actionApplier.reorderChildren(boardId, parentId, children);
     }
 
+    /** 折叠/展开节点：折叠后后代节点不参与布局与渲染 */
+    @Transactional
+    public Shape setCollapsed(UUID boardId, CurrentUser user, UUID shapeId, boolean collapsed) {
+        boardService.getOwned(boardId, user);
+        return actionApplier.setCollapsed(boardId, shapeId, collapsed);
+    }
+
     /** 纳管画布上手绘的自由图形与连线，保持原坐标尺寸，不触发布局 */
     @Transactional
     public AdoptionResult adopt(UUID boardId, CurrentUser user, List<AdoptNode> nodes, List<AdoptEdge> edges) {

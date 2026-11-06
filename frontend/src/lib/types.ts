@@ -50,6 +50,8 @@ export type BoardShape = {
   height: number;
   /** 纳管自由图形时保存的视觉属性（geo/color/fill/dash），切回树形图时还原 */
   visual?: Record<string, string> | null;
+  /** 是否折叠：折叠后其后代节点不参与布局与画布渲染 */
+  collapsed?: boolean;
 };
 
 /** 分享画布的只读数据（标题 + 图形节点 + 连线 + 快照 + 布局风格） */

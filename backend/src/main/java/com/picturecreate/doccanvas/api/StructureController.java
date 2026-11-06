@@ -83,6 +83,22 @@ public class StructureController {
                 result.edges().stream().map(BoardEdgeResponse::from).toList());
     }
 
+    /** 折叠/展开节点：折叠后其后代不参与布局，前端隐藏对应图形 */
+    @PatchMapping("/api/boards/{boardId}/structure/collapse")
+    public ShapeResponse collapse(@PathVariable UUID boardId, @RequestBody CollapseRequest body,
+            HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        if (body == null || body.shapeId() == null) {
+            throw new IllegalArgumentException("缺少节点 id");
+        }
+        log.info("切换节点折叠：boardId={} shapeId={} collapsed={}", boardId, body.shapeId(), body.collapsed());
+        return ShapeResponse.from(shapeEditService.setCollapsed(boardId, user, body.shapeId(), body.collapsed()));
+    }
+
+    /** 折叠请求：目标节点 + 目标状态 */
+    public record CollapseRequest(UUID shapeId, boolean collapsed) {
+    }
+
     /** 同级排序请求：父节点 + 按目标顺序排列的子项 */
     public record ReorderRequest(UUID parentId, List<ChildItem> children) {
     }

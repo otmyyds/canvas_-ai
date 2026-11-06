@@ -118,7 +118,8 @@ public class ShapeController {
             double y,
             double width,
             double height,
-            Map<String, String> visual) {
+            Map<String, String> visual,
+            boolean collapsed) {
 
         /** 仅用于解析库里存的视觉属性 JSON，字段都是字符串，不需要全局序列化配置 */
         private static final ObjectMapper VISUAL_MAPPER = new ObjectMapper();
@@ -126,7 +127,7 @@ public class ShapeController {
         public static ShapeResponse from(Shape shape) {
             return new ShapeResponse(shape.getId(), shape.getBoardId(), shape.getTitle(), shape.getShape(),
                     shape.getLevel(), shape.getX(), shape.getY(), shape.getWidth(), shape.getHeight(),
-                    readVisual(shape.getVisualJson()));
+                    readVisual(shape.getVisualJson()), shape.isCollapsed());
         }
 
         private static Map<String, String> readVisual(String visualJson) {

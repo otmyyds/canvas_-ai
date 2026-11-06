@@ -74,17 +74,20 @@ public class BoardLayoutService {
         if (previous == BoardLayoutStyle.RADIAL && target == BoardLayoutStyle.LOGIC) {
             // 进逻辑图前记住树形图排列，再按逻辑图算法重排
             board.rememberRadialLayout(captureRadialLayout(boardId));
+            board.changeLayoutStyle(target);
             actionApplier.layoutExistingBoard(boardId);
         } else if (previous == BoardLayoutStyle.LOGIC && target == BoardLayoutStyle.RADIAL) {
+            // 先改风格：重排按 board 上的风格选算法，顺序反了会用旧风格排版
+            board.changeLayoutStyle(target);
             if (!restoreRadialLayout(board, boardId)) {
                 // 结构变了（逻辑图里增删过节点）：丢弃旧排列，按树形图算法重排
                 board.rememberRadialLayout(null);
                 actionApplier.layoutExistingBoard(boardId);
             }
         } else {
+            board.changeLayoutStyle(target);
             actionApplier.layoutExistingBoard(boardId);
         }
-        board.changeLayoutStyle(target);
         log.info("画布布局已切换：boardId={} style={} 节点={}", boardId, target, nodeCount);
         return board;
     }
