@@ -5,6 +5,7 @@ import type {
   BoardAsset,
   BoardEdge,
   BoardLayoutStyle,
+  BoardPage,
   BoardShape,
   SharedBoard,
   SourceFile
@@ -174,7 +175,21 @@ async function refreshAccessSession(): Promise<boolean> {
  */
 export const api = {
   // ===== 画布 =====
-  listBoards: () => request<Board[]>("/api/boards"),
+  /** 分页列出当前用户的画布，keyword 按标题模糊匹配 */
+  listBoards: (params?: { page?: number; size?: number; keyword?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.page) {
+      search.set("page", String(params.page));
+    }
+    if (params?.size) {
+      search.set("size", String(params.size));
+    }
+    if (params?.keyword) {
+      search.set("keyword", params.keyword);
+    }
+    const suffix = search.toString();
+    return request<BoardPage>(`/api/boards${suffix ? `?${suffix}` : ""}`);
+  },
   createBoard: (title: string) => request<Board>("/api/boards", {
     method: "POST",
     body: JSON.stringify({ title })
@@ -337,7 +352,11 @@ export const api = {
     request<AuthResponse>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password })
-    })
+    }),
+
+  // ===== 用户 =====
+  /** 当前登录用户的资料（含注册时间、最近更新、画布数量） */
+  getProfile: () => request<UserProfile>("/api/users/me")
 };
 
 /** 认证用户信息 */
@@ -345,6 +364,16 @@ export type AuthUser = {
   id: string;
   email: string;
   displayName: string;
+};
+
+/** 用户资料：users 表中可展示的字段 + 画布数量 */
+export type UserProfile = {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+  updatedAt: string;
+  boardCount: number;
 };
 
 /** 认证响应：accessToken + refreshToken + 用户信息 */

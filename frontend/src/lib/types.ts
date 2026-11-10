@@ -20,6 +20,16 @@ export type Board = {
   updatedAt: string;
 };
 
+/** 首页画布分页结果（GET /api/boards） */
+export type BoardPage = {
+  items: Board[];
+  /** 当前页，从 1 开始 */
+  page: number;
+  size: number;
+  total: number;
+  totalPages: number;
+};
+
 /** 连线（连接两个图形节点） */
 export type BoardEdge = {
   id: string;
