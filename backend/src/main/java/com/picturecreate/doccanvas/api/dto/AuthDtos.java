@@ -1,7 +1,5 @@
 package com.picturecreate.doccanvas.api.dto;
 
-import java.util.UUID;
-
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -22,14 +20,18 @@ public final class AuthDtos {
             @NotBlank(message = "密码不能为空") String password) {
     }
 
+    /** 刷新访问令牌：只提交 refreshToken，用户身份由后端验签解析 */
+    public record RefreshRequest(@NotBlank(message = "刷新令牌不能为空") String refreshToken) {
+    }
+
     public record AuthResponse(
             String token,
             String refreshToken,
             UserInfo user) {
     }
 
+    /** 登录用户展示信息（不返回内部用户 id） */
     public record UserInfo(
-            UUID id,
             String email,
             String displayName) {
     }

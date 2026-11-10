@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import java.util.UUID;
+
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,7 +13,7 @@ import com.picturecreate.doccanvas.api.dto.AuthDtos.AuthResponse;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.LoginRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.RegisterRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.UserInfo;
-import com.picturecreate.doccanvas.common.JwtUtils;
+import com.picturecreate.doccanvas.common.JwtService;
 import com.picturecreate.doccanvas.domain.UserAccount;
 import com.picturecreate.doccanvas.repository.UserAccountRepository;
 
@@ -22,10 +24,13 @@ public class AuthService {
 
     private final UserAccountRepository userAccountRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtService jwtService;
 
-    public AuthService(UserAccountRepository userAccountRepository, PasswordEncoder passwordEncoder) {
+    public AuthService(UserAccountRepository userAccountRepository, PasswordEncoder passwordEncoder,
+            JwtService jwtService) {
         this.userAccountRepository = userAccountRepository;
         this.passwordEncoder = passwordEncoder;
+        this.jwtService = jwtService;
     }
 
     @Transactional
@@ -53,8 +58,13 @@ public class AuthService {
         return buildResponse(user);
     }
 
+    /** 刷新访问令牌：用户 id 只从验签通过的 refreshToken 中解析，不信任请求体里的用户标识 */
     @Transactional(readOnly = true)
-    public AuthResponse refresh(java.util.UUID userId) {
+    public AuthResponse refresh(String refreshToken) {
+        UUID userId = jwtService.parseRefreshToken(refreshToken);
+        if (userId == null) {
+            throw new IllegalStateException("刷新令牌无效或已过期");
+        }
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalStateException("用户不存在"));
         log.info("刷新令牌：userId={}", userId);
@@ -62,9 +72,9 @@ public class AuthService {
     }
 
     private AuthResponse buildResponse(UserAccount user) {
-        String token = JwtUtils.generateAccessToken(user.getId(), user.getEmail());
-        String refreshToken = JwtUtils.generateRefreshToken(user.getId());
+        String token = jwtService.generateAccessToken(user.getId(), user.getEmail());
+        String refreshToken = jwtService.generateRefreshToken(user.getId());
         return new AuthResponse(token, refreshToken,
-                new UserInfo(user.getId(), user.getEmail(), user.getDisplayName()));
+                new UserInfo(user.getEmail(), user.getDisplayName()));
     }
 }

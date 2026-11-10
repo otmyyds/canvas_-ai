@@ -6,10 +6,8 @@ import java.util.UUID;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -17,10 +15,15 @@ import jakarta.servlet.http.HttpServletResponse;
 
 /**
  * 从 Authorization: Bearer <token> 解析用户并写入 SecurityContext。
- * 认证用户 principal 为 userId（UUID）。
+ * 认证用户 principal 为 userId（UUID），用户身份只来自验签后的 token。
  */
-@Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private final JwtService jwtService;
+
+    public JwtAuthenticationFilter(JwtService jwtService) {
+        this.jwtService = jwtService;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -34,8 +37,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             token = request.getParameter("token");
         }
         if (token != null) {
-            Claims claims = JwtUtils.parseToken(token);
-            UUID userId = JwtUtils.getUserId(claims);
+            UUID userId = jwtService.parseAccessToken(token);
             if (userId != null) {
                 var authentication = new UsernamePasswordAuthenticationToken(
                         userId,
