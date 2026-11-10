@@ -111,13 +111,14 @@ public class AgentPlanExecutor {
         this.properties = properties;
     }
 
-    /** 执行一个计划任务；异常已在此统一收口，不会再抛给调用方 */
+    /** 执行一个计划任务；异常在此统一收口 */
     public void execute(AiTask task, CurrentUser user, List<String> selectedShapeIds, UUID sessionId) {
         List<AiTaskStep> steps = stepRepository.findByTaskIdOrderBySeqAsc(task.getId());
         if (steps.isEmpty()) {
             finishWithoutCheckpoint(task, "计划没有可执行的步骤", sessionId);
             return;
         }
+        // 在执行任务前保存画布原来的信息便于恢复
         try {
             checkpointService.capture(task);
         } catch (RuntimeException exception) {
@@ -126,9 +127,13 @@ public class AgentPlanExecutor {
             finishWithoutCheckpoint(task, "保存画布检查点失败：" + message(exception), sessionId);
             return;
         }
+        // 记录总步数
         int total = steps.size();
+        // 当前步骤索引
         AtomicInteger activeIndex = new AtomicInteger();
+        // 获取Agent任务配置
         AppProperties.Agent config = properties.ai().agent();
+        // 创建一个任务运行时环境
         TaskRuntime runtime = TaskRuntime.start(task.getId(), config.maxModelCalls(), config.maxToolCalls(),
                 config.maxDurationSeconds(), config.maxTotalTokens(),
                 () -> cancellation.assertNotCancelled(task.getId()),
@@ -188,8 +193,11 @@ public class AgentPlanExecutor {
                 }
                 case AGENT_PLAN -> throw new IllegalStateException("步骤不能是 AGENT_PLAN");
             }
+            // 记录使用情况
             recordUsageQuietly(runId, runtime, before);
+            // 记录应用步骤
             recordApplyStepQuietly(runId, step);
+            // 记录运行结果
             finishRunQuietly(runId, AgentRunStatus.SUCCEEDED, null);
             publishStep(task, step);
             log.info("计划步骤完成：taskId={} runId={} seq={} 结果={}", task.getId(), runId, step.getSeq(),
@@ -219,12 +227,15 @@ public class AgentPlanExecutor {
                 sessionContext);
         // 树型大图由 Supervisor 拆分支、Worker 并行展开；其余类型仍走单 Agent 一次生成
         List<BoardAction> actions = generateActions(context, stepType, skill);
+        // 语义审查
         ReviewedActions reviewed = review(task, context, stepType, skill, actions, runtime);
-        int shapesBefore = countShapes(task.getBoardId());
-        int edgesBefore = countEdges(task.getBoardId());
+        // 统计画布节点数
+        int shapesBefore = countShapes(task.getBoardId()); // 生成前节点数
+        int edgesBefore = countEdges(task.getBoardId()); // 生成前连线数
         ApplyReport report = applyGenerationStep(task, step, reviewed.actions(), planProgress, reviewed.note());
-        int shapesAfter = countShapes(task.getBoardId());
-        int edgesAfter = countEdges(task.getBoardId());
+        // 统计画布节点数
+        int shapesAfter = countShapes(task.getBoardId()); // 生成后节点数
+        int edgesAfter = countEdges(task.getBoardId()); // 生成后连线数
         int expectedShapes = report.createdShapes() - report.deletedShapes();
         if (shapesAfter - shapesBefore != expectedShapes) {
             throw new IllegalStateException("画布节点数量与预期不符：预期 " + expectedShapes + "，实际 "

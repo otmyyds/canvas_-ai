@@ -41,6 +41,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * - GET    /{boardId}         → 单个画布详情
  * - PATCH  /{boardId}         → 重命名画布
  * - PATCH  /{boardId}/layout  → 切换思维导图排布风格并立即重排
+ * - POST   /{boardId}/layout/apply → 整理画布（按连通分量整张重排）
  * - DELETE /{boardId}         → 删除画布（连带图形节点/快照/连线）
  */
 @RestController
@@ -101,6 +102,15 @@ public class BoardController {
         CurrentUser user = currentUserService.resolve(request);
         log.info("切换画布布局：boardId={} style={}", boardId, body.layoutStyle());
         return toResponse(boardLayoutService.updateLayoutStyle(boardId, user, body.layoutStyle()));
+    }
+
+    /** 整理画布：按连通分量把整张画布重新布局 */
+    @PostMapping("/{boardId}/layout/apply")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void applyLayout(@PathVariable UUID boardId, HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        log.info("整理画布：boardId={}", boardId);
+        boardLayoutService.applyLayout(boardId, user);
     }
 
     /**

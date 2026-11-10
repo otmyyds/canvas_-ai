@@ -92,6 +92,14 @@ public class BoardLayoutService {
         return board;
     }
 
+    /** 整理画布：按连通分量把整张画布重新布局，不新增、不删除 */
+    @Transactional
+    public void applyLayout(UUID boardId, CurrentUser user) {
+        boardRepository.findByIdAndOwnerIdForUpdate(boardId, user.id())
+                .orElseThrow(() -> new NotFoundException("画布不存在"));
+        actionApplier.layoutExistingBoard(boardId);
+    }
+
     /** 保存当前树形图排列：签名用于判断切回来时结构是否变化 */
     private String captureRadialLayout(UUID boardId) {
         List<RadialNode> nodes = new ArrayList<>();
@@ -119,6 +127,7 @@ public class BoardLayoutService {
             log.warn("树形图排列记忆解析失败，按算法重排：boardId={}", boardId);
             return false;
         }
+        // 结构变化了：按算法重排
         if (!signature(boardId).equals(memory.signature())) {
             return false;
         }
@@ -126,6 +135,7 @@ public class BoardLayoutService {
         for (RadialNode node : memory.nodes()) {
             byId.put(node.id(), node);
         }
+        // 恢复坐标尺寸
         for (Shape shape : shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId)) {
             RadialNode node = byId.get(shape.getId().toString());
             if (node != null) {

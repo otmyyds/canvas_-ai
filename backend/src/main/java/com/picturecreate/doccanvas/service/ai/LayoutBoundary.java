@@ -62,10 +62,13 @@ final class LayoutBoundary {
     LayoutBoundary combine(LayoutBoundary other, CombineOp op) {
         List<Segment> result = new ArrayList<>();
         for (double[] interval : intervalsWith(other)) {
-            Double left = valueAt(interval[0], interval[1]);
-            Double right = other.valueAt(interval[0], interval[1]);
+            // interval: [x1, x2] 表示左右边界
+            // 取本轮廓和另一轮廓在该区间的值
+            Double left = valueAt(interval[0], interval[1]); // 本轮廓在 [x1, x2] 区间的值
+            Double right = other.valueAt(interval[0], interval[1]); // 另一轮廓在 [x1, x2] 区间的值
             Double value = null;
-            if (left != null && right != null) {
+            // 根据合并方式取值
+            if (left != null && right != null) { // 两边都有定义时取 MAX/MIN
                 value = op == CombineOp.MAX ? Math.max(left, right) : Math.min(left, right);
             } else if (left != null) {
                 value = left;
@@ -130,6 +133,7 @@ final class LayoutBoundary {
         return intervals;
     }
 
+    /** 所有端点，用于确定重合区间 */
     private List<Double> breakpoints() {
         List<Double> points = new ArrayList<>(segments.size() * 2);
         for (Segment segment : segments) {

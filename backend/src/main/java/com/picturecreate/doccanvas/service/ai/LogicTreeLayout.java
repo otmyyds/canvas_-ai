@@ -67,6 +67,7 @@ final class LogicTreeLayout {
     static Map<String, double[]> layout(List<String> nodeIds, GraphLayoutService.SpanningTree tree,
             Map<String, double[]> sizes, Map<String, String> sideByChild) {
         Map<String, Node> nodes = new LinkedHashMap<>();
+        // 补充节点信息（id,width,height）
         for (String id : nodeIds) {
             if (id != null && !id.isBlank() && !nodes.containsKey(id)) {
                 nodes.put(id, new Node(id, GraphLayoutService.widthOf(sizes, id),
@@ -75,11 +76,14 @@ final class LogicTreeLayout {
         }
         Map<String, double[]> positions = new LinkedHashMap<>();
         double cursorY = 0;
+        // tree 记录了节点和各个节点的子节点
+        // 查找各个节点的子节点并补充节点的信息到 nodes
         for (String rootId : tree.roots()) {
             Node root = nodes.get(rootId);
             if (root == null) {
                 continue;
             }
+            // 补充nodes中子节点的信息包括子树高度和width
             buildChildren(root, tree.children(), nodes);
             Map<String, double[]> treePositions = layoutRoot(root, sideByChild);
             double[] box = bounds(treePositions, nodes);
@@ -194,6 +198,7 @@ final class LogicTreeLayout {
 
     /** 后序布局：先排子节点，再堆叠兄弟，最后生成本子树轮廓 */
     private static void layoutSubtree(Node node) {
+        // 叶子节点直接生成轮廓
         if (node.children.isEmpty()) {
             node.subtreeWidth = node.width;
             node.subtreeHeight = node.height;
@@ -220,7 +225,9 @@ final class LogicTreeLayout {
                 // 无共同 x 区间时纵向不受约束；兄弟共享 childX 且宽度为正，正常不会走到这里
                 child.y = Double.isInfinite(separation) ? 0 : V_GAP + separation;
             }
+            // 当前子节点的底部轮廓
             LayoutBoundary placedBottom = child.bottom.translate(childX, child.y);
+            // 累加当前子节点的底部轮廓
             mergedBottom = mergedBottom == null
                     ? placedBottom
                     : mergedBottom.combine(placedBottom, LayoutBoundary.CombineOp.MAX);

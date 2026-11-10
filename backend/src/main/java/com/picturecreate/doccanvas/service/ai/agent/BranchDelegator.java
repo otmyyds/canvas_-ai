@@ -113,7 +113,9 @@ public class BranchDelegator {
                 plan.branches().size(), plan.branches().stream().map(BranchSpec::key).toList());
         runtime.report("已拆分为 " + plan.branches().size() + " 个分支，正在并行展开", 30);
         List<BranchResult> results = runBranches(context, plan, skill, runtime);
+        // 记录分支计划和执行结果
         recordDelegateQuietly(context, plan, results, elapsedMs(start));
+        // 检查中断
         BranchResult aborted = results.stream().filter(BranchResult::aborted).findFirst().orElse(null);
         if (aborted != null) {
             throw new TaskAbortedException();
@@ -174,6 +176,7 @@ public class BranchDelegator {
                 id -> new Semaphore(perUserParallelism, true));
         ExecutorCompletionService<BranchResult> completion = new ExecutorCompletionService<>(branchPool);
         List<BranchTask> tasks = new ArrayList<>();
+        // 提交所有分支任务
         for (BranchSpec branch : plan.branches()) {
             tasks.add(submitBranch(completion, slots, context, branch, plan.rootTitle(), skill, tasks));
         }

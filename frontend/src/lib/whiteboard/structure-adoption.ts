@@ -16,7 +16,7 @@ function rawId(shapeId: string | TLShapeId): string {
   return String(shapeId).replace(/^shape:/, "");
 }
 
-/** 后端连线构成的连通分量里，哪些属于思维导图（含 level > 0） */
+/** 后端连线构成的连通分量里，哪些属于思维导图（含 level > 0，或只有单个待展开的根节点） */
 function mindmapComponents(shapes: BoardShape[], edges: BoardEdge[]): Set<string> {
   const adjacency = new Map<string, Set<string>>();
   const levelById = new Map<string, number>();
@@ -51,7 +51,8 @@ function mindmapComponents(shapes: BoardShape[], edges: BoardEdge[]): Set<string
         }
       }
     }
-    if (component.some((id) => (levelById.get(id) ?? 0) > 0)) {
+    // 单节点分量视为待展开的思维导图根，与后端新建节点的层级规则保持一致
+    if (component.length === 1 || component.some((id) => (levelById.get(id) ?? 0) > 0)) {
       component.forEach((id) => mindmap.add(id));
     }
   }

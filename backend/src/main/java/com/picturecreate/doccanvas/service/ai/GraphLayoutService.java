@@ -70,6 +70,7 @@ public final class GraphLayoutService {
             inDegree.merge(edge[1], 1, Integer::sum);
         }
         List<String> candidates = new ArrayList<>(all);
+        // 按照level排序，level=0优先，其次入度为0，最后原顺序
         candidates.sort(Comparator.comparingInt(id -> rootPriority(id, levels, inDegree)));
 
         List<String> roots = new ArrayList<>();

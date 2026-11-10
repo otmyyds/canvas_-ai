@@ -29,11 +29,11 @@ public class ShapeEditService {
         this.actionApplier = actionApplier;
     }
 
-    /** 在指定父节点下新建子节点  并重排所属分量 */
+    /** 新建节点：parentId 为空时创建独立根节点，否则在父节点下新建子节点并重排所属分量 */
     @Transactional
-    public Shape createChild(UUID boardId, CurrentUser user, UUID parentId, String title) {
+    public Shape createNode(UUID boardId, CurrentUser user, UUID parentId, String title) {
         boardService.getOwned(boardId, user);
-        return actionApplier.createChild(boardId, parentId, title);
+        return actionApplier.createNode(boardId, parentId, title);
     }
 
     /** 删除节点：思维导图删除整棵子树，其他分量只删节点本身，连带清理连线 */

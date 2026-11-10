@@ -72,7 +72,10 @@ public class BoardActionApplier {
     public record ChildOrder(UUID edgeId, String side) {
     }
 
-    /** 纳管画布上手绘的自由图形：本地 tldraw id + 节点内容 */
+    /** 纳管画布上手绘的自由图形：本地 tldraw id + 节点内容
+     * @param localId 本地 tldraw id 本地id表示
+     * @param visual 节点内容 包括位置、尺寸、样式等
+     * */
     public record AdoptNode(String localId, String title, String shape, int level, double x, double y,
             double width, double height, Map<String, String> visual) {
     }
@@ -201,23 +204,42 @@ public class BoardActionApplier {
     }
 
     /**
-     * 用户在画布上手动新建子节点：挂到父节点下并自动连线。
-     * 层级跟随所属分量：思维导图取父层级 + 1，流程图（全为 level 0）保持同层，
-     * 避免给流程图补一个节点就把整个分量判定成思维导图。
+     * 用户手动新建节点：
+     * - parentId 为空：新建独立根节点（中心主题，level 0）；
+     * - parentId 非空：挂到父节点下并自动连线。
      *
+     * 层级跟随所属分量：单节点分量视为思维导图根，新子节点取父层级 + 1；
+     * 已有连线的纯 level 0 分量仍按流程图保持同层。
      * 建完后重排整个分量，新节点由布局算法放置；调用方负责开启事务。
      */
     @Transactional
-    public Shape createChild(UUID boardId, UUID parentId, String title) {
+    public Shape createNode(UUID boardId, UUID parentId, String title) {
         boardRepository.findByIdForUpdate(boardId)
                 .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
-        Shape parent = shapeRepository.findById(parentId)
-                .filter(shape -> shape.getBoardId().equals(boardId))
-                .orElseThrow(() -> new IllegalArgumentException("父节点不存在：" + parentId));
+
+        // 无父节点：新建独立根节点，位置由孤立新节点布局决定
+        if (parentId == null) {
+            String nodeTitle = title == null || title.isBlank() ? "中心主题" : title.trim();
+            String tempId = "new-" + UUID.randomUUID();
+            ApplyReport report = apply(boardId, List.of(
+                    new BoardAction.CreateShape(tempId, nodeTitle, "ellipse", 0, MARGIN, MARGIN, 0, 0)));
+            UUID createdId = report.createdNodes().get(0).id();
+            log.info("手动新建根节点：boardId={} shapeId={}", boardId, createdId);
+            return shapeRepository.findById(createdId)
+                    .orElseThrow(() -> new IllegalStateException("新建根节点失败：" + createdId));
+        }
+
+        Graph graph = loadGraph(boardId);
+        Shape parent = graph.shapeById().get(parentId.toString());
+        if (parent == null) {
+            throw new IllegalArgumentException("父节点不存在：" + parentId);
+        }
         // 新节点必须可见：父节点折叠时先展开
         parent.collapse(false);
-        Graph graph = loadGraph(boardId);
-        boolean mindmap = componentOf(graph, parentId.toString()).stream()
+        List<String> component = componentOf(graph, parentId.toString());
+        // 单节点分量视为思维导图根：新建根的第一个子节点必须取 level 1，
+        // 否则整个分量会被判定为流程图，逻辑图与树形图算法都不会生效
+        boolean mindmap = component.size() == 1 || component.stream()
                 .map(id -> graph.shapeById().get(id))
                 .anyMatch(shape -> shape != null && shape.getLevel() > 0);
         int level = mindmap ? parent.getLevel() + 1 : parent.getLevel();
@@ -545,10 +567,13 @@ public class BoardActionApplier {
         shapeRepository.flush();
         // 获取整个画布的信息包括节点、连线、连通分量等
         Graph graph = loadGraph(board.getId());
+        // 新创建的节点
         Set<String> newIds = toStrings(createdIds);
+        // 受影响的节点
         Set<String> touched = toStrings(createdIds);
         // 将更新的节点加入受影响的集合
         touched.addAll(toStrings(updatedIds));
+        // 得到可见节点
         Set<String> visible = visibleNodes(graph);
         // 按受影响程度分类
         // 分类：锚点固定、全新、孤立新节点
@@ -556,7 +581,7 @@ public class BoardActionApplier {
         List<List<String>> fresh = new ArrayList<>();
         List<String> isolatedNew = new ArrayList<>();
         for (List<String> fullComponent : graph.components()) {
-            // 过滤出可见节点
+            // 过滤出该分量中可见节点
             List<String> component = visibleIn(visible, fullComponent);
             // 如果分量中没有受影响的节点，则跳过
             if (component.stream().noneMatch(touched::contains)) {
@@ -673,8 +698,11 @@ public class BoardActionApplier {
     private Map<String, double[]> layoutComponent(Board board, Graph graph, List<String> component) {
         // 先统一尺寸，后续布局与包围盒都使用最终尺寸
         sizeComponent(board, graph, component);
+        // 记录节点的尺寸
         Map<String, double[]> sizes = sizesOf(graph, component);
+        // 记录节点的层级
         Map<String, Integer> levels = new HashMap<>();
+        // 是否为树形思维导图
         boolean mindmap = false;
         for (String id : component) {
             Shape shape = graph.shapeById().get(id);
@@ -682,11 +710,13 @@ public class BoardActionApplier {
             levels.put(id, level);
             mindmap |= level > 0;
         }
+        // 记录方向
         List<String[]> componentEdges = edgesWithin(graph, new HashSet<>(component));
         if (!mindmap) {
             return GraphLayoutService.layoutFlowchart(component, componentEdges, sizes);
         }
         int maxNodes = properties.ai().layout().radialMaxNodes();
+        // 树形思维导图并且符合最大节点数限制为true
         boolean radial = board.getLayoutStyle() == BoardLayoutStyle.RADIAL && graph.shapes().size() <= maxNodes;
         if (radial) {
             return GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels);
@@ -697,6 +727,7 @@ public class BoardActionApplier {
         for (BoardEdge edge : graph.edges()) {
             String to = edge.getToShapeId().toString();
             if (edge.getSide() != null && componentSet.contains(to)) {
+                // 记录方向和哪侧
                 sideByChild.put(to, edge.getSide());
             }
         }

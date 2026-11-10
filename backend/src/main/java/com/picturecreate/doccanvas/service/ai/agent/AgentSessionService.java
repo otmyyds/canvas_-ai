@@ -79,10 +79,12 @@ public class AgentSessionService {
         if (session == null) {
             return SessionMemory.empty();
         }
+        // 会话消息窗口的大小
         int window = Math.max(1, properties.ai().agent().sessionWindowMessages());
         // 按时间升序获取会话内所有消息
         List<AgentMessage> all = messageRepository.findBySessionIdAndOwnerIdOrderByCreatedAtAsc(
                 session.getId(), session.getOwnerId());
+        // 计算窗口起始位置
         int from = Math.max(0, all.size() - window);
         return new SessionMemory(session.getSummary(), renderHistory(all.subList(from, all.size())));
     }

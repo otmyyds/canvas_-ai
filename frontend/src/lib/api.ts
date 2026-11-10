@@ -190,6 +190,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ layoutStyle })
     }),
+  /** 整理画布：按连通分量重排整张画布 */
+  applyBoardLayout: (boardId: string) =>
+    request<void>(`/api/boards/${boardId}/layout/apply`, { method: "POST" }),
   deleteBoard: (boardId: string) => request<void>(`/api/boards/${boardId}`, { method: "DELETE" }),
 
   // ===== 快照 =====
@@ -200,8 +203,8 @@ export const api = {
   listShapes: (boardId: string) => request<BoardShape[]>(`/api/boards/${boardId}/shapes`),
   /** 删除图形节点（白板删除元素时同步调用，避免刷新复活）；思维导图会连带删除子树与连线 */
   deleteShape: (shapeId: string) => request<void>(`/api/shapes/${shapeId}`, { method: "DELETE" }),
-  /** 在父节点下新建子节点，后端生成节点与连线并重排所属分量 */
-  createShape: (boardId: string, body: { parentId: string; title?: string }) =>
+  /** 新建节点：parentId 为 null 时创建独立根节点，否则在父节点下新建子节点并重排所属分量 */
+  createShape: (boardId: string, body: { parentId: string | null; title?: string }) =>
     request<BoardShape>(`/api/boards/${boardId}/shapes`, { method: "POST", body: JSON.stringify(body) }),
   /** 回写用户手动编辑（拖动位置/改标题/改尺寸），统一 tldraw 快照与 shapes 表 */
   updateShape: (

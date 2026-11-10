@@ -17,6 +17,7 @@ import {
   FolderOpen,
   GitBranch,
   Hand,
+  LayoutGrid,
   Minus,
   MousePointer2,
   Network,
@@ -820,15 +821,28 @@ export function WhiteboardEditor({
     []
   );
 
-  /** 在选中节点下新建子节点：后端负责建节点/连线/重排，前端重新拉取后由同步写回画布 */
+  /** 新建节点：无选中时创建根节点，选中 1 个节点时在其下新建子节点 */
   const addChildNode = useCallback(async () => {
     const editor = editorRef.current;
     if (!editor) {
       return;
     }
     const selected = editor.getSelectedShapeIds();
-    if (selected.length !== 1) {
-      setMessage("请先选中一个节点作为父节点");
+
+    // 未选中任何元素：在画布上新建独立根节点
+    if (selected.length === 0) {
+      try {
+        const created = await api.createShape(boardId, { parentId: null, title: "中心主题" });
+        await onRefresh();
+        setMessage(`已新建根节点：${created.title}`);
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : "新建根节点失败");
+      }
+      return;
+    }
+
+    if (selected.length > 1) {
+      setMessage("请最多选择一个节点作为父节点");
       return;
     }
     const shape = editor.getShape(selected[0]);
@@ -1029,6 +1043,27 @@ export function WhiteboardEditor({
   const taskRunning = tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status));
   const radialDisabled = shapes.length > radialMaxNodes;
 
+  /** 整理画布：先把自由图形/箭头纳管为后端结构，再让后端按连通分量重排整张画布 */
+  const arrangeBoard = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || layoutBusy || taskRunning) {
+      return;
+    }
+    setLayoutBusy(true);
+    try {
+      const adopted = await adoptFreeStructures(editor, boardId, { shapes, edges });
+      await api.applyBoardLayout(boardId);
+      await onRefresh();
+      setMessage(adopted > 0 ? `已纳管 ${adopted} 个自由图形并整理画布` : "已整理画布");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "整理画布失败");
+      // 纳管可能已经成功并删除了本地图形，失败时也要刷新，让后端结构重新渲染
+      await onRefresh().catch(() => undefined);
+    } finally {
+      setLayoutBusy(false);
+    }
+  }, [boardId, edges, layoutBusy, onRefresh, shapes, taskRunning]);
+
   /** 切换排布风格：后端立即重排，父组件刷新 shapes 后由 canvasRevision 同步回 tldraw */
   const changeLayout = useCallback(
     async (style: BoardLayoutStyle) => {
@@ -1174,7 +1209,7 @@ export function WhiteboardEditor({
           </div>
           <GhostButton
             onClick={() => void addChildNode()}
-            title="在选中的节点下新建子节点"
+            title="未选中时新建根节点，选中节点时在其下新建子节点"
           >
             <GitBranch className="h-4 w-4" />
             节点
@@ -1198,6 +1233,14 @@ export function WhiteboardEditor({
           <GhostButton onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
             刷新
+          </GhostButton>
+          <GhostButton
+            onClick={() => void arrangeBoard()}
+            disabled={taskRunning || layoutBusy}
+            title={taskRunning ? "任务执行中，暂不能整理画布" : "把手绘图形和箭头纳入结构并整张重排"}
+          >
+            <LayoutGrid className="h-4 w-4" />
+            整理
           </GhostButton>
           <div className="relative">
             <GhostButton

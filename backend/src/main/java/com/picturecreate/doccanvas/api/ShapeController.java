@@ -34,7 +34,6 @@ import jakarta.servlet.http.HttpServletRequest;
 public class ShapeController {
 
     private static final Logger log = LoggerFactory.getLogger(ShapeController.class);
-
     private final ShapeRepository shapeRepository;
     private final BoardService boardService;
     private final ShapeEditService shapeEditService;
@@ -50,13 +49,13 @@ public class ShapeController {
         this.objectMapper = objectMapper;
     }
 
-    /** 在指定父节点下新建子节点（body: { parentId, title }），并重排所属分量 */
+    /** 新建节点（body: { parentId, title }）：parentId 为空时创建独立根节点，否则挂到父节点下并重排分量 */
     @PostMapping("/api/boards/{boardId}/shapes")
     public ShapeResponse create(@PathVariable UUID boardId, @RequestBody ShapeCreateRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("新建图形节点：boardId={} parentId={} title={}", boardId, body.parentId(), body.title());
-        Shape shape = shapeEditService.createChild(boardId, user, body.parentId(), body.title());
+        Shape shape = shapeEditService.createNode(boardId, user, body.parentId(), body.title());
         return ShapeResponse.from(shape);
     }
 
@@ -148,7 +147,7 @@ public class ShapeController {
             Map<String, String> visual) {
     }
 
-    /** 新建子节点的请求体：父节点 id + 可选标题 */
+    /** 新建节点的请求体：父节点 id（可为空，表示创建根节点）+ 可选标题 */
     public record ShapeCreateRequest(UUID parentId, String title) {
     }
 
