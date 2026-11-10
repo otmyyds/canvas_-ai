@@ -1,7 +1,5 @@
 package com.picturecreate.doccanvas.api;
 
-import java.util.UUID;
-
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -11,9 +9,9 @@ import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AuthDtos.AuthResponse;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.LoginRequest;
+import com.picturecreate.doccanvas.api.dto.AuthDtos.RefreshRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.RegisterRequest;
 import com.picturecreate.doccanvas.service.AuthService;
-import com.picturecreate.doccanvas.service.NotFoundException;
 
 import jakarta.validation.Valid;
 
@@ -41,16 +39,10 @@ public class AuthController {
         return authService.login(body);
     }
 
+    /** 刷新访问令牌：只接收 refreshToken，用户 id 由后端验签后从 claims 解析 */
     @PostMapping("/refresh")
-    public AuthResponse refresh(@RequestBody RefreshBody body) {
-        UUID userId = body.userId() == null ? null : UUID.fromString(body.userId());
-        if (userId == null) {
-            throw new NotFoundException("缺少用户标识");
-        }
-        log.info("刷新令牌：userId={}", userId);
-        return authService.refresh(userId);
-    }
-
-    public record RefreshBody(String userId, String refreshToken) {
+    public AuthResponse refresh(@Valid @RequestBody RefreshRequest body) {
+        log.info("刷新访问令牌");
+        return authService.refresh(body.refreshToken());
     }
 }

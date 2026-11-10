@@ -1,8 +1,11 @@
 package com.picturecreate.doccanvas.service;
 
-import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,9 +26,19 @@ public class BoardService {
         this.boardRepository = boardRepository;
     }
 
+    /**
+     * 分页查询当前用户画布，按更新时间倒序。
+     * page 从 1 开始；size 限制在 1~50，keyword 为空时查全部。
+     */
     @Transactional(readOnly = true)
-    public List<Board> list(CurrentUser user) {
-        return boardRepository.findByOwnerIdOrderByUpdatedAtDesc(user.id());
+    public Page<Board> list(CurrentUser user, int page, int size, String keyword) {
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.min(Math.max(size, 1), 50);
+        Pageable pageable = PageRequest.of(safePage - 1, safeSize, Sort.by(Sort.Direction.DESC, "updatedAt"));
+        if (keyword == null || keyword.isBlank()) {
+            return boardRepository.findByOwnerId(user.id(), pageable);
+        }
+        return boardRepository.findByOwnerIdAndTitleContainingIgnoreCase(user.id(), keyword.trim(), pageable);
     }
 
     @Transactional
