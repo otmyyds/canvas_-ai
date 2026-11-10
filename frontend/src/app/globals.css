@@ -5,7 +5,10 @@
 
 :root {
   color-scheme: light;
-  --background: #f7faf8;
+  /* 主题色以 RGB 三元组保存，Tailwind 的 accent/40 这类透明度写法才能生效 */
+  --accent: 37 99 235;
+  --background: #f6f8fc;
+  --canvas-bg: #edf2fb;
   --foreground: #172026;
 }
 
@@ -22,7 +25,8 @@ body {
   margin: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* 优先使用系统界面字体，中文回退到苹方/微软雅黑，比 Arial 柔和 */
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 button,
@@ -32,9 +36,33 @@ textarea {
 }
 
 .canvas-grid {
-  background-color: #eef4f1;
+  background-color: var(--canvas-bg);
   background-image:
-    linear-gradient(rgba(30, 107, 92, 0.10) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(30, 107, 92, 0.10) 1px, transparent 1px);
+    linear-gradient(rgb(var(--accent) / 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--accent) / 0.10) 1px, transparent 1px);
   background-size: 32px 32px;
+}
+
+/* 下拉菜单出现动画：位移很小，避免频繁操作时显得拖沓 */
+.menu-panel {
+  animation: menu-in 0.12s ease-out;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/*
+ * 流程图形节点（geo）的投影：纯展示样式，不改动图形数据与后端坐标。
+ * tldraw 把所有图形渲染在 SVG 里，投影只能加在容器上。
+ */
+.tl-shape[data-shape-type="geo"] .tl-svg-container {
+  filter: drop-shadow(0 2px 4px rgba(23, 32, 38, 0.10));
 }

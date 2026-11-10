@@ -196,7 +196,7 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
                 type="button"
                 onClick={() => patch({ geo })}
                 className={`rounded px-1.5 py-0.5 capitalize hover:bg-mist ${
-                  selected.geo === geo ? "bg-spruce/15 text-spruce" : "text-ink/70"
+                  selected.geo === geo ? "bg-accent/15 text-accent" : "text-ink/70"
                 }`}
               >
                 {geo}
@@ -214,7 +214,7 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
                 type="button"
                 onClick={() => patch({ dash })}
                 className={`rounded px-1.5 py-0.5 hover:bg-mist ${
-                  selected.dash === dash ? "bg-spruce/15 text-spruce" : "text-ink/70"
+                  selected.dash === dash ? "bg-accent/15 text-accent" : "text-ink/70"
                 }`}
               >
                 {dashLabel[dash] ?? dash}
@@ -232,7 +232,7 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
                 type="button"
                 onClick={() => patch({ arrowheadStart: head, arrowheadEnd: head })}
                 className={`rounded px-1.5 py-0.5 hover:bg-mist ${
-                  selected.arrowEnd === head ? "bg-spruce/15 text-spruce" : "text-ink/70"
+                  selected.arrowEnd === head ? "bg-accent/15 text-accent" : "text-ink/70"
                 }`}
               >
                 {head}
@@ -250,7 +250,7 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
                 type="button"
                 onClick={() => patch({ color })}
                 className={`h-4 w-4 rounded-full border ${
-                  selected.color === color ? "ring-2 ring-spruce" : "border-ink/20"
+                  selected.color === color ? "ring-2 ring-accent" : "border-ink/20"
                 }`}
                 style={{ backgroundColor: colorHex(color) }}
                 title={color}
@@ -263,7 +263,7 @@ export function ElementInspector({ editor }: ElementInspectorProps) {
           <span className="w-8 text-ink/55">旋转</span>
           <button
             type="button"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ink/15 bg-white text-ink/60 transition hover:border-spruce/50 hover:text-spruce active:bg-spruce/10"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ink/15 bg-white text-ink/60 transition hover:border-accent/50 hover:text-accent active:bg-accent/10"
             title="按住并拖动旋转，跟随鼠标角度"
             onPointerDown={startRotateDrag}
             onPointerMove={moveRotateDrag}

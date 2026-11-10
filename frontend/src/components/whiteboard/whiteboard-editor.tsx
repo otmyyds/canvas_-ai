@@ -12,6 +12,7 @@ import {
 import type { Editor as TldrawEditor } from "@tldraw/editor";
 import {
   ArrowRight,
+  ChevronDown,
   Download,
   FileImage,
   FolderOpen,
@@ -38,7 +39,7 @@ import type {
   SourceFile
 } from "@/lib/types";
 import { api } from "@/lib/api";
-import { GhostButton, IconButton } from "@/components/ui";
+import { GhostButton, ToolButton } from "@/components/ui";
 import { SourcePanel } from "@/components/board/source-panel";
 import { TaskPanel } from "@/components/board/task-panel";
 import { ElementInspector } from "@/components/whiteboard/element-inspector";
@@ -739,6 +740,8 @@ export function WhiteboardEditor({
     editor.focus();
     // 滚轮直接平移画布（默认是缩放），配合手工具/中键拖动
     editor.setCameraOptions({ wheelBehavior: "pan" });
+    // 画布固定浅色：节点默认样式按浅色配色设计，跟随系统暗色会导致文字对比度失效
+    editor.user.updateUserPreferences({ colorScheme: "light" });
     setEditorReady(true);
   }, []);
 
@@ -773,12 +776,16 @@ export function WhiteboardEditor({
     return () => unlisten();
   }, [editorReady, onSelectionChange]);
 
+  // 工具按钮的高亮状态：只跟踪工具栏切换，键盘快捷键切换不在此处同步
+  const [activeTool, setActiveTool] = useState("select");
+
   const setTool = useCallback((toolId: string, hint: string) => {
     const editor = editorRef.current;
     if (!editor) {
       return;
     }
     editor.setCurrentTool(toolId);
+    setActiveTool(toolId);
     setMessage(hint);
   }, []);
 
@@ -831,7 +838,8 @@ export function WhiteboardEditor({
           growY: 0,
           scale: 1,
           labelColor: "black",
-          color: "green",
+          // 手绘图形默认色改为蓝色，与旧版默认的绿色区分开
+          color: "blue",
           fill: "none",
           size: "m",
           font: "draw",
@@ -1178,43 +1186,81 @@ export function WhiteboardEditor({
             onClick={() => setSourceOpen(false)}
             aria-label="关闭资料面板"
           />
-          <div className="absolute left-2 top-16 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg">
+          <div className="absolute left-2 top-24 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg">
             <SourcePanel files={files} onUpload={onUploadFile} onDelete={onDeleteFile} />
           </div>
         </>
       ) : null}
 
       <section
-        className="relative min-h-0 flex-1 overflow-hidden bg-[#eef4f1]"
+        className="relative min-h-0 flex-1 overflow-hidden bg-canvas"
         onClick={() => setSourceOpen(false)}
       >
         <div
-          className="absolute left-4 top-4 z-20 flex flex-wrap gap-2"
+          className="absolute left-4 top-4 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-1 rounded-xl border border-ink/10 bg-white/95 p-1.5 shadow-lg backdrop-blur"
           onClick={(event) => event.stopPropagation()}
         >
-          <GhostButton onClick={() => setSourceOpen((value) => !value)} title="上传/管理资料">
+          {/* 资料与图片 */}
+          <ToolButton
+            active={sourceOpen}
+            onClick={() => {
+              setSourceOpen((value) => !value);
+              setShapeOpen(false);
+              setLayoutOpen(false);
+              setExportOpen(false);
+            }}
+            title="上传/管理资料"
+          >
             <FolderOpen className="h-4 w-4" />
             资料
-          </GhostButton>
-          <GhostButton onClick={() => setTool("select", "已切换到选择工具")}>
-            <MousePointer2 className="h-4 w-4" />
-            选择
-          </GhostButton>
-          <GhostButton onClick={() => setTool("hand", "已切换到抓手工具：按住拖动可平移画布，滚轮缩放；切回选择可编辑")}>
-            <Hand className="h-4 w-4" />
-            平移
-          </GhostButton>
-          <GhostButton onClick={addText}>
+          </ToolButton>
+          <ToolButton onClick={() => fileInputRef.current?.click()} title="插入图片">
+            <FileImage className="h-4 w-4" />
+            图片
+          </ToolButton>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          {/* 选择 / 平移：二选一的分段按钮 */}
+          <div className="flex items-center gap-0.5 rounded-lg bg-ink/[0.04] p-0.5">
+            <ToolButton
+              active={activeTool === "select"}
+              onClick={() => setTool("select", "已切换到选择工具")}
+            >
+              <MousePointer2 className="h-4 w-4" />
+              选择
+            </ToolButton>
+            <ToolButton
+              active={activeTool === "hand"}
+              onClick={() => setTool("hand", "已切换到抓手工具：按住拖动可平移画布，滚轮缩放；切回选择可编辑")}
+            >
+              <Hand className="h-4 w-4" />
+              平移
+            </ToolButton>
+          </div>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          {/* 插入元素 */}
+          <ToolButton onClick={addText}>
             <Text className="h-4 w-4" />
             文本
-          </GhostButton>
+          </ToolButton>
           <div className="relative">
-            <GhostButton onClick={() => setShapeOpen((value) => !value)}>
+            <ToolButton
+              active={shapeOpen}
+              onClick={() => {
+                setShapeOpen((value) => !value);
+                setLayoutOpen(false);
+                setExportOpen(false);
+              }}
+            >
               <Square className="h-4 w-4" />
               图形
-            </GhostButton>
+              <ChevronDown className="h-3 w-3 text-ink/35" />
+            </ToolButton>
             {shapeOpen ? (
-              <div className="absolute left-0 top-full z-30 mt-1 grid w-40 grid-cols-2 gap-0.5 rounded-md border border-ink/10 bg-white p-1 shadow-md">
+              <div className="menu-panel absolute left-0 top-full z-30 mt-1 grid w-44 grid-cols-2 gap-0.5 rounded-lg border border-ink/10 bg-white p-1 shadow-lg">
                 {SHAPE_TYPES.map((shape) => (
                   <button
                     key={shape.value}
@@ -1223,7 +1269,7 @@ export function WhiteboardEditor({
                       setShapeOpen(false);
                       addShape(shape.value);
                     }}
-                    className="flex items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] capitalize text-ink/80 hover:bg-mist"
+                    className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] capitalize text-ink/80 transition hover:bg-accent/10 hover:text-accent"
                   >
                     {shape.icon}
                     <span>{shape.label}</span>
@@ -1232,57 +1278,55 @@ export function WhiteboardEditor({
               </div>
             ) : null}
           </div>
-          <GhostButton
+          <ToolButton
             onClick={() => void addChildNode()}
             title="未选中时新建根节点，选中节点时在其下新建子节点"
           >
             <GitBranch className="h-4 w-4" />
             节点
-          </GhostButton>
-          <GhostButton onClick={addLine}>
+          </ToolButton>
+          <ToolButton active={activeTool === "line"} onClick={addLine}>
             <Minus className="h-4 w-4" />
             线条
-          </GhostButton>
-          <GhostButton onClick={addArrow}>
+          </ToolButton>
+          <ToolButton active={activeTool === "arrow"} onClick={addArrow}>
             <ArrowRight className="h-4 w-4" />
             箭头
-          </GhostButton>
-          <GhostButton onClick={() => fileInputRef.current?.click()}>
-            <FileImage className="h-4 w-4" />
-            图片
-          </GhostButton>
-          <GhostButton onClick={deleteSelected}>
-            <Trash2 className="h-4 w-4" />
-            删除
-          </GhostButton>
-          <GhostButton onClick={refresh}>
-            <RefreshCw className="h-4 w-4" />
-            刷新
-          </GhostButton>
-          <GhostButton
+          </ToolButton>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          {/* 结构：整理与布局切换 */}
+          <ToolButton
             onClick={() => void arrangeBoard()}
             disabled={taskRunning || layoutBusy}
             title={taskRunning ? "任务执行中，暂不能整理画布" : "把手绘图形和箭头纳入结构并整张重排"}
           >
             <LayoutGrid className="h-4 w-4" />
             整理
-          </GhostButton>
+          </ToolButton>
           <div className="relative">
-            <GhostButton
-              onClick={() => setLayoutOpen((value) => !value)}
+            <ToolButton
+              active={layoutOpen}
+              onClick={() => {
+                setLayoutOpen((value) => !value);
+                setShapeOpen(false);
+                setExportOpen(false);
+              }}
               disabled={taskRunning || layoutBusy}
               title={taskRunning ? "任务执行中，暂不能切换布局" : "切换思维导图排布"}
             >
               <Network className="h-4 w-4" />
               布局
-            </GhostButton>
+              <ChevronDown className="h-3 w-3 text-ink/35" />
+            </ToolButton>
             {layoutOpen ? (
-              <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-md border border-ink/10 bg-white p-1 shadow-md">
+              <div className="menu-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-lg border border-ink/10 bg-white p-1 shadow-lg">
                 <button
                   type="button"
                   onClick={() => void changeLayout("LOGIC")}
-                  className={`block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-mist ${
-                    layoutStyle === "LOGIC" ? "bg-mist font-medium text-spruce" : "text-ink"
+                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-accent/5 ${
+                    layoutStyle === "LOGIC" ? "bg-accent/10 font-medium text-accent" : "text-ink"
                   }`}
                 >
                   逻辑图
@@ -1292,8 +1336,8 @@ export function WhiteboardEditor({
                   type="button"
                   disabled={radialDisabled}
                   onClick={() => void changeLayout("RADIAL")}
-                  className={`block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-mist disabled:cursor-not-allowed disabled:opacity-45 ${
-                    layoutStyle === "RADIAL" ? "bg-mist font-medium text-spruce" : "text-ink"
+                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-accent/5 disabled:cursor-not-allowed disabled:opacity-45 ${
+                    layoutStyle === "RADIAL" ? "bg-accent/10 font-medium text-accent" : "text-ink"
                   }`}
                 >
                   树形图
@@ -1304,20 +1348,40 @@ export function WhiteboardEditor({
               </div>
             ) : null}
           </div>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          {/* 画布操作 */}
+          <ToolButton onClick={() => void refresh()} title="重新拉取后端数据">
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </ToolButton>
+          <ToolButton className="w-8 px-0" onClick={() => void saveSnapshot()} title="立即保存">
+            <Save className="h-4 w-4" />
+          </ToolButton>
           <div className="relative">
-            <GhostButton onClick={() => setExportOpen((value) => !value)} title="导出画布">
+            <ToolButton
+              active={exportOpen}
+              onClick={() => {
+                setExportOpen((value) => !value);
+                setShapeOpen(false);
+                setLayoutOpen(false);
+              }}
+              title="导出画布"
+            >
               <Download className="h-4 w-4" />
               导出
-            </GhostButton>
+              <ChevronDown className="h-3 w-3 text-ink/35" />
+            </ToolButton>
             {exportOpen ? (
-              <div className="absolute left-0 top-full z-30 mt-1 w-40 rounded-md border border-ink/10 bg-white p-1 shadow-md">
+              <div className="menu-panel absolute right-0 top-full z-30 mt-1 w-40 rounded-lg border border-ink/10 bg-white p-1 shadow-lg">
                 <button
                   type="button"
                   onClick={() => {
                     setExportOpen(false);
                     void exportPng();
                   }}
-                  className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
+                  className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink transition hover:bg-accent/5"
                 >
                   导出 PNG
                 </button>
@@ -1327,16 +1391,24 @@ export function WhiteboardEditor({
                     setExportOpen(false);
                     exportMarkdown();
                   }}
-                  className="block w-full rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-mist"
+                  className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink transition hover:bg-accent/5"
                 >
                   导出 Markdown
                 </button>
               </div>
             ) : null}
           </div>
-          <IconButton onClick={() => void saveSnapshot()} title="立即保存">
-            <Save className="h-4 w-4" />
-          </IconButton>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          <ToolButton
+            className="!text-coral hover:!bg-coral/10 hover:!text-coral"
+            onClick={deleteSelected}
+            title="删除选中元素"
+          >
+            <Trash2 className="h-4 w-4" />
+            删除
+          </ToolButton>
           <input
             ref={fileInputRef}
             type="file"
@@ -1352,7 +1424,7 @@ export function WhiteboardEditor({
           />
         </div>
 
-        <div className="absolute left-4 top-16 z-20 max-w-[26rem] rounded-md border border-ink/10 bg-white/95 px-3 py-2 text-xs text-ink/60 shadow-sm">
+        <div className="absolute left-4 top-24 z-20 max-w-[26rem] rounded-lg border border-ink/10 bg-white/95 px-3 py-2 text-xs text-ink/60 shadow-sm backdrop-blur">
           <div className="flex items-center gap-2">
             <Shield className="h-3.5 w-3.5" />
             <span>{message}</span>

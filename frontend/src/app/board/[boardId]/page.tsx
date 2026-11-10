@@ -8,6 +8,7 @@ import type { BoardLayoutStyle, TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
 import { WhiteboardEditor } from "@/components/whiteboard/whiteboard-editor";
+import { ThemePicker } from "@/components/theme-picker";
 import { GhostButton } from "@/components/ui";
 
 type BoardPageProps = {
@@ -250,11 +251,11 @@ function BoardEditor({ boardId }: { boardId: string }) {
                     setEditingTitle(false);
                   }
                 }}
-                className="w-64 rounded border border-spruce/40 px-1 py-0.5 text-sm font-semibold text-ink outline-none"
+                className="w-64 rounded border border-accent/40 px-1 py-0.5 text-sm font-semibold text-ink outline-none"
               />
             ) : (
               <h1
-                className="cursor-pointer text-sm font-semibold text-ink hover:text-spruce"
+                className="cursor-pointer text-sm font-semibold text-ink hover:text-accent"
                 title="点击重命名"
                 onClick={() => {
                   setTitleDraft(board?.title ?? "");
@@ -268,6 +269,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <ThemePicker />
           <GhostButton onClick={() => void share()} title="生成只读分享链接">
             <Share2 className="h-4 w-4" />
             {shareCopied ? "已复制" : "分享"}

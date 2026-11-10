@@ -1,9 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Ban, Bot, Loader2, Send, User } from "lucide-react";
+import { Ban, Bot, Loader2, PanelRightClose, Send, User } from "lucide-react";
 import type { AiTask, AiTaskType, AssistResult } from "@/lib/types";
-import { Button, GhostButton, Textarea } from "@/components/ui";
+import { Button, GhostButton, IconButton, Textarea } from "@/components/ui";
 
 type TaskPanelProps = {
   boardId: string;
@@ -81,6 +81,17 @@ const taskLabel: Record<AiTaskType, string> = {
 /** 会话持久化 key（按画布隔离） */
 const sessionKey = (boardId: string) => `dc_chat_${boardId}`;
 
+/** 面板展开状态持久化 key：用户隐藏后刷新页面仍然保持隐藏 */
+const PANEL_OPEN_KEY = "dc_chat_open";
+
+function loadPanelOpen(): boolean {
+  try {
+    return window.localStorage.getItem(PANEL_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 type PersistedMessage = {
   role: "user" | "assistant";
   content: string;
@@ -128,6 +139,8 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  // 面板可隐藏：收起后保留一条窄边栏，需要时点一下再展开
+  const [open, setOpen] = useState(() => (typeof window === "undefined" ? true : loadPanelOpen()));
   const listRef = useRef<HTMLDivElement>(null);
   const activeTask = useMemo(() => tasks.find((task) => activeStatuses.has(task.status)), [tasks]);
   // 已展示的任务 id，避免任务重复出现
@@ -197,15 +210,52 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
     }
   }
 
+  function toggleOpen(next: boolean) {
+    setOpen(next);
+    try {
+      window.localStorage.setItem(PANEL_OPEN_KEY, next ? "1" : "0");
+    } catch {
+      // 存储失败只影响刷新后的默认状态，当前会话仍然生效
+    }
+  }
+
+  // 收起后只留一条窄边栏：不遮挡画布，随时可以点开
+  if (!open) {
+    return (
+      <aside className="flex w-12 shrink-0 flex-col items-center border-l border-ink/10 bg-white py-3">
+        <IconButton title="展开 AI 助手" aria-label="展开 AI 助手" onClick={() => toggleOpen(true)}>
+          <Bot className="h-4 w-4" />
+        </IconButton>
+        <span className="mt-3 select-none text-[11px] font-medium tracking-[0.2em] text-ink/45 [writing-mode:vertical-rl]">
+          AI 助手
+        </span>
+        <span
+          className={`mb-1 mt-auto h-2 w-2 rounded-full ${connectionDotClass(connection)}`}
+          title={`连接：${connectionText[connection] ?? connection}`}
+        />
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l border-ink/10 bg-white">
       <div className="border-b border-ink/10 px-4 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-spruce" />
+            <Bot className="h-4 w-4 text-accent" />
             <h2 className="text-sm font-semibold text-ink">AI 助手</h2>
           </div>
-          <span className="text-xs text-ink/50">连接：{connectionText[connection] ?? connection}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-ink/50">连接：{connectionText[connection] ?? connection}</span>
+            <IconButton
+              className="h-7 w-7"
+              title="隐藏 AI 助手"
+              aria-label="隐藏 AI 助手"
+              onClick={() => toggleOpen(false)}
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </IconButton>
+          </div>
         </div>
       </div>
 
@@ -227,14 +277,14 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
             <div key={index} className="space-y-2">
               {message.role === "user" ? (
                 <div className="flex justify-end">
-                  <div className="max-w-[85%] rounded-xl rounded-br-sm bg-spruce px-3 py-2 text-sm text-white">
+                  <div className="max-w-[85%] rounded-xl rounded-br-sm bg-accent px-3 py-2 text-sm text-white">
                     {message.content}
                   </div>
                 </div>
               ) : (
                 <div className="flex gap-2">
                   <div className="mt-0.5 shrink-0">
-                    <User className="h-3.5 w-3.5 text-spruce" />
+                    <User className="h-3.5 w-3.5 text-accent" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-ink/60">{message.content}</p>
@@ -258,19 +308,19 @@ export function TaskPanel({ boardId, tasks, connection, onAssist, onAbortTask, s
               onClick={() => {
                 setPrompt(`${taskLabel[type] ?? type}：`);
               }}
-              className="rounded border border-ink/10 bg-mist px-2 py-1 text-[11px] text-ink/70 transition hover:border-spruce/40 hover:text-spruce disabled:opacity-50"
+              className="rounded border border-ink/10 bg-mist px-2 py-1 text-[11px] text-ink/70 transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
             >
               {taskLabel[type] ?? type}
             </button>
           ))}
         </div>
         {activeTask ? (
-          <div className="mb-2 rounded-md border border-spruce/20 bg-spruce/5 px-3 py-2 text-xs text-spruce">
+          <div className="mb-2 rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-xs text-accent">
             有任务执行中（{activeTask.currentStep ?? "准备中"} {activeTask.progress}%）...
           </div>
         ) : null}
         {selectionCount > 0 ? (
-          <div className="mb-2 rounded-md border border-spruce/20 bg-spruce/5 px-3 py-2 text-xs text-spruce">
+          <div className="mb-2 rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-xs text-accent">
             已选中 {selectionCount} 个元素，修改/丰富/添加分支/删除将针对它们
           </div>
         ) : null}
@@ -322,7 +372,7 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-ink">{taskStatusText[task.status] ?? task.status}</span>
         {activeStatuses.has(task.status) && totalSteps > 0 ? (
-          <span className="text-[11px] text-spruce">第 {currentIndex} / {totalSteps} 步</span>
+          <span className="text-[11px] text-accent">第 {currentIndex} / {totalSteps} 步</span>
         ) : null}
         {activeStatuses.has(task.status) ? (
           <button type="button" onClick={() => void onAbort(task.id)} className="text-[11px] text-coral hover:underline">
@@ -332,7 +382,7 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
       </div>
 
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-        <div className="h-full rounded-full bg-spruce transition-all" style={{ width: `${task.progress}%` }} />
+        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${task.progress}%` }} />
       </div>
 
       {/* 纵向计划列表：序号、标题、状态、说明与每步实际效果 */}
@@ -360,10 +410,10 @@ function TaskCard({ task, onAbort }: { task: AiTask; onAbort: (taskId: string) =
                   <p className="mt-0.5 text-[11px] leading-4 text-ink/50">{step.description}</p>
                 ) : null}
                 {step.status === "RUNNING" && step.message ? (
-                  <p className="mt-0.5 animate-pulse text-[11px] leading-4 text-spruce">{step.message}</p>
+                  <p className="mt-0.5 animate-pulse text-[11px] leading-4 text-accent">{step.message}</p>
                 ) : null}
                 {step.status === "DONE" && step.resultMessage ? (
-                  <p className="mt-0.5 text-[11px] leading-4 text-spruce">{step.resultMessage}</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-accent">{step.resultMessage}</p>
                 ) : null}
                 {step.status === "FAILED" && step.errorMessage ? (
                   <p className="mt-0.5 text-[11px] leading-4 text-coral">{step.errorMessage}</p>
@@ -406,9 +456,9 @@ function usageParts(task: AiTask): string[] {
 function stepDotClass(status: string): string {
   switch (status) {
     case "DONE":
-      return "bg-spruce text-white";
+      return "bg-accent text-white";
     case "RUNNING":
-      return "animate-pulse bg-spruce/15 text-spruce";
+      return "animate-pulse bg-accent/15 text-accent";
     case "FAILED":
       return "bg-coral/15 text-coral";
     case "ABORTED":
@@ -420,13 +470,27 @@ function stepDotClass(status: string): string {
   }
 }
 
+/** 收起状态下的连接指示灯：已连接为实心主题色，连接中闪烁，其余为灰色 */
+function connectionDotClass(connection: string): string {
+  switch (connection) {
+    case "connected":
+      return "bg-accent";
+    case "connecting":
+      return "animate-pulse bg-amber";
+    case "error":
+      return "bg-coral";
+    default:
+      return "bg-ink/25";
+  }
+}
+
 /** 步骤状态文字的配色 */
 function stepStatusClass(status: string): string {
   switch (status) {
     case "DONE":
-      return "text-[10px] text-spruce";
+      return "text-[10px] text-accent";
     case "RUNNING":
-      return "text-[10px] font-medium text-spruce";
+      return "text-[10px] font-medium text-accent";
     case "FAILED":
       return "text-[10px] text-coral";
     default:

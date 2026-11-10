@@ -79,6 +79,8 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
 
   const onMount = useCallback(
     (editor: TldrawEditor) => {
+      // 与编辑页保持一致，分享页也固定浅色画布
+      editor.user.updateUserPreferences({ colorScheme: "light" });
       if (board.snapshotJson) {
         const parsed = parseTldrawJsonFile({ json: board.snapshotJson, schema: editor.store.schema });
         if (parsed.ok) {
@@ -97,7 +99,7 @@ function ReadonlyCanvas({ board }: { board: SharedBoard }) {
   );
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-[#eef4f1]">
+    <div className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
       <Tldraw
         store={store}
         onMount={onMount}

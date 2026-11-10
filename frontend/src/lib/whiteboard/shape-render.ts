@@ -36,11 +36,6 @@ export function geoVisualFingerprint(props: {
   return JSON.stringify([props.geo ?? "", props.color ?? "", props.fill ?? "", props.dash ?? ""]);
 }
 
-/** 后端节点记录的视觉属性指纹，与 geoVisualFingerprint 保持同一格式 */
-export function nodeVisualFingerprint(node: BoardShape): string {
-  return node.visual ? geoVisualFingerprint(node.visual) : "";
-}
-
 type ShapeId = ReturnType<typeof createShapeId>;
 
 /**
@@ -119,6 +114,61 @@ const GEO_TYPES = new Set<string>([
 function geoTypeOf(node: BoardShape): TLGeoShape["props"]["geo"] {
   const raw = node.visual?.geo ?? node.shape;
   return (GEO_TYPES.has(raw) ? raw : "rectangle") as TLGeoShape["props"]["geo"];
+}
+
+/** 节点最终生效的视觉属性：纳管图形用原属性，AI 节点用统一默认样式 */
+type NodeVisual = {
+  geo: TLGeoShape["props"]["geo"];
+  color: TLGeoShape["props"]["color"];
+  fill: TLGeoShape["props"]["fill"];
+  dash: TLGeoShape["props"]["dash"];
+  labelColor: TLGeoShape["props"]["labelColor"];
+};
+
+/**
+ * AI 图形节点的默认视觉（不涉及数据库结构，只是渲染参数）：
+ * 中心节点蓝色实心 + 白字，其余节点蓝色描边 + 浅色填充，配合 CSS 投影形成层次。
+ * 沿用蓝色系是因为已有画布里大量节点保存过这套颜色，新旧节点放在一起不会有色差。
+ * 纳管自由图形时保留用户原来的颜色/填充/线型。
+ */
+function effectiveVisual(node: BoardShape): NodeVisual {
+  if (node.visual) {
+    const color = (node.visual.color ?? "blue") as TLGeoShape["props"]["color"];
+    const fill = (node.visual.fill ?? "semi") as TLGeoShape["props"]["fill"];
+    return {
+      geo: geoTypeOf(node),
+      color,
+      fill,
+      dash: (node.visual.dash ?? "solid") as TLGeoShape["props"]["dash"],
+      labelColor: labelColorFor(color, fill)
+    };
+  }
+  const isCenter = node.level === 0;
+  const color = "blue" as const;
+  const fill = (isCenter ? "solid" : "semi") as TLGeoShape["props"]["fill"];
+  return {
+    geo: geoTypeOf(node),
+    color,
+    fill,
+    dash: "solid",
+    labelColor: labelColorFor(color, fill)
+  };
+}
+
+/** 深色实心填充上用白字，浅色填充沿用 tldraw 默认的黑字 */
+function labelColorFor(
+  color: TLGeoShape["props"]["color"],
+  fill: TLGeoShape["props"]["fill"]
+): TLGeoShape["props"]["labelColor"] {
+  const darkSolid = color === "black" || color === "blue" || color === "green"
+    || color === "violet" || color === "red" || color === "orange";
+  return fill === "solid" && darkSolid ? "white" : "black";
+}
+
+/** 视觉属性指纹：与回写基线使用同一套默认值，避免默认样式被当成用户编辑写回后端 */
+function visualFingerprint(node: BoardShape): string {
+  const visual = effectiveVisual(node);
+  return geoVisualFingerprint(visual);
 }
 
 /**
@@ -410,25 +460,24 @@ function createGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
     });
     return;
   }
-  // 纳管自由图形时保存的视觉属性优先，没有记录则按层级给默认配色
-  const visual = node.visual ?? null;
-  const isCenter = node.level === 0;
+  // 纳管自由图形时保留原视觉属性，AI 节点使用统一默认样式
+  const visual = effectiveVisual(node);
   editor.createShape({
     id: shapeId,
     type: "geo",
     x: node.x,
     y: node.y,
     props: {
-      geo: geoTypeOf(node),
-      dash: (visual?.dash ?? "solid") as TLGeoShape["props"]["dash"],
+      geo: visual.geo,
+      dash: visual.dash,
       url: "",
       w: node.width,
       h: node.height,
       growY: 0,
       scale: 1,
-      labelColor: "black",
-      color: (visual?.color ?? (isCenter ? "green" : "blue")) as TLGeoShape["props"]["color"],
-      fill: (visual?.fill ?? (isCenter ? "solid" : "semi")) as TLGeoShape["props"]["fill"],
+      labelColor: visual.labelColor,
+      color: visual.color,
+      fill: visual.fill,
       size: "m",
       font: "draw",
       align: "middle",
@@ -451,9 +500,8 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
   }
   const titleChanged = editor.getShapeUtil(shape).getText(shape) !== node.title;
   const moved = shape.x !== node.x || shape.y !== node.y;
-  // 纳管自由图形时保存的视觉属性优先，没有记录则按层级给默认配色
-  const visual = node.visual ?? null;
-  const isCenter = node.level === 0;
+  // 与创建时使用同一套视觉属性，保证同步后的样式一致
+  const visual = effectiveVisual(node);
 
   if (type === "mindmap-node") {
     const props = shape.props as MindmapNodeShape["props"];
@@ -501,21 +549,20 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
   if (props.h !== node.height) {
     propsUpdate.h = node.height;
   }
-  const desiredGeo = geoTypeOf(node);
-  if (props.geo !== desiredGeo) {
-    propsUpdate.geo = desiredGeo;
+  if (props.geo !== visual.geo) {
+    propsUpdate.geo = visual.geo;
   }
-  const desiredColor = (visual?.color ?? (isCenter ? "green" : "blue")) as TLGeoShape["props"]["color"];
-  if (props.color !== desiredColor) {
-    propsUpdate.color = desiredColor;
+  if (props.color !== visual.color) {
+    propsUpdate.color = visual.color;
   }
-  const desiredFill = (visual?.fill ?? (isCenter ? "solid" : "semi")) as TLGeoShape["props"]["fill"];
-  if (props.fill !== desiredFill) {
-    propsUpdate.fill = desiredFill;
+  if (props.fill !== visual.fill) {
+    propsUpdate.fill = visual.fill;
   }
-  const desiredDash = (visual?.dash ?? "solid") as TLGeoShape["props"]["dash"];
-  if (props.dash !== desiredDash) {
-    propsUpdate.dash = desiredDash;
+  if (props.dash !== visual.dash) {
+    propsUpdate.dash = visual.dash;
+  }
+  if (props.labelColor !== visual.labelColor) {
+    propsUpdate.labelColor = visual.labelColor;
   }
   const sizeChanged = propsUpdate.w !== undefined || propsUpdate.h !== undefined;
   if (sizeChanged) {
@@ -525,9 +572,10 @@ function updateGraphShape(editor: TldrawEditor, node: BoardShape, shapeId: Shape
   if (!moved && Object.keys(propsUpdate).length === 0) {
     return false;
   }
-  // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写
+  // 先更新基线再应用，store 监听在 updateShapes 内同步触发时不会再排队回写；
+  // 指纹用生效后的默认视觉，避免 AI 节点每次同步都把默认样式写回后端
   baseline?.set(node.id, shapeStateFingerprint(node.x, node.y, node.width, node.height, node.title,
-    nodeVisualFingerprint(node)));
+    visualFingerprint(node)));
   editor.updateShape<TLGeoShape>({
     id: shapeId,
     type: "geo",

@@ -195,7 +195,11 @@ export function MindmapCollapse({ editor, shapes, edges, busy, onToggle }: Mindm
             type="button"
             disabled={busy}
             title={handle.collapsed ? `展开 ${count} 个后代节点` : "折叠子节点"}
-            className="pointer-events-auto absolute flex h-6 min-w-6 items-center justify-center rounded-full border border-[#808080]/45 bg-white px-1 text-[10px] font-medium text-[#5a5a5a] shadow-sm transition hover:border-spruce hover:text-spruce disabled:opacity-50"
+            className={`pointer-events-auto absolute flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              handle.collapsed
+                ? "border-2 border-white bg-accent text-white shadow-md shadow-accent/35 ring-1 ring-accent/25 hover:bg-accent/90"
+                : "border border-[#808080]/45 bg-white text-[#5a5a5a] shadow-sm hover:border-accent hover:text-accent"
+            }`}
             style={{
               left: handle.left,
               top: handle.top,

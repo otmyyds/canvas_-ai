@@ -7,6 +7,7 @@ import { FilePlus2, Loader2, LogOut, Plus, Search, Trash2 } from "lucide-react";
 import { api, authToken, clearAuthSession } from "@/lib/api";
 import type { Board } from "@/lib/types";
 import { Button, GhostButton, Input } from "@/components/ui";
+import { ThemePicker } from "@/components/theme-picker";
 
 export default function WorkspacePage() {
   const router = useRouter();
@@ -75,6 +76,7 @@ export default function WorkspacePage() {
               <Search className="h-4 w-4" />
               <span>私人工作区</span>
             </div>
+            <ThemePicker />
             <GhostButton onClick={logout} title="退出登录">
               <LogOut className="h-4 w-4" />
               退出
@@ -118,14 +120,14 @@ export default function WorkspacePage() {
 
           {!loading && boards.length === 0 ? (
             <div className="flex min-h-44 flex-col items-start justify-center rounded-md border border-dashed border-ink/20 bg-white px-5">
-              <FilePlus2 className="h-7 w-7 text-spruce" />
+              <FilePlus2 className="h-7 w-7 text-accent" />
               <h3 className="mt-3 font-medium text-ink">还没有画布</h3>
               <p className="mt-1 text-sm text-ink/55">先创建一个，再进入编辑器发起 AI 任务。</p>
             </div>
           ) : null}
 
           {boards.map((board) => (
-            <div key={board.id} className="group relative rounded-md border border-ink/10 bg-white shadow-sm transition hover:border-spruce/40 hover:shadow-soft">
+            <div key={board.id} className="group relative rounded-md border border-ink/10 bg-white shadow-sm transition hover:border-accent/40 hover:shadow-soft">
               <Link
                 href={`/board/${board.id}`}
                 className="block p-5"
@@ -137,7 +139,7 @@ export default function WorkspacePage() {
                       {board.visibility === "PRIVATE" ? "私有画布" : "只读分享"}
                     </p>
                   </div>
-                  <span className="rounded-md bg-spruce/10 px-2 py-1 text-xs font-medium text-spruce">打开</span>
+                  <span className="rounded-md bg-accent/10 px-2 py-1 text-xs font-medium text-accent">打开</span>
                 </div>
                 <p className="mt-8 text-xs text-ink/45">更新于 {new Date(board.updatedAt).toLocaleString()}</p>
               </Link>

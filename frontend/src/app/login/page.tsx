@@ -90,14 +90,14 @@ export default function LoginPage() {
           {mode === "login" ? (
             <span>
               还没有账号？{" "}
-              <GhostButton className="text-spruce" onClick={() => setMode("register")}>
+              <GhostButton className="text-accent" onClick={() => setMode("register")}>
                 去注册
               </GhostButton>
             </span>
           ) : (
             <span>
               已有账号？{" "}
-              <GhostButton className="text-spruce" onClick={() => setMode("login")}>
+              <GhostButton className="text-accent" onClick={() => setMode("login")}>
                 去登录
               </GhostButton>
             </span>
