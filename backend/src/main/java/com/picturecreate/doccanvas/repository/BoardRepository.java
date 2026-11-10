@@ -1,9 +1,10 @@
 package com.picturecreate.doccanvas.repository;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -19,7 +20,14 @@ import jakarta.persistence.LockModeType;
  */
 public interface BoardRepository extends JpaRepository<Board, UUID> {
 
-    List<Board> findByOwnerIdOrderByUpdatedAtDesc(UUID ownerId);
+    /** 首页分页：按更新时间倒序（排序由调用方传入 Pageable） */
+    Page<Board> findByOwnerId(UUID ownerId, Pageable pageable);
+
+    /** 首页搜索：标题模糊匹配，忽略大小写 */
+    Page<Board> findByOwnerIdAndTitleContainingIgnoreCase(UUID ownerId, String title, Pageable pageable);
+
+    /** 用户资料页展示的画布数量 */
+    long countByOwnerId(UUID ownerId);
 
     Optional<Board> findByIdAndOwnerId(UUID id, UUID ownerId);
 

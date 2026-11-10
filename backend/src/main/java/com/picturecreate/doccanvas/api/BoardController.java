@@ -3,6 +3,7 @@ package com.picturecreate.doccanvas.api;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -11,12 +12,14 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardLayoutRequest;
+import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardPageResponse;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardRequest;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardResponse;
 import com.picturecreate.doccanvas.config.AppProperties;
@@ -36,7 +39,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * 数据按 owner 隔离（BoardService 校验画布归属）。
  *
  * 接口一览（前缀 /api/boards）：
- * - GET    /                  → 当前用户所有画布
+ * - GET    /                  → 当前用户画布（分页 + 标题搜索）
  * - POST   /                  → 新建画布
  * - GET    /{boardId}         → 单个画布详情
  * - PATCH  /{boardId}         → 重命名画布
@@ -63,12 +66,19 @@ public class BoardController {
         this.properties = properties;
     }
 
-    /** 获取当前用户的全部画布，按更新时间倒序 */
+    /** 分页获取当前用户的画布，按更新时间倒序；keyword 按标题模糊匹配 */
     @GetMapping
-    public List<BoardResponse> list(HttpServletRequest request) {
+    public BoardPageResponse list(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "9") int size,
+            @RequestParam(required = false) String keyword,
+            HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        log.info("查询画布列表：userId={}", user.id());
-        return boardService.list(user).stream().map(this::toResponse).toList();
+        log.info("查询画布列表：userId={} page={} size={} keyword={}", user.id(), page, size, keyword);
+        Page<Board> result = boardService.list(user, page, size, keyword);
+        List<BoardResponse> items = result.getContent().stream().map(this::toResponse).toList();
+        return new BoardPageResponse(items, result.getNumber() + 1, result.getSize(),
+                result.getTotalElements(), result.getTotalPages());
     }
 
     /** 新建画布（body: { title }） */
