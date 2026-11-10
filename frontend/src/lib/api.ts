@@ -356,7 +356,13 @@ export const api = {
 
   // ===== 用户 =====
   /** 当前登录用户的资料（含注册时间、最近更新、画布数量） */
-  getProfile: () => request<UserProfile>("/api/users/me")
+  getProfile: () => request<UserProfile>("/api/users/me"),
+  /** 修改昵称和邮箱，返回更新后的资料 */
+  updateProfile: (body: { displayName: string; email: string }) =>
+    request<UserProfile>("/api/users/me", { method: "PATCH", body: JSON.stringify(body) }),
+  /** 修改密码：需要校验当前密码 */
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    request<void>("/api/users/me/password", { method: "PATCH", body: JSON.stringify(body) })
 };
 
 /** 认证用户信息 */
@@ -366,9 +372,8 @@ export type AuthUser = {
   displayName: string;
 };
 
-/** 用户资料：users 表中可展示的字段 + 画布数量 */
+/** 用户资料：users 表中可展示的字段 + 画布数量（不暴露内部用户 id） */
 export type UserProfile = {
-  id: string;
   email: string;
   displayName: string;
   createdAt: string;
