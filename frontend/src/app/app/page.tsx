@@ -2,19 +2,56 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { FilePlus2, Loader2, LogOut, Plus, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowRight,
+  Clock,
+  FilePlus2,
+  Globe,
+  Loader2,
+  Lock,
+  LogOut,
+  Plus,
+  Search,
+  Shapes,
+  Trash2
+} from "lucide-react";
 import { api, authToken, clearAuthSession } from "@/lib/api";
 import type { Board } from "@/lib/types";
 import { Button, GhostButton, Input } from "@/components/ui";
 import { ThemePicker } from "@/components/theme-picker";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+
+/** 画布卡片的更新时间：一周内显示相对时间，更早显示日期 */
+function formatUpdated(value: string) {
+  const date = new Date(value);
+  const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (minutes < 1) {
+    return "刚刚";
+  }
+  if (minutes < 60) {
+    return `${minutes} 分钟前`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} 小时前`;
+  }
+  const days = Math.floor(hours / 24);
+  if (days < 7) {
+    return `${days} 天前`;
+  }
+  return date.toLocaleDateString("zh-CN");
+}
 
 export default function WorkspacePage() {
   const router = useRouter();
   const [boards, setBoards] = useState<Board[]>([]);
   const [title, setTitle] = useState("我的 AI 文档画布");
+  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Board>();
   const [error, setError] = useState<string>();
 
   // 无 token 直接跳登录页（演示模式可手动登录）
@@ -33,20 +70,33 @@ export default function WorkspacePage() {
       .finally(() => setLoading(false));
   }, []);
 
+  const visibleBoards = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) {
+      return boards;
+    }
+    return boards.filter((board) => board.title.toLowerCase().includes(keyword));
+  }, [boards, query]);
+
   function logout() {
     clearAuthSession();
     router.push("/login");
   }
 
-  async function deleteBoard(boardId: string) {
-    if (!window.confirm("确定删除该画布？画布内图形节点和连线将一并删除，不可恢复。")) {
+  async function confirmDelete() {
+    if (!pendingDelete) {
       return;
     }
+    setDeleting(true);
     try {
-      await api.deleteBoard(boardId);
-      setBoards((items) => items.filter((item) => item.id !== boardId));
+      await api.deleteBoard(pendingDelete.id);
+      setBoards((items) => items.filter((item) => item.id !== pendingDelete.id));
+      setError(undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeleting(false);
+      setPendingDelete(undefined);
     }
   }
 
@@ -65,17 +115,22 @@ export default function WorkspacePage() {
 
   return (
     <main className="min-h-screen bg-mist">
-      <header className="border-b border-ink/10 bg-white">
+      <header className="sticky top-0 z-30 border-b border-ink/10 bg-white/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <div>
-            <h1 className="text-lg font-semibold text-ink">文档画布</h1>
-            <p className="text-xs text-ink/55">单人 AI 文档工作台</p>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-white shadow-sm shadow-accent/30">
+              <Shapes className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-ink">文档画布</p>
+              <p className="text-xs text-ink/50">单人 AI 文档工作台</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 rounded-md border border-ink/10 bg-mist px-3 py-2 text-sm text-ink/60">
-              <Search className="h-4 w-4" />
-              <span>私人工作区</span>
-            </div>
+            <span className="hidden items-center gap-2 rounded-lg border border-ink/10 bg-white px-3 py-2 text-xs text-ink/55 sm:flex">
+              <Lock className="h-3.5 w-3.5" />
+              私人工作区
+            </span>
             <ThemePicker />
             <GhostButton onClick={logout} title="退出登录">
               <LogOut className="h-4 w-4" />
@@ -86,75 +141,142 @@ export default function WorkspacePage() {
       </header>
 
       <section className="mx-auto max-w-6xl px-6 py-8">
-        <div className="flex flex-col gap-4 border-b border-ink/10 pb-6 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h2 className="text-2xl font-semibold text-ink">工作台</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/60">
-              创建画布、上传资料、让 AI 生成图形结构。当前版本以单人私有内容为边界。
-            </p>
-          </div>
-          <div className="flex w-full gap-2 md:w-[420px]">
-            <Input
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="输入画布标题"
-            />
-            <Button onClick={createBoard} disabled={creating}>
-              {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              新建
-            </Button>
+        <div className="rounded-2xl border border-ink/5 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h1 className="text-xl font-semibold text-ink md:text-2xl">把想法画成结构</h1>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-ink/60">
+                创建画布、上传资料，让 AI 生成思维导图与流程图。内容保存在你的私人工作区。
+              </p>
+            </div>
+            <form
+              className="flex w-full gap-2 md:w-[420px]"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void createBoard();
+              }}
+            >
+              <Input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="输入画布标题"
+                disabled={creating}
+              />
+              <Button type="submit" disabled={creating} className="shrink-0">
+                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                新建画布
+              </Button>
+            </form>
           </div>
         </div>
 
         {error ? (
-          <div className="mt-6 rounded-md border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">{error}</div>
+          <div className="mt-6 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
+            {error}
+          </div>
         ) : null}
 
-        <div className="mt-6 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-ink/60">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在加载画布
-            </div>
-          ) : null}
-
-          {!loading && boards.length === 0 ? (
-            <div className="flex min-h-44 flex-col items-start justify-center rounded-md border border-dashed border-ink/20 bg-white px-5">
-              <FilePlus2 className="h-7 w-7 text-accent" />
-              <h3 className="mt-3 font-medium text-ink">还没有画布</h3>
-              <p className="mt-1 text-sm text-ink/55">先创建一个，再进入编辑器发起 AI 任务。</p>
-            </div>
-          ) : null}
-
-          {boards.map((board) => (
-            <div key={board.id} className="group relative rounded-md border border-ink/10 bg-white shadow-sm transition hover:border-accent/40 hover:shadow-soft">
-              <Link
-                href={`/board/${board.id}`}
-                className="block p-5"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="font-semibold text-ink">{board.title}</h3>
-                    <p className="mt-2 text-sm text-ink/55">
-                      {board.visibility === "PRIVATE" ? "私有画布" : "只读分享"}
-                    </p>
-                  </div>
-                  <span className="rounded-md bg-accent/10 px-2 py-1 text-xs font-medium text-accent">打开</span>
-                </div>
-                <p className="mt-8 text-xs text-ink/45">更新于 {new Date(board.updatedAt).toLocaleString()}</p>
-              </Link>
-              <button
-                type="button"
-                onClick={() => void deleteBoard(board.id)}
-                className="absolute right-2 top-2 hidden h-7 w-7 items-center justify-center rounded-md text-ink/40 transition hover:bg-coral/10 hover:text-coral group-hover:flex"
-                title="删除画布"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-ink">我的画布</h2>
+            <span className="rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink/50">
+              {boards.length}
+            </span>
+          </div>
+          <div className="relative w-full sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/35" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索画布标题"
+              className="pl-9"
+            />
+          </div>
         </div>
+
+        {loading ? (
+          <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="h-48 animate-pulse rounded-xl border border-ink/10 bg-white" />
+            ))}
+          </div>
+        ) : (
+          <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {!boards.length ? (
+              <div className="flex min-h-48 flex-col items-start justify-center rounded-xl border border-dashed border-ink/20 bg-white px-6 md:col-span-2 lg:col-span-3">
+                <FilePlus2 className="h-8 w-8 text-accent" />
+                <h3 className="mt-3 font-medium text-ink">还没有画布</h3>
+                <p className="mt-1 text-sm text-ink/55">在上方输入标题，创建你的第一张画布。</p>
+              </div>
+            ) : null}
+
+            {boards.length > 0 && !visibleBoards.length ? (
+              <div className="rounded-xl border border-dashed border-ink/20 bg-white px-6 py-10 text-center text-sm text-ink/55 md:col-span-2 lg:col-span-3">
+                没有匹配「{query.trim()}」的画布
+              </div>
+            ) : null}
+
+            {visibleBoards.map((board) => (
+              <article
+                key={board.id}
+                className="group flex flex-col rounded-xl border border-ink/10 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-soft"
+              >
+                <Link
+                  href={`/board/${board.id}`}
+                  className="line-clamp-2 text-base font-semibold leading-6 text-ink transition hover:text-accent"
+                >
+                  {board.title}
+                </Link>
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink/45">
+                  <span className="inline-flex items-center gap-1">
+                    {board.visibility === "PRIVATE" ? (
+                      <Lock className="h-3.5 w-3.5" />
+                    ) : (
+                      <Globe className="h-3.5 w-3.5" />
+                    )}
+                    {board.visibility === "PRIVATE" ? "私有画布" : "只读分享"}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3.5 w-3.5" />
+                    更新于 {formatUpdated(board.updatedAt)}
+                  </span>
+                </div>
+
+                <div className="mt-auto flex items-center justify-between gap-2 border-t border-ink/5 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setPendingDelete(board)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-ink/40 transition hover:bg-coral/10 hover:text-coral focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral/25"
+                    title="删除画布"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    删除
+                  </button>
+                  <Link
+                    href={`/board/${board.id}`}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-accent px-4 text-sm font-medium text-white shadow-sm transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 active:scale-[0.97]"
+                  >
+                    打开
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="删除画布"
+        description={`确定删除「${pendingDelete?.title ?? ""}」？画布内图形节点和连线将一并删除，不可恢复。`}
+        confirmText="删除"
+        danger
+        loading={deleting}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setPendingDelete(undefined)}
+      />
     </main>
   );
 }

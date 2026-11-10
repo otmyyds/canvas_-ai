@@ -4,6 +4,7 @@ import { ChangeEvent, useRef, useState } from "react";
 import { FileUp, Loader2, Trash2 } from "lucide-react";
 import type { SourceFile } from "@/lib/types";
 import { GhostButton, IconButton } from "@/components/ui";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 type SourcePanelProps = {
   files: SourceFile[];
@@ -22,6 +23,8 @@ export function SourcePanel({ files, onUpload, onDelete }: SourcePanelProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<SourceFile>();
+  const [deleting, setDeleting] = useState(false);
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -40,15 +43,19 @@ export function SourcePanel({ files, onUpload, onDelete }: SourcePanelProps) {
     }
   }
 
-  async function handleDelete(fileId: string) {
-    if (!window.confirm("确定删除该资料？解析的向量内容将一并清除。")) {
+  async function confirmDelete() {
+    if (!pendingDelete) {
       return;
     }
+    setDeleting(true);
     setError(undefined);
     try {
-      await onDelete(fileId);
+      await onDelete(pendingDelete.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeleting(false);
+      setPendingDelete(undefined);
     }
   }
 
@@ -88,7 +95,7 @@ export function SourcePanel({ files, onUpload, onDelete }: SourcePanelProps) {
               </div>
               <IconButton
                 className="h-7 w-7 shrink-0 text-ink/40 hover:text-coral"
-                onClick={() => void handleDelete(file.id)}
+                onClick={() => setPendingDelete(file)}
                 title="删除资料"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -97,6 +104,17 @@ export function SourcePanel({ files, onUpload, onDelete }: SourcePanelProps) {
           ))}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="删除资料"
+        description={`确定删除「${pendingDelete?.filename ?? ""}」？解析的向量内容将一并清除。`}
+        confirmText="删除"
+        danger
+        loading={deleting}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setPendingDelete(undefined)}
+      />
     </div>
   );
 }

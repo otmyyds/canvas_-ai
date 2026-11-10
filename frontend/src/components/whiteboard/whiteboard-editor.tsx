@@ -13,12 +13,14 @@ import type { Editor as TldrawEditor } from "@tldraw/editor";
 import {
   ArrowRight,
   ChevronDown,
+  ChevronUp,
   Download,
   FileImage,
   FolderOpen,
   GitBranch,
   Hand,
   LayoutGrid,
+  ListTree,
   Minus,
   MousePointer2,
   Network,
@@ -898,6 +900,42 @@ export function WhiteboardEditor({
     }
   }, [boardId, onRefresh]);
 
+  /** 新建兄弟节点：找到选中节点的父节点，再在父节点下创建一个同层节点 */
+  const addSiblingNode = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const selected = editor.getSelectedShapeIds();
+    if (selected.length !== 1) {
+      setMessage("请先选中一个节点，再新建兄弟节点");
+      return;
+    }
+    const shape = editor.getShape(selected[0]);
+    if (!shape || (shape.type !== "geo" && shape.type !== "mindmap-node")) {
+      setMessage("请先选中一个图形节点");
+      return;
+    }
+    const shapeId = String(selected[0]).replace(/^shape:/, "");
+    if (!UUID_PATTERN.test(shapeId)) {
+      setMessage("该元素不是画布结构节点，无法新建兄弟节点");
+      return;
+    }
+    // 兄弟节点的父节点就是当前节点的入边起点；没有入边说明当前是根节点
+    const parentEdge = edges.find((edge) => edge.toShapeId === shapeId);
+    if (!parentEdge) {
+      setMessage("根节点没有兄弟节点，可在其下新建子节点");
+      return;
+    }
+    try {
+      await api.createShape(boardId, { parentId: parentEdge.fromShapeId, title: "新节点" });
+      await onRefresh();
+      setMessage("已新建兄弟节点");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "新建兄弟节点失败");
+    }
+  }, [boardId, edges, onRefresh]);
+
   const addLine = useCallback(() => {
     setTool("line", "已切换到线条工具");
   }, [setTool]);
@@ -1175,6 +1213,7 @@ export function WhiteboardEditor({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [toolbarHidden, setToolbarHidden] = useState(false);
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1186,7 +1225,7 @@ export function WhiteboardEditor({
             onClick={() => setSourceOpen(false)}
             aria-label="关闭资料面板"
           />
-          <div className="absolute left-2 top-24 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg">
+          <div className={`absolute left-2 z-30 w-72 shrink-0 rounded-lg border border-ink/10 bg-white shadow-lg ${toolbarHidden ? "top-16" : "top-24"}`}>
             <SourcePanel files={files} onUpload={onUploadFile} onDelete={onDeleteFile} />
           </div>
         </>
@@ -1196,6 +1235,19 @@ export function WhiteboardEditor({
         className="relative min-h-0 flex-1 overflow-hidden bg-canvas"
         onClick={() => setSourceOpen(false)}
       >
+        {toolbarHidden ? (
+          <div className="absolute left-4 top-4 z-20" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setToolbarHidden(false)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-ink/10 bg-white/95 px-2.5 text-xs font-medium text-ink/60 shadow-lg backdrop-blur transition hover:border-accent/40 hover:text-accent"
+              title="显示工具栏"
+            >
+              <ChevronDown className="h-3.5 w-3.5" />
+              工具栏
+            </button>
+          </div>
+        ) : (
         <div
           className="absolute left-4 top-4 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-1 rounded-xl border border-ink/10 bg-white/95 p-1.5 shadow-lg backdrop-blur"
           onClick={(event) => event.stopPropagation()}
@@ -1283,7 +1335,11 @@ export function WhiteboardEditor({
             title="未选中时新建根节点，选中节点时在其下新建子节点"
           >
             <GitBranch className="h-4 w-4" />
-            节点
+            子节点
+          </ToolButton>
+          <ToolButton onClick={() => void addSiblingNode()} title="在选中节点的同级新建节点">
+            <ListTree className="h-4 w-4" />
+            兄弟节点
           </ToolButton>
           <ToolButton active={activeTool === "line"} onClick={addLine}>
             <Minus className="h-4 w-4" />
@@ -1409,6 +1465,21 @@ export function WhiteboardEditor({
             <Trash2 className="h-4 w-4" />
             删除
           </ToolButton>
+
+          <span className="mx-0.5 h-6 w-px bg-ink/10" />
+
+          <ToolButton
+            className="w-8 px-0"
+            onClick={() => {
+              setToolbarHidden(true);
+              setShapeOpen(false);
+              setLayoutOpen(false);
+              setExportOpen(false);
+            }}
+            title="隐藏工具栏"
+          >
+            <ChevronUp className="h-4 w-4" />
+          </ToolButton>
           <input
             ref={fileInputRef}
             type="file"
@@ -1423,8 +1494,9 @@ export function WhiteboardEditor({
             }}
           />
         </div>
+        )}
 
-        <div className="absolute left-4 top-24 z-20 max-w-[26rem] rounded-lg border border-ink/10 bg-white/95 px-3 py-2 text-xs text-ink/60 shadow-sm backdrop-blur">
+        <div className={`absolute left-4 z-20 max-w-[26rem] rounded-lg border border-ink/10 bg-white/95 px-3 py-2 text-xs text-ink/60 shadow-sm backdrop-blur ${toolbarHidden ? "top-16" : "top-24"}`}>
           <div className="flex items-center gap-2">
             <Shield className="h-3.5 w-3.5" />
             <span>{message}</span>

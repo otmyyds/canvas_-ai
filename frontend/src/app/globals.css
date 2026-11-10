@@ -59,6 +59,35 @@ textarea {
   }
 }
 
+/* 确认弹窗：遮罩淡入，面板轻微上浮，避免生硬出现 */
+.dialog-overlay {
+  animation: overlay-in 0.15s ease-out;
+}
+
+.dialog-panel {
+  animation: dialog-in 0.16s ease-out;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /*
  * 流程图形节点（geo）的投影：纯展示样式，不改动图形数据与后端坐标。
  * tldraw 把所有图形渲染在 SVG 里，投影只能加在容器上。
