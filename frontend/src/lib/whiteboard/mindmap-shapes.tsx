@@ -115,6 +115,28 @@ type SubtreeDrag = {
   plan: ReorderPlan | null;
 };
 const subtreeDrags = new WeakMap<TldrawEditor, SubtreeDrag>();
+/** 拖拽结束回调：编辑器用它把预览位置写回基线，避免预览坐标被当成用户编辑回写后端 */
+const subtreeDragEnds = new WeakMap<TldrawEditor, () => void>();
+
+/** 是否正在整棵子树预览拖拽；预览期间的位置变化不应落库 */
+export function isSubtreeDragActive(editor: TldrawEditor): boolean {
+  return subtreeDrags.has(editor);
+}
+
+/** 注册拖拽结束回调；同一编辑器只保留最新一个 */
+export function setSubtreeDragEnd(editor: TldrawEditor, callback: () => void): void {
+  subtreeDragEnds.set(editor, callback);
+}
+
+export function clearSubtreeDragEnd(editor: TldrawEditor): void {
+  subtreeDragEnds.delete(editor);
+}
+
+/** 结束拖拽：先移除拖拽状态，再通知编辑器刷新回写基线 */
+function finishSubtreeDrag(editor: TldrawEditor): void {
+  subtreeDrags.delete(editor);
+  subtreeDragEnds.get(editor)?.();
+}
 
 /**
  * 收集节点在逻辑图里的所有后代：沿着 mindmap-edge 的 start（父）→ end（子）向下遍历。
@@ -183,14 +205,17 @@ function moveSubtree(editor: TldrawEditor, initial: MindmapNodeShape, current: M
   }
   const dx = current.x - initial.x;
   const dy = current.y - initial.y;
-  editor.updateShapes(
-    [...drag.positions].map(([id, position]) => ({
-      id,
-      type: "mindmap-node" as const,
-      x: position.x + dx,
-      y: position.y + dy
-    }))
-  );
+  // 预览位置不进历史栈：一次拖拽会产生几十帧，逐帧记录会让撤销栈充满中间状态
+  editor.run(() => {
+    editor.updateShapes(
+      [...drag.positions].map(([id, position]) => ({
+        id,
+        type: "mindmap-node" as const,
+        x: position.x + dx,
+        y: position.y + dy
+      }))
+    );
+  }, { history: "ignore" });
 }
 
 /** 取消拖拽时把后代放回原位 */
@@ -199,14 +224,16 @@ function resetSubtree(editor: TldrawEditor) {
   if (!drag) {
     return;
   }
-  editor.updateShapes(
-    [...drag.positions].map(([id, position]) => ({
-      id,
-      type: "mindmap-node" as const,
-      x: position.x,
-      y: position.y
-    }))
-  );
+  editor.run(() => {
+    editor.updateShapes(
+      [...drag.positions].map(([id, position]) => ({
+        id,
+        type: "mindmap-node" as const,
+        x: position.x,
+        y: position.y
+      }))
+    );
+  }, { history: "ignore" });
 }
 
 /** fork 节点：只渲染文字，双击原地编辑 */
@@ -268,20 +295,22 @@ export class MindmapNodeShapeUtil extends BaseBoxShapeUtil<MindmapNodeShape> {
       return;
     }
     if (drag.plan?.changed) {
-      subtreeDrags.delete(this.editor);
+      // 提交排序后画布停在预览位置，等后端重排返回再整体归位；
+      // 先把预览位置写回基线，防止这期间的其它编辑把预览坐标当成用户修改发给后端
+      finishSubtreeDrag(this.editor);
       commitReorder(this.editor, drag.plan);
       return;
     }
     // 顺序没变：子树与自身都回到原位，节点位置始终由后端布局决定
     resetSubtree(this.editor);
-    subtreeDrags.delete(this.editor);
+    finishSubtreeDrag(this.editor);
     return { id: initial.id, type: "mindmap-node", x: initial.x, y: initial.y };
   }
 
   onTranslateCancel(): void {
     hideReorderIndicator();
     resetSubtree(this.editor);
-    subtreeDrags.delete(this.editor);
+    finishSubtreeDrag(this.editor);
   }
 
   getText(shape: MindmapNodeShape): string {

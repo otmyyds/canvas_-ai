@@ -28,6 +28,13 @@ type MindmapCollapseProps = {
 const HANDLE_GAP = 12;
 /** 悬浮判定在节点包围盒外扩的屏幕像素：要盖住按钮（间距 + 半径）并留出手感 */
 const HOVER_PADDING = 26;
+/**
+ * 按钮随画布缩放的上下限。
+ * 按钮是固定屏幕尺寸的覆盖层，缩放到多棵树时节点间距按比例变小，固定 24px 的角标会互相重叠；
+ * 因此按相机缩放同步缩小，并保留 0.5 的下限，避免缩得太小无法点击。
+ */
+const MIN_HANDLE_SCALE = 0.5;
+const MAX_HANDLE_SCALE = 1;
 
 /** 每个节点的直接子节点；只走父 → 子方向的连线 */
 function childrenOf(edges: BoardEdge[]): Map<string, string[]> {
@@ -61,6 +68,8 @@ type HandleLayout = {
   left: number;
   top: number;
   collapsed: boolean;
+  /** 随相机缩放的比例，1 表示原始大小 */
+  scale: number;
   /** 客户端坐标（clientX/clientY）下的悬浮判定矩形 */
   zone: { left: number; top: number; right: number; bottom: number };
 };
@@ -87,6 +96,10 @@ export function MindmapCollapse({ editor, shapes, edges, busy, onToggle }: Mindm
     // tick 只是为了在相机/图形变化后触发重算
     void tick;
     const rect = editor.getContainer().getBoundingClientRect();
+    // 角标与间距一起按相机缩放，节点密集时不会互相压住
+    const zoom = editor.getZoomLevel();
+    const scale = Math.min(MAX_HANDLE_SCALE, Math.max(MIN_HANDLE_SCALE, zoom));
+    const gap = HANDLE_GAP * scale;
     const layouts: HandleLayout[] = [];
     for (const node of shapes) {
       const nodeChildren = children.get(node.id) ?? [];
@@ -117,7 +130,7 @@ export function MindmapCollapse({ editor, shapes, edges, busy, onToggle }: Mindm
         x: toRight ? bounds.maxX : bounds.minX,
         y: bounds.center.y
       });
-      const screenX = edgePoint.x + (toRight ? HANDLE_GAP : -HANDLE_GAP);
+      const screenX = edgePoint.x + (toRight ? gap : -gap);
       const screenTopLeft = editor.pageToScreen({ x: bounds.minX, y: bounds.minY });
       const screenBottomRight = editor.pageToScreen({ x: bounds.maxX, y: bounds.maxY });
       layouts.push({
@@ -125,6 +138,7 @@ export function MindmapCollapse({ editor, shapes, edges, busy, onToggle }: Mindm
         left: screenX - rect.left,
         top: edgePoint.y - rect.top,
         collapsed: Boolean(node.collapsed),
+        scale,
         zone: {
           left: Math.min(screenTopLeft.x, screenX) - HOVER_PADDING,
           top: screenTopLeft.y - HOVER_PADDING,
@@ -181,8 +195,12 @@ export function MindmapCollapse({ editor, shapes, edges, busy, onToggle }: Mindm
             type="button"
             disabled={busy}
             title={handle.collapsed ? `展开 ${count} 个后代节点` : "折叠子节点"}
-            className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#808080]/45 bg-white px-1 text-[10px] font-medium text-[#5a5a5a] shadow-sm transition hover:border-spruce hover:text-spruce disabled:opacity-50"
-            style={{ left: handle.left, top: handle.top }}
+            className="pointer-events-auto absolute flex h-6 min-w-6 items-center justify-center rounded-full border border-[#808080]/45 bg-white px-1 text-[10px] font-medium text-[#5a5a5a] shadow-sm transition hover:border-spruce hover:text-spruce disabled:opacity-50"
+            style={{
+              left: handle.left,
+              top: handle.top,
+              transform: `translate(-50%, -50%) scale(${handle.scale})`
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();

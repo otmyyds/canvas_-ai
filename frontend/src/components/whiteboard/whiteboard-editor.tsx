@@ -50,7 +50,13 @@ import {
   shapeStateFingerprint,
   syncGraphVisuals
 } from "@/lib/whiteboard/shape-render";
-import { whiteboardBindingUtils, whiteboardShapeUtils } from "@/lib/whiteboard/mindmap-shapes";
+import {
+  clearSubtreeDragEnd,
+  isSubtreeDragActive,
+  setSubtreeDragEnd,
+  whiteboardBindingUtils,
+  whiteboardShapeUtils
+} from "@/lib/whiteboard/mindmap-shapes";
 import {
   clearReorderCommit,
   setReorderCommit,
@@ -624,6 +630,11 @@ export function WhiteboardEditor({
 
   // 用户拖动/改字/改尺寸 AI 图形节点 → 防抖回写 shapes 表（统一 tldraw 快照与 shapes 双状态源）
   const collectUserEdits = useCallback((editor: TldrawEditor) => {
+    // 逻辑图子树拖拽期间全是预览位置：既不该落库，也不该进入回写基线。
+    // 拖拽结束时由 setSubtreeDragEnd 注册的回调统一刷新基线。
+    if (isSubtreeDragActive(editor)) {
+      return;
+    }
     for (const shape of editor.getCurrentPageShapes()) {
       if (shape.type !== "geo" && shape.type !== "mindmap-node") {
         continue;
@@ -683,6 +694,20 @@ export function WhiteboardEditor({
       }
     };
   }, [collectUserEdits, store]);
+
+  // 子树拖拽结束后按当前画布状态重建回写基线：预览位置不算用户编辑，
+  // 否则松手后会把这些中间坐标批量 PATCH 给后端，下一次重排就会读出错乱的位置。
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    setSubtreeDragEnd(editor, () => seedSyncedShapes(editor));
+    return () => clearSubtreeDragEnd(editor);
+  }, [editorReady, seedSyncedShapes]);
 
   /**
    * 逻辑图拖动排序的上下文与提交回调：
