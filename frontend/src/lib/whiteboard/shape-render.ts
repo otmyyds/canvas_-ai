@@ -234,6 +234,9 @@ async function runSyncGraphVisuals(
   // 阶段一：删除类型不符的元素并登记待建项；缺失的元素直接登记
   const pendingNodes: PendingNode[] = [];
   const pendingEdges: PendingEdge[] = [];
+  // 类型已匹配的既有元素先收集，阶段二统一放进一个事务更新
+  const nodeUpdates: Array<{ node: BoardShape; shapeId: ShapeId; type: NodeType }> = [];
+  const edgeUpdates: Array<{ edgeId: ShapeId; type: EdgeType; fromId: ShapeId; toId: ShapeId }> = [];
   const deletedIds: TLShapeId[] = [];
   const arrowBindingsToRestore: TLArrowBinding[] = [];
   // 转换会删除选中元素，先记下来，重建后恢复选中状态
@@ -261,9 +264,8 @@ async function runSyncGraphVisuals(
       changed++;
       continue;
     }
-    if (updateExisting && shapeId !== editingShapeId
-        && updateGraphShape(editor, node, shapeId, desiredType, baseline)) {
-      changed++;
+    if (updateExisting && shapeId !== editingShapeId) {
+      nodeUpdates.push({ node, shapeId, type: desiredType });
     }
   }
 
@@ -290,34 +292,57 @@ async function runSyncGraphVisuals(
       changed++;
       continue;
     }
-    // 结构连线是固定格式：锁定后不能选中/拖动/删除，端点跟随由节点几何实时计算
-    if (ensureEdgeLocked(editor, existing)) {
-      changed++;
-    }
-    if (desiredType === "mindmap-edge") {
-      if (ensureMindmapEdgeBindings(editor, edgeId, fromId, toId)) {
-        changed++;
-      }
-      if (updateMindmapEdgeGeometry(editor, edgeId)) {
-        changed++;
-      }
-    }
+    edgeUpdates.push({ edgeId, type: desiredType, fromId, toId });
   }
 
-  // 阶段二：等被删元素的 React 组件真正卸载后再重建，避免同 id 复用旧 fiber 导致 hooks 数量变化
-  await waitForShapesUnmounted(editor, deletedIds);
-  for (const { node, type } of pendingNodes) {
-    createGraphShape(editor, node, createShapeId(node.id), type);
-    changed++;
+  // 阶段二：已有元素的位置/尺寸/文字/锁定状态一次事务内更新。
+  // 逐个 updateShape 会让 store 监听和 React 渲染按元素数重复触发，300 个节点时明显卡顿。
+  if (nodeUpdates.length > 0 || edgeUpdates.length > 0) {
+    editor.run(() => {
+      for (const { node, shapeId, type } of nodeUpdates) {
+        if (updateGraphShape(editor, node, shapeId, type, baseline)) {
+          changed++;
+        }
+      }
+      for (const { edgeId, type, fromId, toId } of edgeUpdates) {
+        const shape = editor.getShape(edgeId);
+        if (!shape) {
+          continue;
+        }
+        // 结构连线是固定格式：锁定后不能选中/拖动/删除，端点跟随由节点几何实时计算
+        if (ensureEdgeLocked(editor, shape)) {
+          changed++;
+        }
+        if (type === "mindmap-edge") {
+          if (ensureMindmapEdgeBindings(editor, edgeId, fromId, toId)) {
+            changed++;
+          }
+          if (updateMindmapEdgeGeometry(editor, edgeId)) {
+            changed++;
+          }
+        }
+      }
+    }, { history: "ignore" });
   }
-  for (const { edge, type, fromId, toId } of pendingEdges) {
-    const edgeId = createShapeId(edge.id);
-    if (type === "mindmap-edge") {
-      createMindmapEdge(editor, edgeId, fromId, toId);
-    } else {
-      createArrowEdge(editor, edge, edgeId, fromId, toId);
-    }
-    changed++;
+
+  // 阶段三：等被删元素的 React 组件真正卸载后再重建，避免同 id 复用旧 fiber 导致 hooks 数量变化
+  await waitForShapesUnmounted(editor, deletedIds);
+  if (pendingNodes.length > 0 || pendingEdges.length > 0) {
+    editor.run(() => {
+      for (const { node, type } of pendingNodes) {
+        createGraphShape(editor, node, createShapeId(node.id), type);
+        changed++;
+      }
+      for (const { edge, type, fromId, toId } of pendingEdges) {
+        const edgeId = createShapeId(edge.id);
+        if (type === "mindmap-edge") {
+          createMindmapEdge(editor, edgeId, fromId, toId);
+        } else {
+          createArrowEdge(editor, edge, edgeId, fromId, toId);
+        }
+        changed++;
+      }
+    }, { history: "ignore" });
   }
   // 节点重建会断开用户手绘箭头的绑定，按原绑定恢复。
   // 结构连线可能已经从 arrow 转成 mindmap-edge，这种箭头本身已不复存在，不能再挂绑定

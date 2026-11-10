@@ -2,6 +2,8 @@ package com.picturecreate.doccanvas.domain;
 
 import java.util.UUID;
 
+import org.hibernate.annotations.DynamicUpdate;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
@@ -13,6 +15,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "board_snapshots")
+@DynamicUpdate
 public class BoardSnapshot extends BaseEntity {
 
     /** 所属画布 id */
@@ -34,6 +37,12 @@ public class BoardSnapshot extends BaseEntity {
         this.boardId = boardId;
         this.snapshotJson = snapshotJson;
         this.version = version;
+    }
+
+    /** 单行快照更新：覆盖 JSON 并递增版本，不再追加历史行 */
+    public void update(String snapshotJson) {
+        this.snapshotJson = snapshotJson;
+        this.version++;
     }
 
     public UUID getBoardId() {

@@ -10,14 +10,13 @@ import com.picturecreate.doccanvas.domain.BoardSnapshot;
 
 /**
  * 画布快照数据访问层。
- * 当前文档是每画布最新写入的一行（V10 之后 version=0 的 CURRENT 行不再保证存在），
- * 取快照一律按 created_at 倒序，不能按 version 倒序。
+ * 每张画布只保留一行快照，保存时原地覆盖 JSON 并递增 version，不再追加历史版本。
  */
 public interface BoardSnapshotRepository extends JpaRepository<BoardSnapshot, UUID> {
 
     Optional<BoardSnapshot> findFirstByBoardIdOrderByCreatedAtDesc(UUID boardId);
 
-    long countByBoardId(UUID boardId);
+    Optional<BoardSnapshot> findByBoardId(UUID boardId);
 
     /**
      * 按画布删除全部快照（清空画布时同步清掉 tldraw 快照，避免元素残留）。

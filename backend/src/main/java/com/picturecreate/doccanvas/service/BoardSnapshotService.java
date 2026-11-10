@@ -34,10 +34,16 @@ public class BoardSnapshotService {
     @Transactional
     public BoardSnapshot save(UUID boardId, CurrentUser user, String snapshotJson) {
         boardService.getOwned(boardId, user);
-        int version = (int) snapshotRepository.countByBoardId(boardId) + 1;
-        BoardSnapshot snapshot = snapshotRepository.save(new BoardSnapshot(boardId, snapshotJson, version));
-        log.info("快照已保存：boardId={} version={} jsonLength={}", boardId, version,
+        // 单行快照：已有则覆盖 JSON 并递增版本，只有首次保存才插入新行
+        BoardSnapshot snapshot = snapshotRepository.findByBoardId(boardId)
+                .map(existing -> {
+                    existing.update(snapshotJson);
+                    return existing;
+                })
+                .orElseGet(() -> new BoardSnapshot(boardId, snapshotJson, 1));
+        BoardSnapshot saved = snapshotRepository.save(snapshot);
+        log.info("快照已保存：boardId={} version={} jsonLength={}", boardId, saved.getVersion(),
                 snapshotJson == null ? 0 : snapshotJson.length());
-        return snapshot;
+        return saved;
     }
 }

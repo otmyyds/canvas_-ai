@@ -58,14 +58,17 @@ public class BoardActionApplier {
     private final BoardRepository boardRepository;
     private final AppProperties properties;
     private final ObjectMapper objectMapper;
+    private final BoardLayoutCache layoutCache;
 
     public BoardActionApplier(ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
-            BoardRepository boardRepository, AppProperties properties, ObjectMapper objectMapper) {
+            BoardRepository boardRepository, AppProperties properties, ObjectMapper objectMapper,
+            BoardLayoutCache layoutCache) {
         this.shapeRepository = shapeRepository;
         this.edgeRepository = edgeRepository;
         this.boardRepository = boardRepository;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.layoutCache = layoutCache;
     }
 
     /** 用户调整同级顺序时提交的一项：连线 id + 逻辑图一级分支的目标侧 */
@@ -194,7 +197,8 @@ public class BoardActionApplier {
                 continue;
             }
             // 分量布局内部会先按风格统一尺寸：逻辑图 fork 节点收缩，其他节点按 geo 标签放大
-            Map<String, double[]> positions = layoutComponent(board, graph, shown);
+            ComponentLayout layout = layoutComponent(board, graph, shown);
+            Map<String, double[]> positions = layout.positions();
             Map<String, double[]> sizes = sizesOf(graph, shown);
             double[] box = bounds(positions, sizes);
             placeComponent(graph, shown, positions, cursorX - box[0], MARGIN - box[1]);
@@ -285,7 +289,6 @@ public class BoardActionApplier {
                         || targets.contains(edge.getToShapeId().toString()))
                 .toList());
         shapeRepository.deleteAllById(deletedIds);
-        shapeRepository.flush();
 
         // 删除后分量可能拆成多块：每块按删除前的包围盒锚定，原地整理
         Graph after = loadGraph(boardId);
@@ -296,10 +299,8 @@ public class BoardActionApplier {
                 continue;
             }
             double[] old = boundsOf(graph, shown);
-            Map<String, double[]> positions = layoutComponent(board, after, shown);
-            Map<String, double[]> sizes = sizesOf(after, shown);
-            double[] box = bounds(positions, sizes);
-            placeComponent(after, shown, positions, old[0] - box[0], old[1] - box[1]);
+            ComponentLayout layout = layoutComponent(board, after, shown);
+            placeAnchored(after, shown, layout, old);
         }
         log.info("删除节点：boardId={} shapeId={} 连带删除={} mindmap={}", boardId, shapeId, deletedIds.size(), mindmap);
         return deletedIds;
@@ -349,7 +350,6 @@ public class BoardActionApplier {
             edge.reorder(index++, rootBranches ? normalizeSide(order.side()) : null);
             ordered.add(edge);
         }
-        edgeRepository.flush();
 
         Graph graph = loadGraph(boardId);
         List<String> component = visibleIn(visibleNodes(graph), componentOf(graph, parentId.toString()));
@@ -357,10 +357,8 @@ public class BoardActionApplier {
             return ordered;
         }
         double[] old = boundsOf(graph, component);
-        Map<String, double[]> positions = layoutComponent(board, graph, component);
-        Map<String, double[]> sizes = sizesOf(graph, component);
-        double[] box = bounds(positions, sizes);
-        placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+        ComponentLayout layout = layoutComponent(board, graph, component);
+        placeAnchored(graph, component, layout, old);
         log.info("调整同级顺序：boardId={} parentId={} 子节点={}", boardId, parentId, ordered.size());
         return ordered;
     }
@@ -380,7 +378,6 @@ public class BoardActionApplier {
             return shape;
         }
         shape.collapse(collapsed);
-        shapeRepository.flush();
 
         Graph graph = loadGraph(boardId);
         List<String> component = visibleIn(visibleNodes(graph), componentOf(graph, shapeId.toString()));
@@ -388,10 +385,8 @@ public class BoardActionApplier {
             return shape;
         }
         double[] old = boundsOf(graph, component);
-        Map<String, double[]> positions = layoutComponent(board, graph, component);
-        Map<String, double[]> sizes = sizesOf(graph, component);
-        double[] box = bounds(positions, sizes);
-        placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+        ComponentLayout layout = layoutComponent(board, graph, component);
+        placeAnchored(graph, component, layout, old);
         log.info("切换节点折叠：boardId={} shapeId={} collapsed={} 可见节点={}",
                 boardId, shapeId, collapsed, component.size());
         return shape;
@@ -488,25 +483,20 @@ public class BoardActionApplier {
 
     /** 节点所在的无向连通分量；找不到时返回只含自身 */
     private List<String> componentOf(Graph graph, String shapeId) {
-        for (List<String> component : graph.components()) {
-            if (component.contains(shapeId)) {
-                return component;
-            }
+        Integer index = graph.componentIndexOf().get(shapeId);
+        if (index == null) {
+            return List.of(shapeId);
         }
-        return List.of(shapeId);
+        return graph.components().get(index);
     }
 
-    /** 沿连线方向（父 → 子）收集整棵子树，包含起点自身 */
+    /** 沿连线方向（父 → 子）收集整棵子树，包含起点自身；使用预建前向邻接表，O(子树) */
     private void collectSubtree(Graph graph, String rootId, Set<String> targets) {
         Deque<String> queue = new ArrayDeque<>();
         queue.add(rootId);
         while (!queue.isEmpty()) {
             String current = queue.poll();
-            for (BoardEdge edge : graph.edges()) {
-                if (!edge.getFromShapeId().toString().equals(current)) {
-                    continue;
-                }
-                String child = edge.getToShapeId().toString();
+            for (String child : graph.forward().getOrDefault(current, List.of())) {
                 if (targets.add(child)) {
                     queue.add(child);
                 }
@@ -564,8 +554,7 @@ public class BoardActionApplier {
      * - 未受影响的分量不动。
      */
     private void relayoutTouched(Board board, Set<UUID> createdIds, Set<UUID> updatedIds) {
-        shapeRepository.flush();
-        // 获取整个画布的信息包括节点、连线、连通分量等
+        // 不再显式 flush：紧随其后的查询会按 FlushMode.AUTO 自动刷出本批写入
         Graph graph = loadGraph(board.getId());
         // 新创建的节点
         Set<String> newIds = toStrings(createdIds);
@@ -637,7 +626,8 @@ public class BoardActionApplier {
         }
 
         for (List<String> component : fresh) {
-            Map<String, double[]> positions = layoutComponent(board, graph, component);
+            ComponentLayout layout = layoutComponent(board, graph, component);
+            Map<String, double[]> positions = layout.positions();
             Map<String, double[]> sizes = sizesOf(graph, component);
             double[] box = bounds(positions, sizes);
             placeComponent(graph, component, positions, cursorX - box[0], baseY - box[1]);
@@ -647,10 +637,8 @@ public class BoardActionApplier {
         for (List<String> component : anchored) {
             // 锚点按重排前的包围盒计算，避免 fork 收缩后整块位移
             double[] old = existingBoundsOfComponent(graph, component, newIds);
-            Map<String, double[]> positions = layoutComponent(board, graph, component);
-            Map<String, double[]> sizes = sizesOf(graph, component);
-            double[] box = bounds(positions, sizes);
-            placeComponent(graph, component, positions, old[0] - box[0], old[1] - box[1]);
+            ComponentLayout layout = layoutComponent(board, graph, component);
+            placeAnchored(graph, component, layout, old);
         }
         log.info("增量重排：boardId={} 原地分量={} 新分量={} 孤立新节点={}", board.getId(), anchored.size(),
                 fresh.size(), isolatedNew.size());
@@ -694,8 +682,11 @@ public class BoardActionApplier {
         }
     }
 
-    /** 分量布局：思维导图按画布风格二选一，流程图永远分层 */
-    private Map<String, double[]> layoutComponent(Board board, Graph graph, List<String> component) {
+    /**
+     * 分量布局：思维导图按画布风格二选一，流程图永远分层。
+     * 逻辑图单根树走局部布局；多根树或其他风格返回全量结果，rootId 为 null。
+     */
+    private ComponentLayout layoutComponent(Board board, Graph graph, List<String> component) {
         // 先统一尺寸，后续布局与包围盒都使用最终尺寸
         sizeComponent(board, graph, component);
         // 记录节点的尺寸
@@ -710,28 +701,38 @@ public class BoardActionApplier {
             levels.put(id, level);
             mindmap |= level > 0;
         }
-        // 记录方向
-        List<String[]> componentEdges = edgesWithin(graph, new HashSet<>(component));
+        // 记录方向（loadGraph 已按分量分桶）
+        List<String[]> componentEdges = edgesWithin(graph, component);
         if (!mindmap) {
-            return GraphLayoutService.layoutFlowchart(component, componentEdges, sizes);
+            return new ComponentLayout(GraphLayoutService.layoutFlowchart(component, componentEdges, sizes), null);
         }
         int maxNodes = properties.ai().layout().radialMaxNodes();
         // 树形思维导图并且符合最大节点数限制为true
         boolean radial = board.getLayoutStyle() == BoardLayoutStyle.RADIAL && graph.shapes().size() <= maxNodes;
         if (radial) {
-            return GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels);
+            return new ComponentLayout(
+                    GraphLayoutService.layoutMindmapTree(component, componentEdges, sizes, levels), null);
         }
-        // 逻辑图一级分支的固定侧：由用户拖动排序时写入，未写入的按两侧高度自动分配
-        Set<String> componentSet = new HashSet<>(component);
+        // 逻辑图一级分支的固定侧由连线 side 提供，loadGraph 已一次扫描建好；这里只保留本分量内的项
         Map<String, String> sideByChild = new HashMap<>();
-        for (BoardEdge edge : graph.edges()) {
-            String to = edge.getToShapeId().toString();
-            if (edge.getSide() != null && componentSet.contains(to)) {
-                // 记录方向和哪侧
-                sideByChild.put(to, edge.getSide());
+        for (String id : component) {
+            String side = graph.sideByChild().get(id);
+            if (side != null) {
+                sideByChild.put(id, side);
             }
         }
-        return GraphLayoutService.layoutLogicChart(component, componentEdges, sizes, levels, sideByChild);
+        GraphLayoutService.SpanningTree tree = GraphLayoutService.spanningTree(component, componentEdges, levels);
+        if (tree.roots().size() == 1) {
+            String rootId = tree.roots().get(0);
+            TidyLogicLayout.IncrementalResult result = TidyLogicLayout.layoutIncremental(component, tree,
+                    sizes, sideByChild, layoutCache.snapshot(board.getId(), BoardLayoutStyle.LOGIC, rootId));
+            if (result != null) {
+                layoutCache.publishAfterCommit(board.getId(), BoardLayoutStyle.LOGIC, rootId, result.state());
+                return new ComponentLayout(result.positions(), rootId);
+            }
+        }
+        // 多根树无法用单根缓存，走全量；根节点置空，调用方按包围盒锚定
+        return new ComponentLayout(TidyLogicLayout.layout(component, tree, sizes, sideByChild), null);
     }
 
     /** 新建节点；标题/类型缺省时给出可用默认值，尺寸按标题自适应且不小于动作给出的尺寸 */
@@ -860,53 +861,52 @@ public class BoardActionApplier {
         }
     }
 
-    /** 读取整张图的节点、连线、无向邻接表与弱连通分量 */
+    /** 读取整张图的节点、连线、邻接表与弱连通分量，并预建后续布局需要的索引 */
     private Graph loadGraph(UUID boardId) {
         List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId);
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
         Map<String, Shape> shapeById = new LinkedHashMap<>();
-        // 建立无向邻接表
+        // 无向邻接表用于求弱连通分量；forward 是有向邻接表，用于折叠子树和生成树
         Map<String, Set<String>> undirected = new LinkedHashMap<>();
+        Map<String, List<String>> forward = new LinkedHashMap<>();
         for (Shape shape : shapes) {
-            // 将节点加入映射
             String id = shape.getId().toString();
-            // 初始化邻接表条目
             shapeById.put(id, shape);
             undirected.put(id, new LinkedHashSet<>());
+            forward.put(id, new ArrayList<>());
         }
+        // 一级分支的固定左右侧：连线上的 side 属性，一次扫描建好
+        Map<String, String> sideByChild = new HashMap<>();
         for (BoardEdge edge : edges) {
-            // 获取连线的两端节点
             String from = edge.getFromShapeId().toString();
             String to = edge.getToShapeId().toString();
-            // 如果两端节点都在映射中，则加入邻接表
-            if (undirected.containsKey(from) && undirected.containsKey(to)) {
-                undirected.get(from).add(to);
-                undirected.get(to).add(from);
+            if (!undirected.containsKey(from) || !undirected.containsKey(to)) {
+                continue;
+            }
+            undirected.get(from).add(to);
+            undirected.get(to).add(from);
+            forward.get(from).add(to);
+            if (edge.getSide() != null) {
+                sideByChild.put(to, edge.getSide());
             }
         }
         List<List<String>> components = new ArrayList<>();
+        Map<String, Integer> componentIndexOf = new HashMap<>();
         Set<String> visited = new HashSet<>();
         for (Shape shape : shapes) {
-            // 从一个未访问过的节点开始广度优先搜索
             String start = shape.getId().toString();
-            // 如果已经访问过，则跳过
             if (!visited.add(start)) {
                 continue;
             }
-            // 连通分量
             List<String> component = new ArrayList<>();
-            // 广度优先搜索
+            int componentIndex = components.size();
             Deque<String> queue = new ArrayDeque<>();
-            // 将起始节点加入队列
             queue.add(start);
             while (!queue.isEmpty()) {
-                // 从队列中取出一个节点
                 String current = queue.poll();
-                // 将其加入当前连通分量
                 component.add(current);
-                // 遍历其所有未访问过的邻居节点
+                componentIndexOf.put(current, componentIndex);
                 for (String next : undirected.getOrDefault(current, Set.of())) {
-                    // 如果邻居节点未访问过，则加入队列
                     if (visited.add(next)) {
                         queue.add(next);
                     }
@@ -914,21 +914,35 @@ public class BoardActionApplier {
             }
             components.add(component);
         }
-        log.info("该画布的连通分量数量为{}",components.size());
-        return new Graph(shapes, edges, shapeById, undirected, components);
-    }
-
-    /** 分量内两端都在集合中的连线（保留方向） */
-    private List<String[]> edgesWithin(Graph graph, Set<String> nodes) {
-        List<String[]> result = new ArrayList<>();
-        for (BoardEdge edge : graph.edges()) {
+        // 按分量给边分桶：一条边的两个端点必然属于同一个弱连通分量
+        List<List<String[]>> componentEdges = new ArrayList<>(components.size());
+        for (int index = 0; index < components.size(); index++) {
+            componentEdges.add(new ArrayList<>());
+        }
+        for (BoardEdge edge : edges) {
             String from = edge.getFromShapeId().toString();
             String to = edge.getToShapeId().toString();
-            if (nodes.contains(from) && nodes.contains(to)) {
-                result.add(new String[] { from, to });
+            Integer index = componentIndexOf.get(from);
+            if (index == null || !componentIndexOf.containsKey(to)) {
+                continue;
             }
+            componentEdges.get(index).add(new String[] { from, to });
         }
-        return result;
+        log.info("该画布的连通分量数量为{}", components.size());
+        return new Graph(shapes, edges, shapeById, undirected, components, forward, componentIndexOf,
+                componentEdges, sideByChild);
+    }
+
+    /** 分量内的连线（保留方向）：直接取 loadGraph 已分好桶的列表 */
+    private List<String[]> edgesWithin(Graph graph, List<String> component) {
+        if (component.isEmpty()) {
+            return List.of();
+        }
+        Integer index = graph.componentIndexOf().get(component.get(0));
+        if (index == null) {
+            return List.of();
+        }
+        return graph.componentEdges().get(index);
     }
 
     private Map<String, double[]> sizesOf(Graph graph, List<String> ids) {
@@ -947,10 +961,39 @@ public class BoardActionApplier {
         for (String id : component) {
             Shape shape = graph.shapeById().get(id);
             double[] pos = positions.get(id);
-            if (shape != null && pos != null) {
-                shape.update(pos[0] + offsetX, pos[1] + offsetY);
+            if (shape == null || pos == null) {
+                continue;
+            }
+            double targetX = pos[0] + offsetX;
+            double targetY = pos[1] + offsetY;
+            // 只写真正变化的坐标，避免持久化层把整分量标脏
+            if (Math.abs(shape.getX() - targetX) > 0.5 || Math.abs(shape.getY() - targetY) > 0.5) {
+                shape.update(targetX, targetY);
             }
         }
+    }
+
+    /**
+     * 原地重排：单根逻辑树以根节点当前位置为锚点，根不动、分支相对展开；
+     * 其他分量仍按旧包围盒左上角锚定，保持整块图不跳位。
+     */
+    private void placeAnchored(Graph graph, List<String> component, ComponentLayout layout, double[] old) {
+        Map<String, double[]> positions = layout.positions();
+        String rootId = layout.rootId();
+        double offsetX;
+        double offsetY;
+        Shape root = rootId == null ? null : graph.shapeById().get(rootId);
+        double[] rootPos = rootId == null ? null : positions.get(rootId);
+        if (root != null && rootPos != null) {
+            offsetX = root.getX() - rootPos[0];
+            offsetY = root.getY() - rootPos[1];
+        } else {
+            Map<String, double[]> sizes = sizesOf(graph, component);
+            double[] box = bounds(positions, sizes);
+            offsetX = old[0] - box[0];
+            offsetY = old[1] - box[1];
+        }
+        placeComponent(graph, component, positions, offsetX, offsetY);
     }
 
     /** 分量内已有节点（非本批新建）的旧包围盒 */
@@ -1066,8 +1109,18 @@ public class BoardActionApplier {
         return result;
     }
 
+    /**
+     * 一次读库后的图快照。除节点/连线/分量外，预建了按分量分桶的边、前向邻接表和节点到分量下标的索引，
+     * 后续 visibleNodes、collectSubtree、edgesWithin、componentOf 都不再重复扫描全图。
+     */
     private record Graph(List<Shape> shapes, List<BoardEdge> edges, Map<String, Shape> shapeById,
-            Map<String, Set<String>> undirected, List<List<String>> components) {
+            Map<String, Set<String>> undirected, List<List<String>> components,
+            Map<String, List<String>> forward, Map<String, Integer> componentIndexOf,
+            List<List<String[]>> componentEdges, Map<String, String> sideByChild) {
+    }
+
+    /** 分量布局结果；rootId 非空表示单根逻辑树，可以用根节点作为原地锚点 */
+    private record ComponentLayout(Map<String, double[]> positions, String rootId) {
     }
 
     private record UpdateOutcome(boolean applied, boolean relayout, UUID shapeId) {

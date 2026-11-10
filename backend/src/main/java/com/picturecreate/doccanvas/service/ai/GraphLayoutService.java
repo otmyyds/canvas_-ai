@@ -69,9 +69,25 @@ public final class GraphLayoutService {
             forward.get(edge[0]).add(edge[1]);
             inDegree.merge(edge[1], 1, Integer::sum);
         }
-        List<String> candidates = new ArrayList<>(all);
-        // 按照level排序，level=0优先，其次入度为0，最后原顺序
-        candidates.sort(Comparator.comparingInt(id -> rootPriority(id, levels, inDegree)));
+        // 三桶稳定分区：level=0、入度 0、其余，桶内保持插入顺序。
+        // 不再比较排序，避免 10 万节点时多一次 O(n log n)。
+        List<String> levelZero = new ArrayList<>();
+        List<String> zeroInDegree = new ArrayList<>();
+        List<String> rest = new ArrayList<>();
+        for (String id : all) {
+            int priority = rootPriority(id, levels, inDegree);
+            if (priority == 0) {
+                levelZero.add(id);
+            } else if (priority == 1) {
+                zeroInDegree.add(id);
+            } else {
+                rest.add(id);
+            }
+        }
+        List<String> candidates = new ArrayList<>(all.size());
+        candidates.addAll(levelZero);
+        candidates.addAll(zeroInDegree);
+        candidates.addAll(rest);
 
         List<String> roots = new ArrayList<>();
         Set<String> visited = new HashSet<>();
@@ -180,9 +196,8 @@ public final class GraphLayoutService {
         }
         log.info("逻辑图布局：节点数={} 边数={}", nodeIds.size(), edges == null ? 0 : edges.size());
         SpanningTree tree = spanningTree(nodeIds, edges, levels);
-        Map<String, double[]> positions = LogicTreeLayout.layout(nodeIds, tree, sizes, sideByChild);
-        normalize(positions);
-        return positions;
+        // 新算法已经按根/树的包围盒自行定位，返回原始坐标，由调用方决定锚点
+        return TidyLogicLayout.layout(nodeIds, tree, sizes, sideByChild);
     }
 
     /**

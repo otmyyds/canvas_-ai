@@ -17,6 +17,11 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        # 批量写：布局一次会更新大量节点坐标，按 100 条合并 JDBC 往返
+        jdbc:
+          batch_size: 100
+          order_inserts: true
+          order_updates: true
   redis:
     redisson:
       config: |
