@@ -41,46 +41,71 @@ export const authToken = {
 };
 
 /**
- * 刷新令牌 + 用户 id 存取（localStorage，key = "dc_refresh"）。
- * 用于访问令牌过期时静默续期（POST /api/auth/refresh）。
+ * 刷新令牌存取（localStorage，key = "dc_refresh_token"）。
+ * 只存令牌本身，用户身份由后端从令牌签名和 claims 中解析，前端不保存用户 id。
  */
 export const authRefresh = {
-  get: (): { refreshToken: string; userId: string } | null => {
+  get: (): string | null => {
     if (typeof window === "undefined") {
       return null;
     }
-    const raw = window.localStorage.getItem("dc_refresh");
-    if (!raw) {
-      return null;
-    }
-    try {
-      return JSON.parse(raw) as { refreshToken: string; userId: string };
-    } catch {
-      return null;
-    }
+    return window.localStorage.getItem("dc_refresh_token");
   },
-  set: (session: { refreshToken: string; userId: string } | null) => {
+  set: (refreshToken: string | null) => {
     if (typeof window === "undefined") {
       return;
     }
-    if (session) {
-      window.localStorage.setItem("dc_refresh", JSON.stringify(session));
+    if (refreshToken) {
+      window.localStorage.setItem("dc_refresh_token", refreshToken);
     } else {
-      window.localStorage.removeItem("dc_refresh");
+      window.localStorage.removeItem("dc_refresh_token");
     }
   }
 };
 
-/** 登录/注册/刷新后保存完整会话（访问令牌 + 刷新令牌 + 用户 id） */
+/**
+ * 当前登录用户的展示信息（localStorage，key = "dc_user"）。
+ * 仅用于界面展示和区分本机会话，不作为任何接口的认证依据。
+ */
+export const authUser = {
+  get: (): AuthUser | null => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const raw = window.localStorage.getItem("dc_user");
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as AuthUser;
+    } catch {
+      return null;
+    }
+  },
+  set: (user: AuthUser | null) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (user) {
+      window.localStorage.setItem("dc_user", JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem("dc_user");
+    }
+  }
+};
+
+/** 登录/注册/刷新后保存会话：访问令牌 + 刷新令牌 + 展示信息 */
 export function saveAuthSession(result: AuthResponse) {
   authToken.set(result.token);
-  authRefresh.set({ refreshToken: result.refreshToken, userId: result.user.id });
+  authRefresh.set(result.refreshToken);
+  authUser.set(result.user);
 }
 
 /** 清除会话（登出或续期失败） */
 export function clearAuthSession() {
   authToken.set(null);
   authRefresh.set(null);
+  authUser.set(null);
 }
 
 /**
@@ -148,15 +173,16 @@ function doRequest(path: string, init?: RequestInit): Promise<Response> {
 
 /** 用刷新令牌换取新访问令牌；成功返回 true，失败（无刷新令牌/接口报错）返回 false */
 async function refreshAccessSession(): Promise<boolean> {
-  const session = authRefresh.get();
-  if (!session) {
+  const refreshToken = authRefresh.get();
+  if (!refreshToken) {
     return false;
   }
   try {
+    // 只提交 refreshToken，用户身份由后端验签后从 claims 中解析
     const response = await fetch(`${API_BASE}/api/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: session.userId, refreshToken: session.refreshToken })
+      body: JSON.stringify({ refreshToken })
     });
     if (!response.ok) {
       return false;
@@ -365,9 +391,8 @@ export const api = {
     request<void>("/api/users/me/password", { method: "PATCH", body: JSON.stringify(body) })
 };
 
-/** 认证用户信息 */
+/** 认证用户信息（仅展示用，不含内部用户 id） */
 export type AuthUser = {
-  id: string;
   email: string;
   displayName: string;
 };

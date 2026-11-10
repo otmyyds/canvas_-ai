@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Share2 } from "lucide-react";
-import { api, authRefresh } from "@/lib/api";
+import { api, authUser } from "@/lib/api";
 import type { BoardLayoutStyle, TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
@@ -17,13 +17,13 @@ type BoardPageProps = {
 
 /**
  * 每个用户在每个画布下保存一个持续会话 id，刷新后继续同一段对话。
- * key 带 userId，避免同一浏览器切换账号后复用上一个用户的会话 id。
+ * key 带登录邮箱，避免同一浏览器切换账号后复用上一个用户的会话 id。
  */
 const AGENT_SESSION_PREFIX = "dc_agent_session_";
 
 function agentSessionKey(boardId: string): string {
-  const userId = authRefresh.get()?.userId ?? "anonymous";
-  return `${AGENT_SESSION_PREFIX}${userId}_${boardId}`;
+  const account = authUser.get()?.email ?? "anonymous";
+  return `${AGENT_SESSION_PREFIX}${account}_${boardId}`;
 }
 
 function loadAgentSessionId(boardId: string): string | undefined {
