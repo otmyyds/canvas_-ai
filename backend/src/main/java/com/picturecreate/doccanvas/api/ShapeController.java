@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.domain.Shape;
 import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.BoardService;
@@ -51,29 +52,29 @@ public class ShapeController {
 
     /** 新建节点（body: { parentId, title }）：parentId 为空时创建独立根节点，否则挂到父节点下并重排分量 */
     @PostMapping("/api/boards/{boardId}/shapes")
-    public ShapeResponse create(@PathVariable UUID boardId, @RequestBody ShapeCreateRequest body,
+    public Result<ShapeResponse> create(@PathVariable UUID boardId, @RequestBody ShapeCreateRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("新建图形节点：boardId={} parentId={} title={}", boardId, body.parentId(), body.title());
         Shape shape = shapeEditService.createNode(boardId, user, body.parentId(), body.title());
-        return ShapeResponse.from(shape);
+        return Result.success(ShapeResponse.from(shape));
     }
 
     @GetMapping("/api/boards/{boardId}/shapes")
-    public List<ShapeResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<ShapeResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         // 必须先校验画布归属：这里直接按 boardId 查表，不校验就等于任何登录用户
         // 传别人的 boardId 就能读到别人画布的全部节点（同类的 update/delete 都有这一步）
         boardService.getOwned(boardId, user);
         log.info("查询图形节点列表：boardId={}", boardId);
-        return shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId).stream()
+        return Result.success(shapeRepository.findByBoardIdOrderByCreatedAtAsc(boardId).stream()
                 .map(ShapeResponse::from)
-                .toList();
+                .toList());
     }
 
     /** 回写用户手动编辑（拖动位置 / 改标题 / 改尺寸），统一 tldraw 快照与 shapes 表 */
     @PatchMapping("/api/shapes/{shapeId}")
-    public ShapeResponse update(@PathVariable UUID shapeId, @RequestBody ShapeUpdateRequest body,
+    public Result<ShapeResponse> update(@PathVariable UUID shapeId, @RequestBody ShapeUpdateRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         Shape shape = shapeRepository.findById(shapeId)
@@ -87,7 +88,7 @@ public class ShapeController {
         Shape saved = shapeRepository.save(shape);
         log.info("更新图形节点：shapeId={} title={} pos=({},{}) size={}x{}", shapeId, saved.getTitle(),
                 saved.getX(), saved.getY(), saved.getWidth(), saved.getHeight());
-        return ShapeResponse.from(saved);
+        return Result.success(ShapeResponse.from(saved));
     }
 
     /**

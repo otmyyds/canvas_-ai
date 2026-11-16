@@ -11,6 +11,7 @@ import com.picturecreate.doccanvas.api.dto.AuthDtos.AuthResponse;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.LoginRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.RefreshRequest;
 import com.picturecreate.doccanvas.api.dto.AuthDtos.RegisterRequest;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.AuthService;
 
 import jakarta.validation.Valid;
@@ -28,21 +29,21 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public AuthResponse register(@Valid @RequestBody RegisterRequest body) {
+    public Result<AuthResponse> register(@Valid @RequestBody RegisterRequest body) {
         log.info("用户注册：email={}", body.email());
-        return authService.register(body);
+        return Result.success(authService.register(body));
     }
 
     @PostMapping("/login")
-    public AuthResponse login(@Valid @RequestBody LoginRequest body) {
+    public Result<AuthResponse> login(@Valid @RequestBody LoginRequest body) {
         log.info("用户登录：email={}", body.email());
-        return authService.login(body);
+        return Result.success(authService.login(body));
     }
 
     /** 刷新访问令牌：只接收 refreshToken，用户 id 由后端验签后从 claims 解析 */
     @PostMapping("/refresh")
-    public AuthResponse refresh(@Valid @RequestBody RefreshRequest body) {
+    public Result<AuthResponse> refresh(@Valid @RequestBody RefreshRequest body) {
         log.info("刷新访问令牌");
-        return authService.refresh(body.refreshToken());
+        return Result.success(authService.refresh(body.refreshToken()));
     }
 }

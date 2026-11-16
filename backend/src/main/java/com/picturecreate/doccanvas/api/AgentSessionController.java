@@ -4,12 +4,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.domain.AgentMessage;
 import com.picturecreate.doccanvas.domain.AgentMessageRole;
 import com.picturecreate.doccanvas.domain.AgentSession;
@@ -37,26 +39,26 @@ public class AgentSessionController {
 
     /** 画布下的会话列表（最近活跃在前） */
     @GetMapping("/api/boards/{boardId}/agent/sessions")
-    public List<AgentSessionResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<AgentSessionResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        return sessionService.list(boardId, user).stream().map(AgentSessionResponse::from).toList();
+        return Result.success(sessionService.list(boardId, user).stream().map(AgentSessionResponse::from).toList());
     }
 
     /** 单个会话的消息（按时间升序） */
     @GetMapping("/api/boards/{boardId}/agent/sessions/{sessionId}/messages")
-    public List<AgentMessageResponse> messages(@PathVariable UUID boardId, @PathVariable UUID sessionId,
+    public Result<List<AgentMessageResponse>> messages(@PathVariable UUID boardId, @PathVariable UUID sessionId,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        return sessionService.messages(boardId, sessionId, user).stream().map(AgentMessageResponse::from).toList();
+        return Result.success(
+                sessionService.messages(boardId, sessionId, user).stream().map(AgentMessageResponse::from).toList());
     }
 
     /** 删除会话；消息级联删除，运行记录只解除会话关联 */
     @DeleteMapping("/api/boards/{boardId}/agent/sessions/{sessionId}")
-    public ResponseEntity<Void> delete(@PathVariable UUID boardId, @PathVariable UUID sessionId,
-            HttpServletRequest request) {
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID boardId, @PathVariable UUID sessionId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         sessionService.delete(boardId, sessionId, user);
-        return ResponseEntity.noContent().build();
     }
 
     /** 会话摘要信息 */

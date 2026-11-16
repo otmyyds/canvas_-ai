@@ -22,6 +22,7 @@ import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardLayoutRequest;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardPageResponse;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardRequest;
 import com.picturecreate.doccanvas.api.dto.BoardDtos.BoardResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.config.AppProperties;
 import com.picturecreate.doccanvas.domain.Board;
 import com.picturecreate.doccanvas.service.BoardLayoutService;
@@ -68,7 +69,7 @@ public class BoardController {
 
     /** 分页获取当前用户的画布，按更新时间倒序；keyword 按标题模糊匹配 */
     @GetMapping
-    public BoardPageResponse list(
+    public Result<BoardPageResponse> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "9") int size,
             @RequestParam(required = false) String keyword,
@@ -77,41 +78,41 @@ public class BoardController {
         log.info("查询画布列表：userId={} page={} size={} keyword={}", user.id(), page, size, keyword);
         Page<Board> result = boardService.list(user, page, size, keyword);
         List<BoardResponse> items = result.getContent().stream().map(this::toResponse).toList();
-        return new BoardPageResponse(items, result.getNumber() + 1, result.getSize(),
-                result.getTotalElements(), result.getTotalPages());
+        return Result.success(new BoardPageResponse(items, result.getNumber() + 1, result.getSize(),
+                result.getTotalElements(), result.getTotalPages()));
     }
 
     /** 新建画布（body: { title }） */
     @PostMapping
-    public BoardResponse create(@RequestBody BoardRequest body, HttpServletRequest request) {
+    public Result<BoardResponse> create(@RequestBody BoardRequest body, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("新建画布：title={}", body.title());
-        return toResponse(boardService.create(user, body.title()));
+        return Result.success(toResponse(boardService.create(user, body.title())));
     }
 
     /** 获取单个画布详情（校验归属，非本人画布返回 404） */
     @GetMapping("/{boardId}")
-    public BoardResponse get(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<BoardResponse> get(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询画布详情：boardId={}", boardId);
-        return toResponse(boardService.getOwned(boardId, user));
+        return Result.success(toResponse(boardService.getOwned(boardId, user)));
     }
 
     /** 重命名画布 */
     @PatchMapping("/{boardId}")
-    public BoardResponse rename(@PathVariable UUID boardId, @RequestBody BoardRequest body, HttpServletRequest request) {
+    public Result<BoardResponse> rename(@PathVariable UUID boardId, @RequestBody BoardRequest body, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("重命名画布：boardId={} title={}", boardId, body.title());
-        return toResponse(boardService.rename(boardId, user, body.title()));
+        return Result.success(toResponse(boardService.rename(boardId, user, body.title())));
     }
 
     /** 切换思维导图排布风格（树形图 / 逻辑图），并立即按新风格重排画布 */
     @PatchMapping("/{boardId}/layout")
-    public BoardResponse updateLayout(@PathVariable UUID boardId, @RequestBody BoardLayoutRequest body,
+    public Result<BoardResponse> updateLayout(@PathVariable UUID boardId, @RequestBody BoardLayoutRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("切换画布布局：boardId={} style={}", boardId, body.layoutStyle());
-        return toResponse(boardLayoutService.updateLayoutStyle(boardId, user, body.layoutStyle()));
+        return Result.success(toResponse(boardLayoutService.updateLayoutStyle(boardId, user, body.layoutStyle())));
     }
 
     /** 整理画布：按连通分量把整张画布重新布局 */

@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AssetDtos.AssetResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.AssetService;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
@@ -45,9 +46,9 @@ public class AssetController {
     }
 
     @GetMapping
-    public List<AssetResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<AssetResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        return assetService.list(boardId, user).stream().map(AssetResponse::from).toList();
+        return Result.success(assetService.list(boardId, user).stream().map(AssetResponse::from).toList());
     }
 
     @GetMapping("/{assetId}/content")

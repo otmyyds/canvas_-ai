@@ -120,16 +120,24 @@ function authHeaders(): Record<string, string> {
   return DEMO_USER_HEADERS;
 }
 
+/** 后端统一响应体：code 与 HTTP 状态码一致，data 是业务数据 */
+type ApiResult<T> = {
+  code: number;
+  message: string;
+  data: T;
+};
+
 /**
  * 通用请求封装：
  * - 自动拼 API_BASE 前缀 + 统一认证头
  * - 401 → 用刷新令牌静默续期后重试一次，仍失败才清会话跳登录
  * - 非 2xx → 解析错误体并转中文错误信息
- * - 204 → 返回 undefined
+ * - 204 → 返回 undefined（后端无响应体）
+ * - 其他成功响应统一解包 Result.data
  *
  * @param path 接口路径（以 /api 开头）
  * @param init fetch 配置（method/body/headers）
- * @returns 后端返回的 JSON 数据
+ * @returns 后端返回的业务数据
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response = await doRequest(path, init);
@@ -148,15 +156,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(toChineseError(body.error ?? `请求失败（${response.status}）`));
+    const body = (await response.json().catch(() => null)) as
+      | (Partial<ApiResult<unknown>> & { error?: string })
+      | null;
+    throw new Error(toChineseError(body?.message ?? body?.error ?? `请求失败（${response.status}）`));
   }
 
   if (response.status === 204) {
     return undefined as T;
   }
 
-  return response.json() as Promise<T>;
+  const body = (await response.json()) as ApiResult<T>;
+  return body.data;
 }
 
 /** 发送一次请求（自动拼统一认证头，重试时会重新读取刷新后的 token） */
@@ -187,8 +198,8 @@ async function refreshAccessSession(): Promise<boolean> {
     if (!response.ok) {
       return false;
     }
-    const result = (await response.json()) as AuthResponse;
-    saveAuthSession(result);
+    const body = (await response.json()) as ApiResult<AuthResponse>;
+    saveAuthSession(body.data);
     return true;
   } catch {
     return false;
@@ -315,10 +326,13 @@ export const api = {
       body: form
     });
     if (!response.ok) {
-      const body = await response.json().catch(() => ({ error: response.statusText }));
-      throw new Error(toChineseError(body.error ?? `上传失败（${response.status}）`));
+      const body = (await response.json().catch(() => null)) as
+        | (Partial<ApiResult<unknown>> & { error?: string })
+        | null;
+      throw new Error(toChineseError(body?.message ?? body?.error ?? `上传失败（${response.status}）`));
     }
-    return response.json() as Promise<SourceFile>;
+    const body = (await response.json()) as ApiResult<SourceFile>;
+    return body.data;
   },
 
   // ===== 快照 =====

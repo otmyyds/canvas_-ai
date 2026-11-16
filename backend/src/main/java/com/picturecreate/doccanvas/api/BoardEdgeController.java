@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.BoardEdgeDtos.BoardEdgeResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.BoardEdgeService;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
@@ -32,9 +33,9 @@ public class BoardEdgeController {
     }
 
     @GetMapping
-    public List<BoardEdgeResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<BoardEdgeResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询连线列表：boardId={}", boardId);
-        return edgeService.list(boardId, user).stream().map(BoardEdgeResponse::from).toList();
+        return Result.success(edgeService.list(boardId, user).stream().map(BoardEdgeResponse::from).toList());
     }
 }

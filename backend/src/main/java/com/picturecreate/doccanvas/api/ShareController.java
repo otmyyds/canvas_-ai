@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.picturecreate.doccanvas.api.dto.ShareDtos.ShareLinkResponse;
 import com.picturecreate.doccanvas.api.dto.ShareDtos.SharedBoardResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.ShareService;
@@ -32,13 +33,13 @@ public class ShareController {
     }
 
     @PostMapping("/api/boards/{boardId}/share")
-    public ShareLinkResponse createShareLink(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<ShareLinkResponse> createShareLink(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        return shareService.createShareLink(boardId, user);
+        return Result.success(shareService.createShareLink(boardId, user));
     }
 
     @GetMapping("/api/share/{token}")
-    public SharedBoardResponse readSharedBoard(@PathVariable String token) {
-        return shareService.readSharedBoard(token);
+    public Result<SharedBoardResponse> readSharedBoard(@PathVariable String token) {
+        return Result.success(shareService.readSharedBoard(token));
     }
 }

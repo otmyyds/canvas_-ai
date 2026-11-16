@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.FileResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.FileService;
@@ -57,19 +58,19 @@ public class FileController {
 
     /** 画布下所有资料（按创建时间倒序） */
     @GetMapping
-    public List<FileResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<FileResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询资料列表：boardId={}", boardId);
-        return fileService.list(boardId, user).stream().map(FileResponse::from).toList();
+        return Result.success(fileService.list(boardId, user).stream().map(FileResponse::from).toList());
     }
 
     /** 上传文件：存 RustFS + 落库元数据 + 触发文本解析（TXT/MD/PDF/DOCX） */
     @PostMapping
-    public FileResponse upload(@PathVariable UUID boardId, @RequestParam("file") MultipartFile file,
+    public Result<FileResponse> upload(@PathVariable UUID boardId, @RequestParam("file") MultipartFile file,
             HttpServletRequest request) throws IOException {
         CurrentUser user = currentUserService.resolve(request);
         log.info("上传资料：boardId={} filename={} size={}", boardId, file.getOriginalFilename(), file.getSize());
-        return FileResponse.from(fileService.upload(boardId, user, file));
+        return Result.success(FileResponse.from(fileService.upload(boardId, user, file)));
     }
 
     /**

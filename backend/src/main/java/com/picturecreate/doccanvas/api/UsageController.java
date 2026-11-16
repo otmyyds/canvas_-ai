@@ -4,6 +4,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.QuotaService;
@@ -29,8 +30,8 @@ public class UsageController {
 
     /** 当日任务数、模型调用次数、token 用量与上限 */
     @GetMapping("/usage/me")
-    public UsageSnapshot me(HttpServletRequest request) {
+    public Result<UsageSnapshot> me(HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
-        return quotaService.snapshot(user);
+        return Result.success(quotaService.snapshot(user));
     }
 }

@@ -12,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.AiTaskService;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
@@ -44,17 +45,17 @@ public class AiTaskController {
 
     /** 画布下所有任务（按创建时间倒序，含步骤列表） */
     @GetMapping("/boards/{boardId}/ai-tasks")
-    public List<AiTaskResponse> list(@PathVariable UUID boardId, HttpServletRequest request) {
+    public Result<List<AiTaskResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("查询画布任务列表：boardId={}", boardId);
-        return aiTaskService.list(boardId, user);
+        return Result.success(aiTaskService.list(boardId, user));
     }
 
     /** 中断任务（DB 标记 + Redis cancel key） */
     @PostMapping("/ai-tasks/{taskId}/abort")
-    public AiTaskResponse abort(@PathVariable UUID taskId, HttpServletRequest request) {
+    public Result<AiTaskResponse> abort(@PathVariable UUID taskId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         log.info("中断任务：taskId={}", taskId);
-        return aiTaskService.abort(taskId, user);
+        return Result.success(aiTaskService.abort(taskId, user));
     }
 }

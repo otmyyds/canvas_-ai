@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.picturecreate.doccanvas.api.ShapeController.ShapeResponse;
 import com.picturecreate.doccanvas.api.dto.BoardEdgeDtos.BoardEdgeResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.ShapeEditService;
@@ -40,7 +41,7 @@ public class StructureController {
 
     /** 调整某个节点的子节点顺序；逻辑图一级分支同时提交左右侧，后端按新顺序重排分量 */
     @PatchMapping("/api/boards/{boardId}/structure/order")
-    public List<BoardEdgeResponse> reorder(@PathVariable UUID boardId, @RequestBody ReorderRequest body,
+    public Result<List<BoardEdgeResponse>> reorder(@PathVariable UUID boardId, @RequestBody ReorderRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         if (body == null || body.parentId() == null) {
@@ -51,14 +52,14 @@ public class StructureController {
                         .map(child -> new ChildOrder(child.edgeId(), child.side()))
                         .toList();
         log.info("调整同级顺序：boardId={} parentId={} 子节点数={}", boardId, body.parentId(), children.size());
-        return shapeEditService.reorderChildren(boardId, user, body.parentId(), children).stream()
+        return Result.success(shapeEditService.reorderChildren(boardId, user, body.parentId(), children).stream()
                 .map(BoardEdgeResponse::from)
-                .toList();
+                .toList());
     }
 
     /** 纳管画布上手绘的图形与连线：原坐标尺寸落库，返回本地 id 到新节点的映射 */
     @PostMapping("/api/boards/{boardId}/structure/adopt")
-    public AdoptResponse adopt(@PathVariable UUID boardId, @RequestBody AdoptRequest body,
+    public Result<AdoptResponse> adopt(@PathVariable UUID boardId, @RequestBody AdoptRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         if (body == null) {
@@ -76,23 +77,24 @@ public class StructureController {
                         .toList();
         AdoptionResult result = shapeEditService.adopt(boardId, user, nodes, edges);
         log.info("纳管自由图形：boardId={} 节点={} 连线={}", boardId, result.nodes().size(), result.edges().size());
-        return new AdoptResponse(
+        return Result.success(new AdoptResponse(
                 result.nodes().stream()
                         .map(adopted -> new AdoptedNodeResponse(adopted.localId(), ShapeResponse.from(adopted.shape())))
                         .toList(),
-                result.edges().stream().map(BoardEdgeResponse::from).toList());
+                result.edges().stream().map(BoardEdgeResponse::from).toList()));
     }
 
     /** 折叠/展开节点：折叠后其后代不参与布局，前端隐藏对应图形 */
     @PatchMapping("/api/boards/{boardId}/structure/collapse")
-    public ShapeResponse collapse(@PathVariable UUID boardId, @RequestBody CollapseRequest body,
+    public Result<ShapeResponse> collapse(@PathVariable UUID boardId, @RequestBody CollapseRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         if (body == null || body.shapeId() == null) {
             throw new IllegalArgumentException("缺少节点 id");
         }
         log.info("切换节点折叠：boardId={} shapeId={} collapsed={}", boardId, body.shapeId(), body.collapsed());
-        return ShapeResponse.from(shapeEditService.setCollapsed(boardId, user, body.shapeId(), body.collapsed()));
+        return Result.success(
+                ShapeResponse.from(shapeEditService.setCollapsed(boardId, user, body.shapeId(), body.collapsed())));
     }
 
     /** 折叠请求：目标节点 + 目标状态 */

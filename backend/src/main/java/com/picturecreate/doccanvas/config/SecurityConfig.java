@@ -53,12 +53,14 @@ public class SecurityConfig {
                         .authenticationEntryPoint((request, response, authException) -> {
                             response.setContentType("application/json;charset=utf-8");
                             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                            response.getWriter().write("{\"code\":401,\"message\":\"未登录或登录已过期\"}");
+                            response.getWriter().write(
+                                    "{\"code\":401,\"message\":\"未登录或登录已过期\",\"data\":null}");
                         })
                         .accessDeniedHandler((request, response, accessDeniedException) -> {
                             response.setContentType("application/json;charset=utf-8");
                             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                            response.getWriter().write("{\"code\":403,\"message\":\"无权限访问\"}");
+                            response.getWriter().write(
+                                    "{\"code\":403,\"message\":\"无权限访问\",\"data\":null}");
                         }))
                 .build();
     }

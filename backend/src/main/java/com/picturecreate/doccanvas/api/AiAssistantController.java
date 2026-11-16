@@ -12,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.AiTaskDtos.AiTaskResponse;
+import com.picturecreate.doccanvas.common.Result;
 import com.picturecreate.doccanvas.service.CurrentUser;
 import com.picturecreate.doccanvas.service.CurrentUserService;
 import com.picturecreate.doccanvas.service.ai.ScopeGuard;
@@ -54,7 +55,7 @@ public class AiAssistantController {
 
     /** 统一 AI 助手入口：预检后直接回复或创建任务 */
     @PostMapping("/api/boards/{boardId}/assist")
-    public AssistResponse assist(@PathVariable UUID boardId, @Valid @RequestBody AssistRequest body,
+    public Result<AssistResponse> assist(@PathVariable UUID boardId, @Valid @RequestBody AssistRequest body,
             HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         List<String> selectedShapeIds = body.selectedShapeIds() == null ? List.of() : body.selectedShapeIds();
@@ -63,14 +64,14 @@ public class AiAssistantController {
         // 能力范围硬兜底：明显越界直接拒绝，不调模型；此时不创建会话
         String refusal = scopeGuard.refuseReason(body.prompt());
         if (refusal != null) {
-            return AssistResponse.reply(refusal, null);
+            return Result.success(AssistResponse.reply(refusal, null));
         }
         AssistOutcome outcome = agentAssistService.assist(boardId, user, body.prompt(), selectedShapeIds,
                 body.sessionId());
         if (outcome.task() != null) {
-            return AssistResponse.task(outcome.task(), outcome.sessionId());
+            return Result.success(AssistResponse.task(outcome.task(), outcome.sessionId()));
         }
-        return AssistResponse.reply(outcome.reply(), outcome.sessionId());
+        return Result.success(AssistResponse.reply(outcome.reply(), outcome.sessionId()));
     }
 
     /**
