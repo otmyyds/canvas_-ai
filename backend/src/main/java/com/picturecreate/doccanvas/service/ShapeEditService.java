@@ -43,6 +43,13 @@ public class ShapeEditService {
         actionApplier.deleteForUser(boardId, shapeId);
     }
 
+    /** 修改节点标题：按新文字重算尺寸并只重排所属分量，不重排整张画布 */
+    @Transactional
+    public Shape updateTitle(UUID boardId, CurrentUser user, UUID shapeId, String title, String visualJson) {
+        boardService.getOwned(boardId, user);
+        return actionApplier.updateTitleForUser(boardId, shapeId, title, visualJson);
+    }
+
     /** 调整同级顺序（逻辑图一级分支同时提交左右侧），重排该分量 */
     @Transactional
     public List<BoardEdge> reorderChildren(UUID boardId, CurrentUser user, UUID parentId,

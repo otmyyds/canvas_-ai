@@ -80,10 +80,19 @@ public class ShapeController {
         Shape shape = shapeRepository.findById(shapeId)
                 .orElseThrow(() -> new NotFoundException("图形节点不存在"));
         boardService.getOwned(shape.getBoardId(), user);
+        String visualJson = body.visual() == null ? null : writeVisual(body.visual());
+        // 标题变化会影响节点尺寸和兄弟位置，交给布局服务按新文字重排所属分量；
+        // 拖动、改色、改尺寸等普通编辑仍然只写字段，不触发布局。
+        if (body.title() != null && !body.title().equals(shape.getTitle())) {
+            Shape saved = shapeEditService.updateTitle(shape.getBoardId(), user, shapeId, body.title(), visualJson);
+            log.info("修改图形节点标题：shapeId={} title={} pos=({},{}) size={}x{}", shapeId, saved.getTitle(),
+                    saved.getX(), saved.getY(), saved.getWidth(), saved.getHeight());
+            return Result.success(ShapeResponse.from(saved));
+        }
         shape.applyUserEdit(body.title(), body.x(), body.y(), body.width(), body.height());
         // 视觉属性只在前端显式提交时更新；null 表示本次不改
-        if (body.visual() != null) {
-            shape.applyVisual(writeVisual(body.visual()));
+        if (visualJson != null) {
+            shape.applyVisual(visualJson);
         }
         Shape saved = shapeRepository.save(shape);
         log.info("更新图形节点：shapeId={} title={} pos=({},{}) size={}x{}", shapeId, saved.getTitle(),

@@ -618,6 +618,7 @@ final class TidyLogicLayout {
                 finishNode(node);
                 continue;
             }
+            // 干净子树只失效 thread，不进入内部
             if (!dirty.contains(node)) {
                 invalidateExtremeThread(node);
                 continue;
@@ -772,6 +773,7 @@ final class TidyLogicLayout {
             return;
         }
         Node first = node.children.get(0);
+        // 记录首个子节点的底部轮廓
         DepthEntry depthList = new DepthEntry(0, first.extremeBottom.absX + first.extremeBottom.width, null);
         for (int i = 1; i < node.children.size(); i++) {
             Node child = node.children.get(i);

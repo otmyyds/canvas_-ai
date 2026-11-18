@@ -223,6 +223,12 @@ export function WhiteboardEditor({
   // 待回写后端的节点编辑（原始 id -> 编辑体），防抖后批量提交
   const pendingShapeSyncRef = useRef<Map<string, ShapeUpdate>>(new Map());
   const shapeSyncTimerRef = useRef<number | null>(null);
+  // 后端当前标题：判断本次编辑是否改了标题，只有标题变化才需要刷新布局
+  const backendTitleRef = useRef<Map<string, string>>(new Map());
+  // 标题已提交、等待编辑结束后刷新画布；编辑过程中刷新会打断文字输入
+  const titleRelayoutPendingRef = useRef(false);
+  // 上一帧正在编辑的图形 id，用于识别“编辑结束”的瞬间
+  const editingShapeRef = useRef<string | null>(null);
   // 计划执行期间挂起的保存标记：计划结束后再统一落盘，避免回退前的中间状态覆盖恢复出的快照
   const pendingSaveRef = useRef(false);
   const planActiveRef = useRef(false);
@@ -292,6 +298,10 @@ export function WhiteboardEditor({
   shapesRef.current = shapes;
   assetsRef.current = assets;
   filesRef.current = files;
+  // 后端标题只在 shapes 变化时重建索引，避免每次 store 事件都扫描全部节点
+  useEffect(() => {
+    backendTitleRef.current = new Map(shapes.map((shape) => [shape.id, shape.title]));
+  }, [shapes]);
   // 是否存在正在执行的计划任务：渲染期同步到 ref，供保存监听即时判断
   const planActive = tasks.some((task) => task.type === "AGENT_PLAN" && ACTIVE_TASK_STATUSES.has(task.status));
   planActiveRef.current = planActive;
@@ -631,6 +641,21 @@ export function WhiteboardEditor({
     };
   }, [queueSave, store]);
 
+  /** 标题提交后若已退出文字编辑，刷新一次画布，把后端重排后的坐标和尺寸同步回来 */
+  const refreshAfterTitleChange = useCallback(() => {
+    if (!titleRelayoutPendingRef.current
+      || pendingShapeSyncRef.current.size > 0
+      || shapeSyncTimerRef.current != null) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (editor?.getEditingShapeId()) {
+      return;
+    }
+    titleRelayoutPendingRef.current = false;
+    void onRefresh();
+  }, [onRefresh]);
+
   // 用户拖动/改字/改尺寸 AI 图形节点 → 防抖回写 shapes 表（统一 tldraw 快照与 shapes 双状态源）
   const collectUserEdits = useCallback((editor: TldrawEditor) => {
     // 逻辑图子树拖拽期间全是预览位置：既不该落库，也不该进入回写基线。
@@ -659,6 +684,12 @@ export function WhiteboardEditor({
       if (prev === undefined || prev === fingerprint) {
         continue;
       }
+      // 标题变化会让后端重算尺寸并重排分量；位置/颜色变化不需要。
+      // 后端标题索引还没建立时不标记，避免把首次拖动误判成改名。
+      const backendTitle = backendTitleRef.current.get(rawId);
+      if (backendTitle !== undefined && backendTitle !== title) {
+        titleRelayoutPendingRef.current = true;
+      }
       pendingShapeSyncRef.current.set(rawId, {
         title,
         x: shape.x,
@@ -670,16 +701,14 @@ export function WhiteboardEditor({
     }
     if (pendingShapeSyncRef.current.size > 0 && shapeSyncTimerRef.current == null) {
       shapeSyncTimerRef.current = window.setTimeout(() => {
-        for (const [id, update] of pendingShapeSyncRef.current) {
-          void api.updateShape(id, update).catch(() => {
-            // 回写失败忽略，下次编辑会再次触发
-          });
-        }
+        const updates = [...pendingShapeSyncRef.current];
         pendingShapeSyncRef.current.clear();
         shapeSyncTimerRef.current = null;
+        void Promise.allSettled(updates.map(([id, update]) => api.updateShape(id, update)))
+          .then(refreshAfterTitleChange);
       }, 500);
     }
-  }, []);
+  }, [refreshAfterTitleChange]);
 
   useEffect(() => {
     const unlisten = store.listen(() => {
@@ -688,6 +717,12 @@ export function WhiteboardEditor({
         return;
       }
       collectUserEdits(editor);
+      // 文字编辑结束的瞬间再刷新，避免重排结果在输入过程中打断光标
+      const editing = editor.getEditingShapeId();
+      if (!editing && editingShapeRef.current != null) {
+        refreshAfterTitleChange();
+      }
+      editingShapeRef.current = editing ? String(editing) : null;
     }, { scope: "document" });
 
     return () => {
@@ -696,7 +731,7 @@ export function WhiteboardEditor({
         window.clearTimeout(shapeSyncTimerRef.current);
       }
     };
-  }, [collectUserEdits, store]);
+  }, [collectUserEdits, refreshAfterTitleChange, store]);
 
   // 子树拖拽结束后按当前画布状态重建回写基线：预览位置不算用户编辑，
   // 否则松手后会把这些中间坐标批量 PATCH 给后端，下一次重排就会读出错乱的位置。

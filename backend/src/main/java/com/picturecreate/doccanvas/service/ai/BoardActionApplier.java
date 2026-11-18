@@ -233,19 +233,21 @@ public class BoardActionApplier {
                     .orElseThrow(() -> new IllegalStateException("新建根节点失败：" + createdId));
         }
 
-        Graph graph = loadGraph(boardId);
-        Shape parent = graph.shapeById().get(parentId.toString());
-        if (parent == null) {
-            throw new IllegalArgumentException("父节点不存在：" + parentId);
-        }
+        // 只按 id 取父节点，不再 loadGraph：必须同时校验父节点属于当前画布，
+        // 否则可以拿别的画布的节点当父节点，读到它的层级并修改它的折叠状态
+        Shape parent = shapeRepository.findById(parentId)
+                .filter(found -> found.getBoardId().equals(boardId))
+                .orElseThrow(() -> new IllegalArgumentException("父节点不存在：" + parentId));
         // 新节点必须可见：父节点折叠时先展开
         parent.collapse(false);
-        List<String> component = componentOf(graph, parentId.toString());
         // 单节点分量视为思维导图根：新建根的第一个子节点必须取 level 1，
-        // 否则整个分量会被判定为流程图，逻辑图与树形图算法都不会生效
-        boolean mindmap = component.size() == 1 || component.stream()
-                .map(id -> graph.shapeById().get(id))
-                .anyMatch(shape -> shape != null && shape.getLevel() > 0);
+        // 否则整个分量会被判定为流程图，逻辑图与树形图算法都不会生效。
+        // 这里不遍历整个连通分量：父节点自身有层级、完全孤立、或直接邻居含层级节点时按思维导图处理。
+        // 当前数据模型里 level>0 的节点都直接挂在父节点上；若出现 level0 -> level0 -> level1
+        // 这种混合链，直接邻居判断会漏掉，需要回退到分量遍历。
+        boolean mindmap = parent.getLevel() > 0
+                || !shapeRepository.hasAnyNeighbor(boardId, parentId)
+                || shapeRepository.hasLeveledNeighbor(boardId, parentId);
         int level = mindmap ? parent.getLevel() + 1 : parent.getLevel();
         String nodeTitle = title == null || title.isBlank() ? "新节点" : title.trim();
         // 临时 id 让同一批动作里的 connect 能引用到这个新节点
@@ -284,11 +286,10 @@ public class BoardActionApplier {
         }
         Set<String> componentSet = new LinkedHashSet<>(component);
         List<UUID> deletedIds = targets.stream().map(UUID::fromString).toList();
-        edgeRepository.deleteAll(graph.edges().stream()
-                .filter(edge -> targets.contains(edge.getFromShapeId().toString())
-                        || targets.contains(edge.getToShapeId().toString()))
-                .toList());
-        shapeRepository.deleteAllById(deletedIds);
+        // 子树可能包含上千个节点：逐条 deleteAll/deleteAllById 会先按 id 查询再逐条删除，
+        // 删除大子树时非常慢；这里直接按 id 集合批量删连线与节点。
+        edgeRepository.deleteByBoardIdAndEndpointIn(boardId, deletedIds);
+        shapeRepository.deleteByBoardIdAndIdIn(boardId, deletedIds);
 
         // 删除后分量可能拆成多块：每块按删除前的包围盒锚定，原地整理
         Graph after = loadGraph(boardId);
@@ -390,6 +391,44 @@ public class BoardActionApplier {
         log.info("切换节点折叠：boardId={} shapeId={} collapsed={} 可见节点={}",
                 boardId, shapeId, collapsed, component.size());
         return shape;
+    }
+
+    /**
+     * 用户修改节点标题：按新文字重新计算尺寸，只重排标题所在连通分量。
+     * 位置/尺寸不采用前端提交值，布局会按标题重新计算，避免局部尺寸和新文字不一致。
+     * 调用方负责开启事务。
+     */
+    @Transactional
+    public Shape updateTitleForUser(UUID boardId, UUID shapeId, String title, String visualJson) {
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .orElseThrow(() -> new IllegalStateException("画布不存在：" + boardId));
+        Shape shape = shapeRepository.findById(shapeId)
+                .filter(found -> found.getBoardId().equals(boardId))
+                .orElseThrow(() -> new IllegalArgumentException("节点不存在：" + shapeId));
+        shape.applyUserEdit(title, shape.getX(), shape.getY(), shape.getWidth(), shape.getHeight());
+        if (visualJson != null) {
+            shape.applyVisual(visualJson);
+        }
+        relayoutComponent(board, shapeId);
+        log.info("修改节点标题：boardId={} shapeId={} title={}", boardId, shapeId, shape.getTitle());
+        return shape;
+    }
+
+    /** 只重排指定节点所在连通分量，按原包围盒锚定，避免整张画布重排 */
+    private void relayoutComponent(Board board, UUID shapeId) {
+        Graph graph = loadGraph(board.getId());
+        String id = shapeId.toString();
+        if (!graph.shapeById().containsKey(id)) {
+            return;
+        }
+        List<String> component = visibleIn(visibleNodes(graph), componentOf(graph, id));
+        if (component.isEmpty()) {
+            return;
+        }
+        double[] old = boundsOf(graph, component);
+        ComponentLayout layout = layoutComponent(board, graph, component);
+        placeAnchored(graph, component, layout, old);
+        log.info("标题变更重排分量：boardId={} shapeId={} 可见节点={}", board.getId(), shapeId, component.size());
     }
 
     /**
@@ -594,7 +633,7 @@ public class BoardActionApplier {
         if (anchored.isEmpty() && fresh.isEmpty() && isolatedNew.isEmpty()) {
             return;
         }
-        // 只有「按光标重新放置」的节点才排除出已有包围盒，原地重排的分量仍算已有内容
+        // 只有「按放光标重新置」的节点才排除出已有包围盒，原地重排的分量仍算已有内容
         // 孤立新节点和全新分量不参与已有内容的包围盒计算
         Set<String> cursorPlaced = new HashSet<>(isolatedNew);
         fresh.forEach(cursorPlaced::addAll);
@@ -703,6 +742,7 @@ public class BoardActionApplier {
         }
         // 记录方向（loadGraph 已按分量分桶）
         List<String[]> componentEdges = edgesWithin(graph, component);
+        // 如果不是树形思维导图，则按流程图布局
         if (!mindmap) {
             return new ComponentLayout(GraphLayoutService.layoutFlowchart(component, componentEdges, sizes), null);
         }
@@ -721,15 +761,19 @@ public class BoardActionApplier {
                 sideByChild.put(id, side);
             }
         }
+        // 得到分量的 spanning tree
         GraphLayoutService.SpanningTree tree = GraphLayoutService.spanningTree(component, componentEdges, levels);
         if (tree.roots().size() == 1) {
             String rootId = tree.roots().get(0);
+            // 单根树走增量布局
             TidyLogicLayout.IncrementalResult result = TidyLogicLayout.layoutIncremental(component, tree,
                     sizes, sideByChild, layoutCache.snapshot(board.getId(), BoardLayoutStyle.LOGIC, rootId));
             if (result != null) {
+                // 增量布局成功，发布缓存
                 layoutCache.publishAfterCommit(board.getId(), BoardLayoutStyle.LOGIC, rootId, result.state());
                 return new ComponentLayout(result.positions(), rootId);
             }
+            // 增量布局失败，走全量布局
         }
         // 多根树无法用单根缓存，走全量；根节点置空，调用方按包围盒锚定
         return new ComponentLayout(TidyLogicLayout.layout(component, tree, sizes, sideByChild), null);

@@ -1,9 +1,13 @@
 package com.picturecreate.doccanvas.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import com.picturecreate.doccanvas.domain.BoardEdge;
 
@@ -15,4 +19,13 @@ public interface BoardEdgeRepository extends JpaRepository<BoardEdge, UUID> {
     List<BoardEdge> findByBoardIdOrderBySortOrderAscCreatedAtAsc(UUID boardId);
 
     List<BoardEdge> findByFromShapeIdOrToShapeId(UUID fromShapeId, UUID toShapeId);
+
+    /** 批量删除与这些节点相连的连线，避免删除子树时逐条加载实体再删除 */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from BoardEdge e
+            where e.boardId = :boardId
+              and (e.fromShapeId in :ids or e.toShapeId in :ids)
+            """)
+    int deleteByBoardIdAndEndpointIn(@Param("boardId") UUID boardId, @Param("ids") Collection<UUID> ids);
 }
