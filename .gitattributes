@@ -1,0 +1,6 @@
+# 跨平台发行脚本：Linux 用 LF，Windows 用 CRLF
+*.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.txt text
+*.md text

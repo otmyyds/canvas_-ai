@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -18,6 +20,7 @@ import com.picturecreate.doccanvas.service.ai.EmbeddingClient;
  * 文档分块、向量化与检索。
  * 解析后的纯文本 → 按自然段落/固定长度切 chunk → 批量 embedding → 写 document_chunks。
  */
+@Profile("!lite")
 @Service
 public class DocumentChunkService {
 

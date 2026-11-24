@@ -40,16 +40,18 @@ public class BoardLayoutService {
     private final BoardActionApplier actionApplier;
     private final AppProperties properties;
     private final ObjectMapper objectMapper;
+    private final BoardEditingGuard editingGuard;
 
     public BoardLayoutService(BoardRepository boardRepository, ShapeRepository shapeRepository,
             BoardEdgeRepository edgeRepository, BoardActionApplier actionApplier, AppProperties properties,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper, BoardEditingGuard editingGuard) {
         this.boardRepository = boardRepository;
         this.shapeRepository = shapeRepository;
         this.edgeRepository = edgeRepository;
         this.actionApplier = actionApplier;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.editingGuard = editingGuard;
     }
 
     /** 树形图排列记忆：结构签名 + 每个节点的坐标尺寸 */
@@ -62,6 +64,7 @@ public class BoardLayoutService {
     /** 切换布局风格；节点数超过上限时不允许树形图（径向） */
     @Transactional
     public Board updateLayoutStyle(UUID boardId, CurrentUser user, String layoutStyle) {
+        editingGuard.assertEditable(boardId);
         Board board = boardRepository.findByIdAndOwnerIdForUpdate(boardId, user.id())
                 .orElseThrow(() -> new NotFoundException("画布不存在"));
         BoardLayoutStyle target = parse(layoutStyle);
@@ -95,6 +98,7 @@ public class BoardLayoutService {
     /** 整理画布：按连通分量把整张画布重新布局，不新增、不删除 */
     @Transactional
     public void applyLayout(UUID boardId, CurrentUser user) {
+        editingGuard.assertEditable(boardId);
         boardRepository.findByIdAndOwnerIdForUpdate(boardId, user.id())
                 .orElseThrow(() -> new NotFoundException("画布不存在"));
         actionApplier.layoutExistingBoard(boardId);

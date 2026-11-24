@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Duration;
 import java.util.UUID;
 
@@ -14,6 +16,7 @@ import com.picturecreate.doccanvas.service.ai.llm.TaskAbortedException;
  * AI 任务取消检查：DB abort_requested 与 Redis cancel key 双重标记。
  * 任务服务（中断接口）与计划执行器共用，避免执行器反向依赖任务服务。
  */
+@Profile("!lite")
 @Component
 public class AiTaskCancellation {
 

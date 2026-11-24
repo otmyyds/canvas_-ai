@@ -1,14 +1,20 @@
 package com.picturecreate.doccanvas.service;
 
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+
+import javax.imageio.ImageIO;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.multipart.MultipartFile;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,12 +36,14 @@ public class AssetService {
     private final BoardService boardService;
     private final AssetRepository assetRepository;
     private final ObjectStorageService objectStorageService;
+    private final BoardEditingGuard editingGuard;
 
     public AssetService(BoardService boardService, AssetRepository assetRepository,
-            ObjectStorageService objectStorageService) {
+            ObjectStorageService objectStorageService, BoardEditingGuard editingGuard) {
         this.boardService = boardService;
         this.assetRepository = assetRepository;
         this.objectStorageService = objectStorageService;
+        this.editingGuard = editingGuard;
     }
 
     /**
@@ -60,6 +68,80 @@ public class AssetService {
         return saved;
     }
 
+    /**
+     * 用户上传图片：重新解码并编码为 PNG，去掉原始文件里的元数据和潜在恶意内容。
+     * 上传对象存储是外部 I/O，不包进长事务；落库失败最多留一个孤儿文件。
+     */
+    public Asset uploadImage(UUID boardId, CurrentUser user, MultipartFile file) {
+        boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("请选择要上传的图片");
+        }
+        if (file.getSize() > 5L * 1024 * 1024) {
+            throw new IllegalArgumentException("图片不能超过 5MB");
+        }
+        String declaredType = file.getContentType() == null
+                ? ""
+                : file.getContentType().toLowerCase(Locale.ROOT);
+        boolean declaredImage = declaredType.equals("image/png")
+                || declaredType.equals("image/jpeg")
+                || declaredType.equals("image/jpg");
+        if (!declaredImage) {
+            throw new IllegalArgumentException("只支持 PNG 或 JPEG 图片");
+        }
+
+        byte[] source;
+        try {
+            source = file.getBytes();
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("读取图片失败", exception);
+        }
+        BufferedImage image;
+        try {
+            image = ImageIO.read(new ByteArrayInputStream(source));
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("图片格式无法识别", exception);
+        }
+        if (image == null) {
+            throw new IllegalArgumentException("图片格式无法识别");
+        }
+        int width = image.getWidth();
+        int height = image.getHeight();
+        if (width <= 0 || height <= 0 || width > 4096 || height > 4096
+                || (long) width * height > 20_000_000L) {
+            throw new IllegalArgumentException("图片尺寸过大，最大支持 4096x4096");
+        }
+
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        try {
+            if (!ImageIO.write(image, "png", encoded)) {
+                throw new IllegalStateException("图片编码失败");
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("图片编码失败", exception);
+        }
+        byte[] bytes = encoded.toByteArray();
+        if (bytes.length > 5L * 1024 * 1024) {
+            throw new IllegalArgumentException("图片处理后仍然超过 5MB");
+        }
+
+        String key = "images/%s/%s/%s.png".formatted(user.id(), boardId, UUID.randomUUID());
+        StoredObject stored;
+        try {
+            stored = objectStorageService.put(key, "image/png", bytes.length,
+                    new ByteArrayInputStream(bytes));
+        } catch (IOException exception) {
+            throw new IllegalStateException("存储图片失败：" + exception.getMessage(), exception);
+        }
+        Asset asset = new Asset(user.id(), boardId, null, stored.bucket(), stored.key(), "image/png",
+                stored.size(), width, height);
+        Asset saved = assetRepository.save(asset);
+        log.info("用户图片已上传：assetId={} boardId={} size={} dimensions={}x{}",
+                saved.getId(), boardId, saved.getSize(), width, height);
+        return saved;
+    }
+
     @Transactional(readOnly = true)
     public List<Asset> list(UUID boardId, CurrentUser user) {
         boardService.getOwned(boardId, user);
@@ -79,6 +161,7 @@ public class AssetService {
     /** 删除资产：校验归属后删 assets 表记录，事务提交后再清 RustFS 对象 */
     @Transactional
     public void delete(UUID boardId, UUID assetId, CurrentUser user) {
+        editingGuard.assertEditable(boardId);
         Asset asset = assetRepository.findByIdAndOwnerId(assetId, user.id())
                 .orElseThrow(() -> new NotFoundException("资产不存在"));
         if (!asset.getBoardId().equals(boardId)) {

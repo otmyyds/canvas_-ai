@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,7 @@ import com.picturecreate.doccanvas.service.ai.llm.TaskRuntime;
  * 2. 当前步骤落 FAILED/ABORTED，后续步骤落 SKIPPED；
  * 3. 任务落 FAILED/ABORTED，最后才推送事件。
  */
+@Profile("!lite")
 @Component
 public class AgentPlanExecutor {
 
@@ -336,8 +339,8 @@ public class AgentPlanExecutor {
             cancellation.assertNotCancelled(task.getId());
             List<Shape> shapes = shapeRepository.findByBoardIdOrderByCreatedAtAsc(task.getBoardId());
             List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(task.getBoardId());
-            shapeRepository.deleteAll(shapes);
-            edgeRepository.deleteAll(edges);
+            shapeRepository.deleteByBoardId(task.getBoardId());
+            edgeRepository.deleteByBoardId(task.getBoardId());
             snapshotRepository.deleteByBoardId(task.getBoardId());
             List<String> keys = assetService.deleteAllRecords(task.getBoardId(), task.getOwnerId());
             pendingPurgeKeys.addAll(keys);

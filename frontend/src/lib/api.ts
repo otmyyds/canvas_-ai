@@ -7,6 +7,7 @@ import type {
   BoardLayoutStyle,
   BoardPage,
   BoardShape,
+  MetaFeatures,
   SharedBoard,
   SourceFile
 } from "@/lib/types";
@@ -246,6 +247,34 @@ export const api = {
   applyBoardLayout: (boardId: string) =>
     request<void>(`/api/boards/${boardId}/layout/apply`, { method: "POST" }),
   deleteBoard: (boardId: string) => request<void>(`/api/boards/${boardId}`, { method: "DELETE" }),
+  /** 上传画布封面缩略图（multipart/form-data） */
+  uploadCover: async (boardId: string, blob: Blob) => {
+    const form = new FormData();
+    form.append("file", blob, "cover.png");
+    const response = await fetch(`${API_BASE}/api/boards/${boardId}/cover`, {
+      method: "PUT",
+      headers: {
+        ...authHeaders()
+      },
+      body: form
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as
+        | (Partial<ApiResult<unknown>> & { error?: string })
+        | null;
+      throw new Error(toChineseError(body?.message ?? body?.error ?? `上传封面失败（${response.status}）`));
+    }
+    const body = (await response.json()) as ApiResult<Board>;
+    return body.data;
+  },
+  /** 删除画布封面：清空画布时同步清除封面和本地文件 */
+  deleteCover: (boardId: string) => request<void>(`/api/boards/${boardId}/cover`, { method: "DELETE" }),
+  /** 封面直链：<img> 无法带 Authorization 头，用 query param 传 token */
+  coverContentUrl: (boardId: string, version: number) => {
+    const token = authToken.get();
+    const base = `${API_BASE}/api/boards/${boardId}/cover?v=${version}`;
+    return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+  },
 
   // ===== 快照 =====
   getBoardSnapshot: (boardId: string) => request<{ id: string; boardId: string; snapshotJson: string; version: number; createdAt: string } | null>(`/api/boards/${boardId}/snapshot`),
@@ -371,8 +400,28 @@ export const api = {
   createShareLink: (boardId: string) => request<{ token: string }>(`/api/boards/${boardId}/share`, { method: "POST" }),
   getSharedBoard: (token: string) => request<SharedBoard>(`/api/share/${token}`),
 
-  // ===== 资产（AI 生成图片） =====
+  // ===== 资产（AI 生成图片 / 用户上传图片） =====
   listAssets: (boardId: string) => request<BoardAsset[]>(`/api/boards/${boardId}/assets`),
+  /** 上传画布图片（multipart/form-data）；后端会重新编码为 PNG */
+  uploadImage: async (boardId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(`${API_BASE}/api/boards/${boardId}/assets`, {
+      method: "POST",
+      headers: {
+        ...authHeaders()
+      },
+      body: form
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as
+        | (Partial<ApiResult<unknown>> & { error?: string })
+        | null;
+      throw new Error(toChineseError(body?.message ?? body?.error ?? `上传图片失败（${response.status}）`));
+    }
+    const body = (await response.json()) as ApiResult<BoardAsset>;
+    return body.data;
+  },
   /** 删除图片资产（白板删除图片时同步调用，避免刷新复活） */
   deleteAsset: (boardId: string, assetId: string) => request<void>(`/api/boards/${boardId}/assets/${assetId}`, { method: "DELETE" }),
   /** 图片直链：<img src> 无法带 Authorization 头，用 query param 传 token */
@@ -382,11 +431,22 @@ export const api = {
     return token ? `${base}?token=${encodeURIComponent(token)}` : base;
   },
 
+  // ===== 运行时能力 =====
+  getMeta: () => request<MetaFeatures>("/api/meta"),
+
   // ===== 认证 =====
   register: (email: string, displayName: string, password: string) =>
     request<AuthResponse>("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({ email, displayName, password })
+    }),
+  /** 本地轻量版首次启动状态：是否还没有管理员 */
+  getSetupStatus: () => request<{ needsSetup: boolean }>("/api/setup/status"),
+  /** 本地轻量版首次启动创建管理员，成功后直接返回登录会话 */
+  createInitialAdmin: (body: { email: string; displayName: string; password: string }) =>
+    request<AuthResponse>("/api/setup/admin", {
+      method: "POST",
+      body: JSON.stringify(body)
     }),
   login: (email: string, password: string) =>
     request<AuthResponse>("/api/auth/login", {

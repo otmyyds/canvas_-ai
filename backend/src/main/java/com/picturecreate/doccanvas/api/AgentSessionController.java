@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +28,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * 会话创建发生在 /assist 首次请求时，这里不提供单独的新建入口。
  * 所有接口都按 owner + board 隔离，跨用户或跨画布一律 404。
  */
+@Profile("!lite")
 @RestController
 public class AgentSessionController {
 

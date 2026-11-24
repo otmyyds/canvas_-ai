@@ -89,12 +89,8 @@ public class ShapeController {
                     saved.getX(), saved.getY(), saved.getWidth(), saved.getHeight());
             return Result.success(ShapeResponse.from(saved));
         }
-        shape.applyUserEdit(body.title(), body.x(), body.y(), body.width(), body.height());
-        // 视觉属性只在前端显式提交时更新；null 表示本次不改
-        if (visualJson != null) {
-            shape.applyVisual(visualJson);
-        }
-        Shape saved = shapeRepository.save(shape);
+        Shape saved = shapeEditService.updateFields(shape.getBoardId(), user, shapeId, body.title(),
+                body.x(), body.y(), body.width(), body.height(), visualJson);
         log.info("更新图形节点：shapeId={} title={} pos=({},{}) size={}x{}", shapeId, saved.getTitle(),
                 saved.getX(), saved.getY(), saved.getWidth(), saved.getHeight());
         return Result.success(ShapeResponse.from(saved));

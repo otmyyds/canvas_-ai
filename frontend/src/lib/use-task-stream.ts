@@ -30,7 +30,8 @@ type ConnectionState = "idle" | "connecting" | "connected" | "closed" | "error";
  * @param onEvent 收到任务事件时的回调
  * @returns 当前连接状态（驱动 UI 显示连接状态）
  */
-export function useTaskStream(boardId: string, onEvent: (event: TaskEvent) => void) {
+export function useTaskStream(boardId: string, onEvent: (event: TaskEvent) => void,
+    enabled = true) {
   const [state, setState] = useState<ConnectionState>("idle");
   // 用 ref 保存最新回调，避免 effect 因 onEvent 变化重复订阅
   const callbackRef = useRef(onEvent);
@@ -38,6 +39,10 @@ export function useTaskStream(boardId: string, onEvent: (event: TaskEvent) => vo
   callbackRef.current = onEvent;
 
   useEffect(() => {
+    if (!enabled) {
+      setState("idle");
+      return;
+    }
     let client: Client | undefined;
     let subscription: StompSubscription | undefined;
     let disposed = false;
@@ -76,7 +81,7 @@ export function useTaskStream(boardId: string, onEvent: (event: TaskEvent) => vo
       subscription?.unsubscribe();
       client?.deactivate();
     };
-  }, [boardId]);
+  }, [boardId, enabled]);
 
   return state;
 }

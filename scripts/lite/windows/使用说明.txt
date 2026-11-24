@@ -1,0 +1,61 @@
+﻿Doc Canvas 本地轻量版（Windows）
+
+一、适用系统
+Windows 10/11 64 位。解压即用，不需要安装 Java、Node、PostgreSQL 或 Docker。
+
+二、首次使用
+1. 把压缩包解压到一个可写目录，例如 D:\DocCanvas-Lite。
+2. 双击 start.bat。
+3. 等待浏览器自动打开 http://127.0.0.1:3000。
+4. 首次进入会要求创建本地管理员。
+   默认账号：admin@doccanvas.com
+   默认密码：DocCanvas123
+   可以修改后再创建。
+5. 创建成功后会自动登录。
+
+三、日常使用
+- 双击 start.bat 启动。
+- 双击 stop.bat 关闭。
+- 关闭前请等待画布保存完成，再停止程序。
+- 数据保存在 data 目录：SQLite 数据库、图片、封面和备份都在这里。
+
+四、备份和恢复
+- 先运行 stop.bat 关闭程序。
+- 双击 backup.bat，会在 data\backups 生成 zip 备份。
+- 恢复时双击 restore.bat，按提示选择备份文件并输入 RESTORE。
+- 恢复前会自动生成一份 pre-restore 备份。
+
+五、功能范围
+- 基础画布、节点、连线、树形图/逻辑图/流程图、折叠、整理；
+- 图片上传；
+- 画布封面；
+- PNG、Markdown、JSON 导出；
+- 不包含 AI 功能；
+- 不支持资料上传和分享。
+
+六、数据安全
+- 数据只保存在本机 data 目录。
+- 删除 data 目录等于清空所有数据。
+- 换电脑或重装前，请先运行 backup.bat，并复制整个 data 目录。
+- 清除浏览器数据不会删除本地画布，但会清除登录状态。
+
+七、从 PostgreSQL 迁移
+- 先运行 stop.bat 关闭程序，并备份现有 data 目录。
+- 双击 migrate-pg-to-sqlite.bat。
+- 按提示输入 PostgreSQL JDBC URL、用户名、密码。
+- 默认目标目录是当前程序的 data。
+- 如果目标 SQLite 已经有数据，需要额外传 -Force 参数清空后迁移。
+- 本次迁移用户、画布、节点、连线和快照；图片文件和封面不会迁移。
+
+八、常见问题
+1. 端口被占用
+   关闭占用 8080 或 3000 端口的程序后重试。
+2. Windows 提示未知发布者
+   这是未签名程序的正常提示，可以选择“仍要运行”。
+3. 页面打不开
+   查看 data\logs\backend.log 和 data\logs\frontend.log。
+4. 忘记密码
+   本地版暂不支持找回密码。可以停止程序后备份 data，再联系维护者处理。
+
+项目主页和更新下载：
+https://gitee.com/buxiangzuoti/canvas_-ai/releases

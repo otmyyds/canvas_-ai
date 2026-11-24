@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -29,6 +31,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * - GET    /boards/{boardId}/ai-tasks   → 画布下所有任务（含步骤）
  * - POST   /ai-tasks/{taskId}/abort     → 中断任务
  */
+@Profile("!lite")
 @RestController
 @RequestMapping("/api")
 public class AiTaskController {

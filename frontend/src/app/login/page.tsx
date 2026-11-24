@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -16,8 +16,22 @@ import { api, saveAuthSession } from "@/lib/api";
 import { Button, Input, Label } from "@/components/ui";
 
 /** 后端启动时写入的演示账号，登录页默认填入 */
-const DEFAULT_EMAIL = "doc_canvas@doc_canvas.com";
-const DEFAULT_PASSWORD = "doc_canvas";
+const DEFAULT_EMAIL = "admin@doccanvas.com";
+const DEFAULT_PASSWORD = "DocCanvas123";
+
+function storedOrDefault(key: string, fallback: string) {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  return window.localStorage.getItem(key) ?? fallback;
+}
+
+function loginDefaults() {
+  return {
+    email: storedOrDefault("dc_lite_admin_email", DEFAULT_EMAIL),
+    password: storedOrDefault("dc_lite_admin_password", DEFAULT_PASSWORD)
+  };
+}
 
 type Mode = "login" | "register";
 
@@ -29,6 +43,35 @@ export default function LoginPage() {
   const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  const [liteMode, setLiteMode] = useState(false);
+
+  // 首次渲染后再读取本地管理员账号，避免 SSR 水合不一致
+  useEffect(() => {
+    const defaults = loginDefaults();
+    setEmail(defaults.email);
+    setPassword(defaults.password);
+  }, []);
+
+  // 本地轻量版只有首次初始化，不开放注册；开发/完整版没有 setup 接口，仍显示注册
+  useEffect(() => {
+    let cancelled = false;
+    void api.getSetupStatus()
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+        setLiteMode(true);
+        if (status.needsSetup) {
+          router.replace("/setup");
+        }
+      })
+      .catch(() => {
+        // 没有 setup 接口，说明是开发/完整版
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   /** 切换登录/注册：登录页恢复默认演示账号，注册页清空，避免误用演示邮箱注册 */
   function switchMode(next: Mode) {
@@ -39,8 +82,9 @@ export default function LoginPage() {
     setError(undefined);
     setDisplayName("");
     if (next === "login") {
-      setEmail(DEFAULT_EMAIL);
-      setPassword(DEFAULT_PASSWORD);
+      const defaults = loginDefaults();
+      setEmail(defaults.email);
+      setPassword(defaults.password);
     } else {
       setEmail("");
       setPassword("");
@@ -82,18 +126,31 @@ export default function LoginPage() {
             </div>
             <div>
               <p className="font-semibold">Doc Canvas</p>
-              <p className="text-xs text-white/70">AI 文档画布</p>
+              <p className="text-xs text-white/70">{liteMode ? "本地轻量版" : "AI 文档画布"}</p>
             </div>
           </div>
 
           <div className="relative">
             <h2 className="text-2xl font-semibold leading-snug">
-              让 AI 帮你把资料
-              <br />
-              画成清晰的结构
+              {liteMode ? (
+                <>
+                  把想法
+                  <br />
+                  画成清晰的结构
+                </>
+              ) : (
+                <>
+                  让 AI 帮你把资料
+                  <br />
+                  画成清晰的结构
+                </>
+              )}
             </h2>
             <ul className="mt-6 space-y-3 text-sm text-white/85">
-              {["上传资料，自动解析与检索", "生成思维导图与流程图", "逻辑图排版、折叠与整理"].map((item) => (
+              {(liteMode
+                ? ["SQLite 本地保存，不需要安装数据库", "图片上传与画布封面", "逻辑图排版、折叠与整理"]
+                : ["上传资料，自动解析与检索", "生成思维导图与流程图", "逻辑图排版、折叠与整理"]
+              ).map((item) => (
                 <li key={item} className="flex items-center gap-2">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/15">
                     <Check className="h-3 w-3" />
@@ -104,7 +161,9 @@ export default function LoginPage() {
             </ul>
           </div>
 
-          <p className="relative text-xs text-white/60">单人私有工作区，数据保存在本地数据库</p>
+          <p className="relative text-xs text-white/60">
+            {liteMode ? "本地单用户工作区，请定期备份 data 目录" : "单人私有工作区，数据保存在本地数据库"}
+          </p>
         </aside>
 
         <section className="p-6 sm:p-8">
@@ -115,7 +174,7 @@ export default function LoginPage() {
               </div>
               <div>
                 <p className="text-sm font-semibold text-ink">Doc Canvas</p>
-                <p className="text-xs text-ink/50">AI 文档画布</p>
+                <p className="text-xs text-ink/50">{liteMode ? "本地轻量版" : "AI 文档画布"}</p>
               </div>
             </div>
             <h1 className="text-xl font-semibold text-ink">
@@ -126,27 +185,29 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-ink/5 p-1">
-            {([
-              { value: "login", label: "登录" },
-              { value: "register", label: "注册" }
-            ] as const).map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                aria-pressed={mode === item.value}
-                onClick={() => switchMode(item.value)}
-                className={clsx(
-                  "rounded-md py-2 text-sm font-medium transition",
-                  mode === item.value
-                    ? "bg-white text-ink shadow-sm"
-                    : "text-ink/50 hover:text-ink"
-                )}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          {!liteMode ? (
+            <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-ink/5 p-1">
+              {([
+                { value: "login", label: "登录" },
+                { value: "register", label: "注册" }
+              ] as const).map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  aria-pressed={mode === item.value}
+                  onClick={() => switchMode(item.value)}
+                  className={clsx(
+                    "rounded-md py-2 text-sm font-medium transition",
+                    mode === item.value
+                      ? "bg-white text-ink shadow-sm"
+                      : "text-ink/50 hover:text-ink"
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <form onSubmit={submit} className="space-y-4">
             {mode === "register" ? (
@@ -202,7 +263,9 @@ export default function LoginPage() {
             </div>
 
             {mode === "login" ? (
-              <p className="text-xs text-ink/45">已预填默认演示账号，可直接登录。</p>
+              <p className="text-xs text-ink/45">
+                {liteMode ? "已预填本地管理员账号，可直接登录。" : "已预填默认演示账号，可直接登录。"}
+              </p>
             ) : null}
 
             {error ? (

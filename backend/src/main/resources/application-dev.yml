@@ -1,0 +1,5 @@
+# 开发/完整版：PostgreSQL + Redis + RustFS + AI。
+# 启动时使用 --spring.profiles.active=dev。
+app:
+  storage:
+    type: s3

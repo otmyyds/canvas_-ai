@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -37,6 +39,7 @@ import jakarta.validation.constraints.NotBlank;
  * body: { prompt, selectedShapeIds?, sessionId? }
  * 响应：{ kind: "reply", reply, sessionId } 或 { kind: "task", task, sessionId }
  */
+@Profile("!lite")
 @RestController
 public class AiAssistantController {
 

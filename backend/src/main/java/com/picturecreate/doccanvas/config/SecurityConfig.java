@@ -46,7 +46,8 @@ public class SecurityConfig {
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/api/auth/**", "/api/share/**", "/actuator/health", "/ws/**").permitAll()
+                        .requestMatchers("/api/auth/**", "/api/setup/**", "/api/meta", "/api/share/**",
+                                "/actuator/health", "/ws/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .exceptionHandling(ex -> ex

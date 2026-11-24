@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -42,6 +44,7 @@ import jakarta.annotation.PreDestroy;
  * 合并结果仍是「一次事务应用一批动作」，不做逐节点写画布；
  * 去重、层级、连线都在内存里完成，任何分支失败都按 allowPartial 决定整体是否失败。
  */
+@Profile("!lite")
 @Component
 public class BranchDelegator {
 

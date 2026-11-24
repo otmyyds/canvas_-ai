@@ -370,6 +370,9 @@ async function runSyncGraphVisuals(
           if (updateMindmapEdgeGeometry(editor, edgeId)) {
             changed++;
           }
+        } else if (ensureArrowBindings(editor, edgeId, fromId, toId)) {
+          // 旧快照可能缺少箭头绑定，导致箭头停在画布左上角
+          changed++;
         }
       }
     }, { history: "ignore" });
@@ -671,7 +674,12 @@ function createArrowEdge(
       elbowMidPoint: 0.5
     }
   });
-  editor.createBindings([
+  createArrowBindings(editor, arrowId, fromId, toId);
+}
+
+/** 创建箭头两端绑定 */
+function createArrowBindings(editor: TldrawEditor, arrowId: ShapeId, fromId: ShapeId, toId: ShapeId) {
+  editor.createBindings<TLArrowBinding>([
     {
       id: createBindingId(),
       type: "arrow",
@@ -699,6 +707,29 @@ function createArrowEdge(
       }
     }
   ]);
+}
+
+/**
+ * 确保箭头绑定存在且指向当前端点。
+ * 旧快照或节点类型转换可能留下没有绑定/绑定错误的箭头，此时箭头会停在画布左上角。
+ */
+function ensureArrowBindings(
+  editor: TldrawEditor,
+  arrowId: ShapeId,
+  fromId: ShapeId,
+  toId: ShapeId
+): boolean {
+  const bindings = editor.getBindingsFromShape<TLArrowBinding>(arrowId, "arrow");
+  const start = bindings.find((binding) => binding.props.terminal === "start");
+  const end = bindings.find((binding) => binding.props.terminal === "end");
+  if (start?.toId === fromId && end?.toId === toId) {
+    return false;
+  }
+  if (bindings.length > 0) {
+    editor.deleteBindings(bindings.map((binding) => binding.id));
+  }
+  createArrowBindings(editor, arrowId, fromId, toId);
+  return true;
 }
 
 /** 把后端颜色映射为 tldraw 内建颜色名（tldraw arrow color 不接受 hex） */

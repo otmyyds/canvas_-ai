@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.async;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -17,6 +19,7 @@ import com.picturecreate.doccanvas.service.DocumentChunkService;
  * 向量化消费者：从 vectorize:stream 消费消息，重新加载资料文件的解析文本并触发分块 + 向量化。
  * 文件内容从数据库读取，Stream 只传 id，避免把大段文本塞进消息。
  */
+@Profile("!lite")
 @Component
 public class VectorizeStreamConsumer extends AbstractStreamConsumer<UUID> {
 

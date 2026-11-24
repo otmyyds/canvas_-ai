@@ -2,6 +2,7 @@ package com.picturecreate.doccanvas.config;
 
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -16,12 +17,13 @@ import com.picturecreate.doccanvas.repository.UserAccountRepository;
  * 登录页默认填入该账号，方便本地直接体验。
  */
 @Component
+@Profile("!lite")
 public class DefaultUserInitializer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultUserInitializer.class);
 
-    private static final String DEFAULT_EMAIL = "doc_canvas@doc_canvas.com";
-    private static final String DEFAULT_PASSWORD = "doc_canvas";
+    private static final String DEFAULT_EMAIL = "admin@doccanvas.com";
+    private static final String DEFAULT_PASSWORD = "DocCanvas123";
     private static final String DEFAULT_DISPLAY_NAME = "Doc Canvas";
 
     private final UserAccountRepository userAccountRepository;

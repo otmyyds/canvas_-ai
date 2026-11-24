@@ -3,7 +3,10 @@ package com.picturecreate.doccanvas.storage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.time.Instant;
+import java.util.List;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import com.picturecreate.doccanvas.config.AppProperties;
@@ -16,14 +19,20 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 @Service
+@ConditionalOnProperty(name = "app.storage.type", havingValue = "s3", matchIfMissing = true)
 public class RustFsObjectStorageService implements ObjectStorageService {
 
     private final AppProperties properties;
@@ -84,5 +93,43 @@ public class RustFsObjectStorageService implements ObjectStorageService {
     public void delete(String key) {
         String bucket = properties.rustfs().bucket();
         s3Client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {
+        deletePrefixExcept(prefix, null, null);
+    }
+
+    @Override
+    public void deletePrefixExcept(String prefix, String keepKey) {
+        deletePrefixExcept(prefix, keepKey, null);
+    }
+
+    @Override
+    public void deletePrefixExcept(String prefix, String keepKey, Instant olderThan) {
+        String bucket = properties.rustfs().bucket();
+        String continuationToken = null;
+        do {
+            ListObjectsV2Response page = s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                    .bucket(bucket)
+                    .prefix(prefix)
+                    .continuationToken(continuationToken)
+                    .build());
+            List<ObjectIdentifier> objects = page.contents().stream()
+                    .filter(object -> keepKey == null || !object.key().equals(keepKey))
+                    .filter(object -> olderThan == null
+                            || (object.lastModified() != null && object.lastModified().isBefore(olderThan)))
+                    .map(object -> ObjectIdentifier.builder().key(object.key()).build())
+                    .toList();
+            if (!objects.isEmpty()) {
+                s3Client.deleteObjects(DeleteObjectsRequest.builder()
+                        .bucket(bucket)
+                        .delete(Delete.builder().objects(objects).build())
+                        .build());
+            }
+            continuationToken = Boolean.TRUE.equals(page.isTruncated())
+                    ? page.nextContinuationToken()
+                    : null;
+        } while (continuationToken != null);
     }
 }

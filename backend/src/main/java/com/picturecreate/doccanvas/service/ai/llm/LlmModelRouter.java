@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.llm;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Locale;
 import java.util.Map;
 
@@ -11,6 +13,7 @@ import com.picturecreate.doccanvas.config.AppProperties;
  * 按操作类型选择模型。
  * operations 里没配的操作使用 default-model；模型名通过请求级 OpenAiChatOptions 传入。
  */
+@Profile("!lite")
 @Component
 public class LlmModelRouter {
 

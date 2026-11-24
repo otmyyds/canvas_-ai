@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.llm;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
@@ -41,6 +43,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * - usage 取最终响应的用量。
  * - 取消与预算超限不参与重试、不触发降级，避免把用户取消当成上游故障。
  */
+@Profile("!lite")
 @Component
 public class LlmGateway {
 

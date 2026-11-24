@@ -8,6 +8,17 @@
 /** 思维导图排布风格：RADIAL 树形图（径向）/ LOGIC 逻辑图（根居中，分支左右展开） */
 export type BoardLayoutStyle = "RADIAL" | "LOGIC";
 
+/** 运行时能力开关（来自 GET /api/meta） */
+export type MetaFeatures = {
+  version: string;
+  aiEnabled: boolean;
+  sourceUploadEnabled: boolean;
+  imageUploadEnabled: boolean;
+  shareEnabled: boolean;
+  registrationEnabled: boolean;
+  setupEnabled: boolean;
+};
+
 export type Board = {
   id: string;
   title: string;
@@ -16,6 +27,10 @@ export type Board = {
   layoutStyle: BoardLayoutStyle;
   /** 节点总数超过该值后只允许逻辑图 */
   radialMaxNodes: number;
+  /** 封面版本，只用于给封面 URL 加 ?v= 绕开浏览器缓存，不代表有没有封面 */
+  coverVersion: number;
+  /** 当前画布是否真的有封面；删封面后 coverVersion 仍会递增，只能用这个字段判断 */
+  hasCover: boolean;
   createdAt: string;
   updatedAt: string;
 };

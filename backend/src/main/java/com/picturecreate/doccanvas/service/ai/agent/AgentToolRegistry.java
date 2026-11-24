@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -23,6 +25,7 @@ import com.picturecreate.doccanvas.service.ai.llm.ToolCallListener;
  * 按运行角色组装工具，并统一包装预算与轨迹。
  * 工具权限由角色硬编码，不依赖 SKILL.md 的 allowed_tools，模型无法越界。
  */
+@Profile("!lite")
 @Component
 public class AgentToolRegistry {
 

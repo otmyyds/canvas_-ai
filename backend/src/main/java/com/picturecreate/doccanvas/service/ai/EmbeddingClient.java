@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +18,7 @@ import org.springframework.web.client.RestClient;
  * 输出维度由 app.ai.chat.embedding.dimensions 配置（text-embedding-v3 为 1024）。
  * 密钥回退策略：BAILIAN_API_TOKEN > GPT_API_KEY > OPENAI_API_KEY > 空。
  */
+@Profile("!lite")
 @Component
 public class EmbeddingClient {
 

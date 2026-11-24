@@ -10,6 +10,8 @@ spring:
     password: ${POSTGRES_PASSWORD:doc_canvas}
   flyway:
     enabled: true
+    # 默认使用 PostgreSQL 迁移；lite profile 会覆盖为 db/migration-sqlite
+    locations: classpath:db/migration
   jpa:
     hibernate:
       ddl-auto: none
@@ -58,6 +60,22 @@ management:
         include: health,info,metrics
 
 app:
+  version: ${APP_VERSION:1.0.0}
+  features:
+    # 开发/完整版默认全部能力开启；lite profile 会覆盖
+    ai-enabled: ${AI_ENABLED:true}
+    source-upload-enabled: ${SOURCE_UPLOAD_ENABLED:true}
+    image-upload-enabled: ${IMAGE_UPLOAD_ENABLED:true}
+    share-enabled: ${SHARE_ENABLED:true}
+    registration-enabled: ${REGISTRATION_ENABLED:true}
+    setup-enabled: ${SETUP_ENABLED:false}
+  # 本地数据目录：SQLite、图片、封面、备份和日志都放在这里
+  data-dir: ${DOC_CANVAS_DATA_DIR:./data}
+  db:
+    version: ${DOC_CANVAS_DB_VERSION:1.0.0}
+  storage:
+    # s3 = RustFS/S3（开发默认）；local = 本地文件系统（轻量版）
+    type: ${APP_STORAGE_TYPE:s3}
   cors:
     allowed-origins:
       - ${FRONTEND_ORIGIN:http://localhost:3000}
@@ -83,6 +101,10 @@ app:
       - http://172.30.*:*
       - http://172.31.*:*
   ai:
+    # AI 计划检查点上限：超过后拒绝任务，避免万级节点整表快照/恢复拖垮服务
+    checkpoint:
+      max-board-nodes: ${AI_CHECKPOINT_MAX_BOARD_NODES:5000}
+      max-bytes: ${AI_CHECKPOINT_MAX_BYTES:33554432}
     llm:
       # 默认模型与降级模型；具体模型名通过请求级 OpenAiChatOptions 传入
       default-model: ${AI_MODEL_PLANNER:qwen-plus}

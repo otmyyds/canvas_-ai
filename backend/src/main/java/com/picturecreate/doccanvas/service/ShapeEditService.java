@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.picturecreate.doccanvas.domain.BoardEdge;
 import com.picturecreate.doccanvas.domain.Shape;
+import com.picturecreate.doccanvas.repository.ShapeRepository;
 import com.picturecreate.doccanvas.service.ai.BoardActionApplier;
 import com.picturecreate.doccanvas.service.ai.BoardActionApplier.AdoptEdge;
 import com.picturecreate.doccanvas.service.ai.BoardActionApplier.AdoptNode;
@@ -23,16 +24,22 @@ public class ShapeEditService {
 
     private final BoardService boardService;
     private final BoardActionApplier actionApplier;
+    private final ShapeRepository shapeRepository;
+    private final BoardEditingGuard editingGuard;
 
-    public ShapeEditService(BoardService boardService, BoardActionApplier actionApplier) {
+    public ShapeEditService(BoardService boardService, BoardActionApplier actionApplier,
+            ShapeRepository shapeRepository, BoardEditingGuard editingGuard) {
         this.boardService = boardService;
         this.actionApplier = actionApplier;
+        this.shapeRepository = shapeRepository;
+        this.editingGuard = editingGuard;
     }
 
     /** 新建节点：parentId 为空时创建独立根节点，否则在父节点下新建子节点并重排所属分量 */
     @Transactional
     public Shape createNode(UUID boardId, CurrentUser user, UUID parentId, String title) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         return actionApplier.createNode(boardId, parentId, title);
     }
 
@@ -40,6 +47,7 @@ public class ShapeEditService {
     @Transactional
     public void delete(UUID boardId, CurrentUser user, UUID shapeId) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         actionApplier.deleteForUser(boardId, shapeId);
     }
 
@@ -47,7 +55,24 @@ public class ShapeEditService {
     @Transactional
     public Shape updateTitle(UUID boardId, CurrentUser user, UUID shapeId, String title, String visualJson) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         return actionApplier.updateTitleForUser(boardId, shapeId, title, visualJson);
+    }
+
+    /** 普通字段编辑：拖动、改色、改尺寸，不触发布局；AI 计划期间拒绝写入 */
+    @Transactional
+    public Shape updateFields(UUID boardId, CurrentUser user, UUID shapeId, String title,
+            double x, double y, double width, double height, String visualJson) {
+        boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
+        Shape shape = shapeRepository.findById(shapeId)
+                .filter(found -> found.getBoardId().equals(boardId))
+                .orElseThrow(() -> new NotFoundException("图形节点不存在"));
+        shape.applyUserEdit(title, x, y, width, height);
+        if (visualJson != null) {
+            shape.applyVisual(visualJson);
+        }
+        return shapeRepository.save(shape);
     }
 
     /** 调整同级顺序（逻辑图一级分支同时提交左右侧），重排该分量 */
@@ -55,6 +80,7 @@ public class ShapeEditService {
     public List<BoardEdge> reorderChildren(UUID boardId, CurrentUser user, UUID parentId,
             List<ChildOrder> children) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         return actionApplier.reorderChildren(boardId, parentId, children);
     }
 
@@ -62,6 +88,7 @@ public class ShapeEditService {
     @Transactional
     public Shape setCollapsed(UUID boardId, CurrentUser user, UUID shapeId, boolean collapsed) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         return actionApplier.setCollapsed(boardId, shapeId, collapsed);
     }
 
@@ -69,6 +96,7 @@ public class ShapeEditService {
     @Transactional
     public AdoptionResult adopt(UUID boardId, CurrentUser user, List<AdoptNode> nodes, List<AdoptEdge> edges) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         return actionApplier.adopt(boardId, nodes, edges);
     }
 }

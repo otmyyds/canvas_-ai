@@ -39,6 +39,18 @@ public class Board extends BaseEntity {
     @Column(name = "radial_layout_json")
     private String radialLayoutJson;
 
+    /** 画布封面文件 key（本地/S3） */
+    @Column(name = "cover_key")
+    private String coverKey;
+
+    /** 画布封面 MIME */
+    @Column(name = "cover_mime", length = 64)
+    private String coverMime;
+
+    /** 画布封面版本：每次更新递增，前端用它做缓存失效 */
+    @Column(name = "cover_version", nullable = false)
+    private int coverVersion;
+
     protected Board() {
     }
 
@@ -73,6 +85,36 @@ public class Board extends BaseEntity {
 
     public void rememberRadialLayout(String radialLayoutJson) {
         this.radialLayoutJson = radialLayoutJson;
+    }
+
+    public String getCoverKey() {
+        return coverKey;
+    }
+
+    public String getCoverMime() {
+        return coverMime;
+    }
+
+    public int getCoverVersion() {
+        return coverVersion;
+    }
+
+    /** 更新封面并递增版本，返回旧 key 供事务提交后清理 */
+    public String updateCover(String coverKey, String coverMime) {
+        String previous = this.coverKey;
+        this.coverKey = coverKey;
+        this.coverMime = coverMime;
+        this.coverVersion++;
+        return previous;
+    }
+
+    /** 清除封面，返回旧 key 供事务提交后清理 */
+    public String clearCover() {
+        String previous = this.coverKey;
+        this.coverKey = null;
+        this.coverMime = null;
+        this.coverVersion++;
+        return previous;
     }
 
     public void rename(String title) {

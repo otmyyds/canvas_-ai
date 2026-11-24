@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -35,6 +37,7 @@ import com.picturecreate.doccanvas.service.ai.agent.AgentToolContext;
  * 归属由 AgentExecutionContext 决定：工具不接受 boardId 参数，
  * 模型无法通过参数访问其他画布。调用轨迹由 BudgetedToolCallback 统一写入 agent_steps。
  */
+@Profile("!lite")
 @Component
 public class BoardReadTools {
 

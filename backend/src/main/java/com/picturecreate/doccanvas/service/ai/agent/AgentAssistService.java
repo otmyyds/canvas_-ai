@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -34,6 +36,7 @@ import com.picturecreate.doccanvas.service.ai.llm.TaskRuntime;
  * 每次请求都归属一个会话：用户消息在调用模型前写入，助手回复或“已创建计划”在结束后写入，
  * 更早消息由 AgentSessionService 压缩成滚动摘要，作为下一轮的上下文。
  */
+@Profile("!lite")
 @Service
 public class AgentAssistService {
 

@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -16,6 +18,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * 当前用户的 AI 用量接口。
  * 只按当前登录用户查询，不接受 userId/boardId 等参数，从入口上排除跨用户读取。
  */
+@Profile("!lite")
 @RestController
 @RequestMapping("/api")
 public class UsageController {

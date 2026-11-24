@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -26,6 +28,7 @@ import com.picturecreate.doccanvas.service.ai.llm.ModelCallTrace;
  * Agent 运行轨迹记录器。
  * 负责创建/结束运行、追加步骤和累计 token；失败只影响本次记录，不反向驱动任务状态。
  */
+@Profile("!lite")
 @Service
 public class AgentRunRecorder {
 

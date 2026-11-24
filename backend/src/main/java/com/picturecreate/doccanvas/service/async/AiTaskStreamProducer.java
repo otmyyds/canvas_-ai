@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.async;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -13,6 +15,7 @@ import com.picturecreate.doccanvas.repository.AiTaskRepository;
 /**
  * AI 任务生产者：把任务 id 发到 ai-task:stream，由消费者触发执行。
  */
+@Profile("!lite")
 @Component
 public class AiTaskStreamProducer extends AbstractStreamProducer<UUID> {
 

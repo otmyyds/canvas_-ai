@@ -21,10 +21,12 @@ public final class BoardDtos {
     }
 
     public record BoardResponse(UUID id, String title, BoardVisibility visibility, BoardLayoutStyle layoutStyle,
-            int radialMaxNodes, Instant createdAt, Instant updatedAt) {
+            int radialMaxNodes, int coverVersion, boolean hasCover, Instant createdAt, Instant updatedAt) {
         public static BoardResponse from(Board board, int radialMaxNodes) {
+            String coverKey = board.getCoverKey();
             return new BoardResponse(board.getId(), board.getTitle(), board.getVisibility(), board.getLayoutStyle(),
-                    radialMaxNodes, board.getCreatedAt(), board.getUpdatedAt());
+                    radialMaxNodes, board.getCoverVersion(), coverKey != null && !coverKey.isBlank(),
+                    board.getCreatedAt(), board.getUpdatedAt());
         }
     }
 

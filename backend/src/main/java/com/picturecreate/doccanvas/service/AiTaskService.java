@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,6 +55,7 @@ import com.picturecreate.doccanvas.service.async.AiTaskStreamProducer;
  * 2. 类内自调用不走 Spring 代理，@Transactional 不会生效；需要事务时显式用 transactionTemplate。
  * 3. 外部 I/O（对象存储、Redis、WebSocket 推送、Stream 投递）一律放在事务提交之后。
  */
+@Profile("!lite")
 @Service
 public class AiTaskService {
 

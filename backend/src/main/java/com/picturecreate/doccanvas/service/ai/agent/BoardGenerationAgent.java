@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -25,6 +27,7 @@ import com.picturecreate.doccanvas.service.ai.llm.LlmResult;
  * 模型只负责内容，节点层级的父子连线由解析器按标题层级或 JSON 动作生成。
  * 解析或校验失败时把错误回填给模型再试一次，仍失败则任务失败。
  */
+@Profile("!lite")
 @Component
 public class BoardGenerationAgent {
 

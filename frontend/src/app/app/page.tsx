@@ -83,11 +83,27 @@ export default function WorkspacePage() {
   const [pendingDelete, setPendingDelete] = useState<Board>();
   const [error, setError] = useState<string>();
 
-  // 无 token 直接跳登录页（演示模式可手动登录）
+  // 无 token 时先判断本地轻量版是否还没有管理员；没有则去初始化，否则去登录页
   useEffect(() => {
-    if (!authToken.get()) {
-      router.replace("/login");
+    if (authToken.get()) {
+      return;
     }
+    let cancelled = false;
+    void api.getSetupStatus()
+      .then((status) => {
+        if (!cancelled) {
+          router.replace(status.needsSetup ? "/setup" : "/login");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          // 开发/完整版没有 setup 接口，按未登录处理
+          router.replace("/login");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   const loadBoards = useCallback(async (targetPage: number, search: string) => {
@@ -271,6 +287,23 @@ export default function WorkspacePage() {
                   key={board.id}
                   className="group flex flex-col rounded-xl border border-ink/10 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-soft"
                 >
+                  <Link href={`/board/${board.id}`} className="mb-4 block">
+                    <div className="relative aspect-[16/10] overflow-hidden rounded-lg bg-mist">
+                      <div className="absolute inset-0 flex items-center justify-center text-ink/15">
+                        <Shapes className="h-10 w-10" />
+                      </div>
+                      {board.hasCover ? (
+                        <img
+                          src={api.coverContentUrl(board.id, board.coverVersion)}
+                          alt=""
+                          className="relative h-full w-full object-cover"
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
+                        />
+                      ) : null}
+                    </div>
+                  </Link>
                   <Link
                     href={`/board/${board.id}`}
                     className="line-clamp-2 text-base font-semibold leading-6 text-ink transition hover:text-accent"

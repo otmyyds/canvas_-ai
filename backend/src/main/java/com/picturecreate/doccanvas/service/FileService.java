@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -23,6 +25,7 @@ import com.picturecreate.doccanvas.storage.ObjectStorageService;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObjectContent;
 import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObject;
 
+@Profile("!lite")
 @Service
 public class FileService {
 
@@ -34,17 +37,19 @@ public class FileService {
     private final DocumentParseService documentParseService;
     private final VectorizeStreamProducer vectorizeStreamProducer;
     private final TransactionTemplate transactionTemplate;
+    private final BoardEditingGuard editingGuard;
 
     public FileService(BoardService boardService, SourceFileRepository sourceFileRepository,
             ObjectStorageService objectStorageService,
             DocumentParseService documentParseService, VectorizeStreamProducer vectorizeStreamProducer,
-            TransactionTemplate transactionTemplate) {
+            TransactionTemplate transactionTemplate, BoardEditingGuard editingGuard) {
         this.boardService = boardService;
         this.sourceFileRepository = sourceFileRepository;
         this.objectStorageService = objectStorageService;
         this.documentParseService = documentParseService;
         this.vectorizeStreamProducer = vectorizeStreamProducer;
         this.transactionTemplate = transactionTemplate;
+        this.editingGuard = editingGuard;
     }
 
     @Transactional(readOnly = true)
@@ -61,6 +66,7 @@ public class FileService {
      */
     public SourceFile upload(UUID boardId, CurrentUser user, MultipartFile file) throws IOException {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要上传的文件");
         }
@@ -165,6 +171,7 @@ public class FileService {
     @Transactional
     public void delete(UUID fileId, CurrentUser user) {
         SourceFile file = getOwned(fileId, user);
+        editingGuard.assertEditable(file.getBoardId());
         String storageKey = file.getStorageKey();
         // 记录删除并提交才是权威状态；向量 chunk 由 document_chunks 的 source_file_id 外键级联删除
         sourceFileRepository.delete(file);

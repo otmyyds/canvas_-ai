@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -15,6 +17,7 @@ import com.picturecreate.doccanvas.service.CurrentUser;
  * AiTaskService 经 AgentPlanExecutor 依赖 AgentRuntime，AgentRuntime 又经工具注册表依赖本类，
  * 因此用 ObjectProvider 延迟取任务服务，打破构造期循环依赖。
  */
+@Profile("!lite")
 @Component
 public class AgentJobLauncher {
 

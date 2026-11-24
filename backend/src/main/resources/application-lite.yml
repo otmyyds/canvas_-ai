@@ -1,0 +1,74 @@
+# 本地轻量版：SQLite + 本地文件存储，关闭 AI、Redis、RustFS。
+# 启动时使用 --spring.profiles.active=lite。
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+  datasource:
+    driver-class-name: org.sqlite.JDBC
+    url: jdbc:sqlite:${app.data-dir}/doc-canvas.db?busy_timeout=5000&journal_mode=WAL&synchronous=NORMAL&foreign_keys=ON
+    hikari:
+      maximum-pool-size: 2
+      minimum-idle: 1
+      # 每个连接都开启外键约束，保证画布删除时级联清理
+      connection-init-sql: PRAGMA foreign_keys=ON
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        type:
+          preferred_uuid_jdbc_type: CHAR
+  flyway:
+    enabled: true
+    locations: classpath:db/migration-sqlite
+  autoconfigure:
+    exclude:
+      # 轻量版没有 Redis，排除 Redisson 自动配置
+      - org.redisson.spring.starter.RedissonAutoConfigurationV2
+      # 轻量版没有 AI，排除 Spring AI 自动配置
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+
+app:
+  # 一次性 PostgreSQL -> SQLite 迁移；正常启动时留空即可
+  migrate:
+    pg-url: ${MIGRATE_PG_URL:}
+    pg-user: ${MIGRATE_PG_USER:}
+    pg-password: ${MIGRATE_PG_PASSWORD:}
+    force: ${MIGRATE_FORCE:false}
+  data-dir: ${DOC_CANVAS_DATA_DIR:./data}
+  db:
+    version: ${DOC_CANVAS_DB_VERSION:1.0.0}
+  storage:
+    type: local
+  cors:
+    allowed-origins:
+      - http://localhost:3000
+      - http://127.0.0.1:3000
+      - http://localhost:8080
+      - http://127.0.0.1:8080
+    allowed-origin-patterns:
+      - http://localhost:*
+      - http://127.0.0.1:*
+  ai:
+    # 布局仍然需要这个上限；轻量版不启用其他 AI 配置
+    layout:
+      radial-max-nodes: 40
+  features:
+    ai-enabled: false
+    source-upload-enabled: false
+    image-upload-enabled: true
+    share-enabled: false
+    # 轻量版通过首次启动创建本地管理员，不开放注册
+    registration-enabled: false
+    setup-enabled: true

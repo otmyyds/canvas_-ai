@@ -56,4 +56,9 @@ public interface ShapeRepository extends JpaRepository<Shape, UUID> {
     @Query("delete from Shape s where s.boardId = :boardId and s.id in :ids")
     int deleteByBoardIdAndIdIn(@Param("boardId") UUID boardId, @Param("ids") Collection<UUID> ids);
 
+    /** 清空画布时按 board 批量删除，避免万级节点逐条 delete */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from Shape s where s.boardId = :boardId")
+    int deleteByBoardId(@Param("boardId") UUID boardId);
+
 }

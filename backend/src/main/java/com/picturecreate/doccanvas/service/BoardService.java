@@ -1,5 +1,6 @@
 package com.picturecreate.doccanvas.service;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -8,12 +9,17 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.picturecreate.doccanvas.domain.Asset;
 import com.picturecreate.doccanvas.domain.Board;
+import com.picturecreate.doccanvas.repository.AssetRepository;
 import com.picturecreate.doccanvas.repository.BoardRepository;
+import com.picturecreate.doccanvas.storage.ObjectStorageService;
 
 @Service
 public class BoardService {
@@ -21,9 +27,16 @@ public class BoardService {
     private static final Logger log = LoggerFactory.getLogger(BoardService.class);
 
     private final BoardRepository boardRepository;
+    private final AssetRepository assetRepository;
+    private final ObjectStorageService objectStorageService;
+    private final BoardEditingGuard editingGuard;
 
-    public BoardService(BoardRepository boardRepository) {
+    public BoardService(BoardRepository boardRepository, AssetRepository assetRepository,
+            ObjectStorageService objectStorageService, BoardEditingGuard editingGuard) {
         this.boardRepository = boardRepository;
+        this.assetRepository = assetRepository;
+        this.objectStorageService = objectStorageService;
+        this.editingGuard = editingGuard;
     }
 
     /**
@@ -58,6 +71,7 @@ public class BoardService {
     @Transactional
     public Board rename(UUID boardId, CurrentUser user, String title) {
         Board board = getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         board.rename(title == null || title.isBlank() ? board.getTitle() : title.trim());
         return board;
     }
@@ -65,7 +79,41 @@ public class BoardService {
     @Transactional
     public void delete(UUID boardId, CurrentUser user) {
         Board board = getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
+        List<String> assetKeys = assetRepository
+                .findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId, user.id())
+                .stream()
+                .map(Asset::getStorageKey)
+                .toList();
+        String coverKey = board.getCoverKey();
+        String imagePrefix = "images/%s/%s/".formatted(user.id(), boardId);
+        String coverPrefix = "covers/%s/".formatted(boardId);
+        // 兼容历史 AI 图片/资料对象：users/{owner}/boards/{board}/...
+        String legacyPrefix = "users/%s/boards/%s/".formatted(user.id(), boardId);
         boardRepository.delete(board);
-        log.info("画布已删除：boardId={} title={}", boardId, board.getTitle());
+        // 数据库记录提交后再删本地/对象存储文件，避免回滚后文件已丢失。
+        // 前缀删除会连同历史上没有被数据库引用的旧封面/旧图片一起清理。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                for (String key : assetKeys) {
+                    try {
+                        objectStorageService.delete(key);
+                    } catch (Exception exception) {
+                        log.warn("删除画布图片文件失败：key={} error={}", key, exception.getMessage());
+                    }
+                }
+                try {
+                    objectStorageService.deletePrefix(imagePrefix);
+                    objectStorageService.deletePrefix(coverPrefix);
+                    objectStorageService.deletePrefix(legacyPrefix);
+                } catch (Exception exception) {
+                    log.warn("删除画布存储前缀失败：imagePrefix={} coverPrefix={} legacyPrefix={} error={}",
+                            imagePrefix, coverPrefix, legacyPrefix, exception.getMessage());
+                }
+            }
+        });
+        log.info("画布已删除：boardId={} title={} 图片={} 封面={}", boardId, board.getTitle(), assetKeys.size(),
+                coverKey != null);
     }
 }

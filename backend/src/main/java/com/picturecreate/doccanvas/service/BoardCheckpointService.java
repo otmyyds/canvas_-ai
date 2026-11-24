@@ -1,7 +1,11 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
+import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +14,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +40,7 @@ import com.picturecreate.doccanvas.repository.ShapeRepository;
  * 恢复必须走 JDBC：实体主键是 @GeneratedValue，JPA 对带 id 的对象执行 merge 会重新生成 id，
  * 而前端 tldraw 元素 id 就是 createShapeId(后端 id)，id 变了快照与数据库就对不上。
  */
+@Profile("!lite")
 @Service
 public class BoardCheckpointService {
 
@@ -47,6 +53,12 @@ public class BoardCheckpointService {
     private final BoardSnapshotRepository snapshotRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+
+    /** 画布过大时拒绝 AI 计划，避免检查点 JSON 和恢复过程耗尽内存/数据库 */
+    @Value("${app.ai.checkpoint.max-board-nodes:5000}")
+    private int maxBoardNodes;
+    @Value("${app.ai.checkpoint.max-bytes:33554432}")
+    private long maxBytes;
 
     public BoardCheckpointService(BoardCheckpointRepository checkpointRepository,
             ShapeRepository shapeRepository, BoardEdgeRepository edgeRepository,
@@ -69,6 +81,10 @@ public class BoardCheckpointService {
         List<BoardEdge> edges = edgeRepository.findByBoardIdOrderBySortOrderAscCreatedAtAsc(boardId);
         List<Asset> assets = assetRepository.findByBoardIdAndOwnerIdOrderByCreatedAtAsc(boardId,
                 task.getOwnerId());
+        if (shapes.size() + edges.size() > maxBoardNodes) {
+            throw new IllegalStateException("画布节点/连线过多（" + (shapes.size() + edges.size())
+                    + "），超过 AI 检查点上限 " + maxBoardNodes + "；请拆分画布后再执行 AI 任务");
+        }
         String snapshotJson = snapshotRepository.findFirstByBoardIdOrderByCreatedAtDesc(boardId)
                 .map(BoardSnapshot::getSnapshotJson)
                 .orElse(null);
@@ -79,6 +95,10 @@ public class BoardCheckpointService {
         state.put("snapshot", snapshotJson);
         try {
             String json = objectMapper.writeValueAsString(state);
+            if (json.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
+                throw new IllegalStateException("画布检查点超过 " + (maxBytes / 1024 / 1024)
+                        + "MB，已拒绝 AI 任务，避免占用过多内存");
+            }
             checkpointRepository.save(new BoardCheckpoint(boardId, task.getId(), json));
         } catch (Exception exception) {
             throw new IllegalStateException("保存画布检查点失败：" + exception.getMessage(), exception);
@@ -138,6 +158,8 @@ public class BoardCheckpointService {
         row.put("y", shape.getY());
         row.put("width", shape.getWidth());
         row.put("height", shape.getHeight());
+        row.put("visualJson", shape.getVisualJson());
+        row.put("collapsed", shape.isCollapsed());
         row.put("createdAt", shape.getCreatedAt().toString());
         row.put("updatedAt", shape.getUpdatedAt().toString());
         return row;
@@ -153,6 +175,8 @@ public class BoardCheckpointService {
         row.put("style", edge.getStyle());
         row.put("color", edge.getColor());
         row.put("weight", edge.getWeight());
+        row.put("sortOrder", edge.getSortOrder());
+        row.put("side", edge.getSide());
         row.put("createdAt", edge.getCreatedAt().toString());
         row.put("updatedAt", edge.getUpdatedAt().toString());
         return row;
@@ -177,49 +201,67 @@ public class BoardCheckpointService {
     }
 
     private int insertShapes(JsonNode rows) {
-        int count = 0;
+        String sql = """
+                insert into shapes (id, board_id, title, shape, level, x, y, width, height,
+                                    visual_json, collapsed, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        List<Object[]> batch = new ArrayList<>();
         for (JsonNode row : rows) {
-            jdbcTemplate.update("""
-                    insert into shapes (id, board_id, title, shape, level, x, y, width, height, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, uuid(row, "id"), uuid(row, "boardId"), text(row, "title"), text(row, "shape"),
+            batch.add(new Object[] {
+                    uuid(row, "id"), uuid(row, "boardId"), text(row, "title"), text(row, "shape"),
                     row.path("level").asInt(), row.path("x").asDouble(), row.path("y").asDouble(),
                     row.path("width").asDouble(), row.path("height").asDouble(),
-                    timestamp(row, "createdAt"), timestamp(row, "updatedAt"));
-            count++;
+                    text(row, "visualJson"), row.path("collapsed").asBoolean() ? 1 : 0,
+                    timestamp(row, "createdAt"), timestamp(row, "updatedAt")
+            });
         }
-        return count;
+        if (!batch.isEmpty()) {
+            jdbcTemplate.batchUpdate(sql, batch);
+        }
+        return batch.size();
     }
 
     private int insertEdges(JsonNode rows) {
-        int count = 0;
+        String sql = """
+                insert into board_edges (id, board_id, from_shape_id, to_shape_id, label, style, color, weight,
+                                         sort_order, side, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        List<Object[]> batch = new ArrayList<>();
         for (JsonNode row : rows) {
-            jdbcTemplate.update("""
-                    insert into board_edges (id, board_id, from_shape_id, to_shape_id, label, style, color, weight,
-                                             created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, uuid(row, "id"), uuid(row, "boardId"), uuid(row, "fromShapeId"), uuid(row, "toShapeId"),
+            batch.add(new Object[] {
+                    uuid(row, "id"), uuid(row, "boardId"), uuid(row, "fromShapeId"), uuid(row, "toShapeId"),
                     text(row, "label"), text(row, "style"), text(row, "color"), row.path("weight").asInt(),
-                    timestamp(row, "createdAt"), timestamp(row, "updatedAt"));
-            count++;
+                    row.path("sortOrder").asInt(), text(row, "side"),
+                    timestamp(row, "createdAt"), timestamp(row, "updatedAt")
+            });
         }
-        return count;
+        if (!batch.isEmpty()) {
+            jdbcTemplate.batchUpdate(sql, batch);
+        }
+        return batch.size();
     }
 
     private int insertAssets(JsonNode rows) {
-        int count = 0;
+        String sql = """
+                insert into assets (id, owner_id, board_id, source_task_id, storage_bucket, storage_key,
+                                    mime_type, size, width, height, checksum, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        List<Object[]> batch = new ArrayList<>();
         for (JsonNode row : rows) {
-            jdbcTemplate.update("""
-                    insert into assets (id, owner_id, board_id, source_task_id, storage_bucket, storage_key,
-                                        mime_type, size, width, height, checksum, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, uuid(row, "id"), uuid(row, "ownerId"), uuid(row, "boardId"), uuid(row, "sourceTaskId"),
+            batch.add(new Object[] {
+                    uuid(row, "id"), uuid(row, "ownerId"), uuid(row, "boardId"), uuid(row, "sourceTaskId"),
                     text(row, "storageBucket"), text(row, "storageKey"), text(row, "mimeType"),
                     row.path("size").asLong(), integer(row, "width"), integer(row, "height"),
-                    text(row, "checksum"), timestamp(row, "createdAt"), timestamp(row, "updatedAt"));
-            count++;
+                    text(row, "checksum"), timestamp(row, "createdAt"), timestamp(row, "updatedAt")
+            });
         }
-        return count;
+        if (!batch.isEmpty()) {
+            jdbcTemplate.batchUpdate(sql, batch);
+        }
+        return batch.size();
     }
 
     private UUID uuid(JsonNode row, String field) {

@@ -102,6 +102,14 @@ type WhiteboardEditorProps = {
   radialMaxNodes?: number;
   /** 切换布局风格：父组件调用后端重排并刷新画布 */
   onLayoutStyleChange?: (style: BoardLayoutStyle) => Promise<void>;
+  /** 注册退出画布前的保存/封面刷新函数 */
+  onFlushReady?: (flush: (() => Promise<void>) | null) => void;
+  /** 是否启用 AI 助手/任务面板 */
+  aiEnabled: boolean;
+  /** 是否启用资料上传 */
+  sourceUploadEnabled: boolean;
+  /** 是否启用图片上传 */
+  imageUploadEnabled: boolean;
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -173,7 +181,11 @@ export function WhiteboardEditor({
   selectionCount = 0,
   layoutStyle = "RADIAL",
   radialMaxNodes = 40,
-  onLayoutStyleChange
+  onLayoutStyleChange,
+  onFlushReady,
+  aiEnabled,
+  sourceUploadEnabled,
+  imageUploadEnabled
 }: WhiteboardEditorProps) {
   /**
    * tldraw store：画布的底层数据源。
@@ -212,6 +224,8 @@ export function WhiteboardEditor({
   const saveTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const hydratedBoardRef = useRef<string | null>(null);
+  // 首次进入画布时把视图对准内容，避免布局坐标从 (120,120) 开始时整张图缩在左上角
+  const fittedBoardRef = useRef<string | null>(null);
   const edgesRef = useRef(edges);
   const shapesRef = useRef(shapes);
   const assetsRef = useRef(assets);
@@ -252,6 +266,27 @@ export function WhiteboardEditor({
         shapeStateFingerprint(shape.x, shape.y, props.w ?? 0, props.h ?? 0, title, visual));
     }
   }, []);
+
+  /** 首次载入画布后让相机对准全部内容；只做一次，不干扰用户后续手动平移 */
+  const fitInitialView = useCallback((editor: TldrawEditor) => {
+    if (fittedBoardRef.current === boardId || editor.getCurrentPageShapeIds().size === 0) {
+      return;
+    }
+    fittedBoardRef.current = boardId;
+    // 等一帧，确保 tldraw 容器已经拿到实际视口尺寸；视口尚未布局时短暂重试
+    const attempt = (remaining: number) => {
+      if (editor.getCurrentPageShapeIds().size === 0) {
+        return;
+      }
+      const bounds = editor.getViewportScreenBounds();
+      if ((bounds.w < 10 || bounds.h < 10) && remaining > 0) {
+        window.setTimeout(() => attempt(remaining - 1), 50);
+        return;
+      }
+      editor.zoomToFit({ animation: { duration: 0 }, immediate: true });
+    };
+    window.requestAnimationFrame(() => attempt(20));
+  }, [boardId]);
 
   // 合并 AI 生成图片资产到画布（以 image shape 渲染，id=shape:<assetId> 去重）
   const mergeAssets = useCallback(async (editor: TldrawEditor, boardAssets: BoardAsset[]) => {
@@ -306,6 +341,102 @@ export function WhiteboardEditor({
   const planActive = tasks.some((task) => task.type === "AGENT_PLAN" && ACTIVE_TASK_STATUSES.has(task.status));
   planActiveRef.current = planActive;
 
+  // 封面生成节流：首次保存生成一次，之后最多每 10 秒一次；手动按钮和退出画布可强制刷新
+  const coverBusyRef = useRef(false);
+  const coverPromiseRef = useRef<Promise<void> | null>(null);
+  const lastCoverAtRef = useRef(0);
+  // 清除封面单独计时：空画布上每次 store 变更都会走到删除分支，
+  // 复用 lastCoverAtRef 会和上传节流互相干扰
+  const lastCoverClearAtRef = useRef(0);
+
+  const updateCover = useCallback((force = false): Promise<void> => {
+    const editor = editorRef.current;
+    if (!editor || editor.getEditingShapeId() || isSubtreeDragActive(editor)) {
+      return Promise.resolve();
+    }
+    const shapeIds = [...editor.getCurrentPageShapeIds()];
+    if (shapeIds.length === 0) {
+      // 画布被清空时不能保留旧封面，直接删除封面和本地文件
+      // 30 秒节流：后端删封面要扫一遍存储前缀，空画布上不能每次 store 变更都打一次
+      if (!force && Date.now() - lastCoverClearAtRef.current < 30_000) {
+        return Promise.resolve();
+      }
+      if (coverBusyRef.current) {
+        return coverPromiseRef.current ?? Promise.resolve();
+      }
+      coverBusyRef.current = true;
+      const clearTask = (async () => {
+        try {
+          await api.deleteCover(boardId);
+          lastCoverClearAtRef.current = Date.now();
+          if (force) {
+            setMessage("画布已清空，封面已清除");
+          }
+        } catch (error) {
+          lastCoverClearAtRef.current = Date.now();
+          console.warn("删除画布封面失败", error);
+          if (force) {
+            setMessage("封面清除失败，请稍后重试");
+          }
+        } finally {
+          coverBusyRef.current = false;
+          coverPromiseRef.current = null;
+        }
+      })();
+      coverPromiseRef.current = clearTask;
+      return clearTask;
+    }
+    if (!force && Date.now() - lastCoverAtRef.current < 10_000) {
+      return Promise.resolve();
+    }
+    // 已有封面任务时返回同一个 Promise，退出画布可以等待它完成
+    if (coverBusyRef.current) {
+      return coverPromiseRef.current ?? Promise.resolve();
+    }
+
+    coverBusyRef.current = true;
+    const task = (async () => {
+      try {
+        const result = await editor.toImage(shapeIds, { format: "png" });
+        const bitmap = await createImageBitmap(result.blob);
+        const scale = Math.min(1, 640 / bitmap.width, 400 / bitmap.height);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("封面生成失败");
+        }
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob((value) => {
+            if (value) {
+              resolve(value);
+            } else {
+              reject(new Error("封面生成失败"));
+            }
+          }, "image/png");
+        });
+        await api.uploadCover(boardId, blob);
+        lastCoverAtRef.current = Date.now();
+        if (force) {
+          setMessage("画布封面已更新");
+        }
+      } catch (error) {
+        lastCoverAtRef.current = Date.now();
+        console.warn("更新画布封面失败", error);
+        if (force) {
+          setMessage("封面更新失败，请稍后重试");
+        }
+      } finally {
+        coverBusyRef.current = false;
+        coverPromiseRef.current = null;
+      }
+    })();
+    coverPromiseRef.current = task;
+    return task;
+  }, [boardId]);
+
   const saveSnapshot = useCallback(async () => {
     const editor = editorRef.current;
     if (!editor) {
@@ -318,11 +449,43 @@ export function WhiteboardEditor({
       pendingSaveRef.current = false;
       setSaveStatus("saved");
       setMessage("画布已保存");
+      // 画布保存成功后顺带更新封面；内部有 30 秒节流，不会阻塞保存
+      void updateCover(false);
     } catch {
       setSaveStatus("error");
       setMessage("画布保存失败，请稍后重试");
     }
-  }, [boardId]);
+  }, [boardId, updateCover]);
+
+  /** 退出画布前强制保存并更新封面，避免工作台卡片显示旧封面 */
+  const flushForExit = useCallback(async () => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    try {
+      const snapshotJson = await serializeTldrawJson(editor);
+      await api.saveSnapshot(boardId, snapshotJson);
+      pendingSaveRef.current = false;
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("error");
+    }
+    // 如果已有封面任务在跑，先等它结束，再按最新画布生成一次
+    if (coverBusyRef.current && coverPromiseRef.current) {
+      await coverPromiseRef.current;
+    }
+    await updateCover(true);
+  }, [boardId, updateCover]);
+
+  useEffect(() => {
+    onFlushReady?.(flushForExit);
+    return () => onFlushReady?.(null);
+  }, [flushForExit, onFlushReady]);
 
   /**
    * 立即落盘快照（提交 AI 任务前调用）。
@@ -418,6 +581,7 @@ export function WhiteboardEditor({
           mountedRef.current = true;
           seedSyncedShapes(editor);
           const assetAdded = await mergeAssets(editor, assetsRef.current);
+          fitInitialView(editor);
           if (synced > 0 || removed > 0 || assetAdded > 0) {
             setMessage(`已载入画布快照，同步 ${synced} 个元素，清理 ${removed} 个残留`);
             queueSave();
@@ -436,6 +600,7 @@ export function WhiteboardEditor({
       mountedRef.current = true;
       seedSyncedShapes(editor);
       const assetAdded = await mergeAssets(editor, assetsRef.current);
+      fitInitialView(editor);
       if (assetAdded > 0 || synced > 0) {
         queueSave();
       }
@@ -447,7 +612,7 @@ export function WhiteboardEditor({
     return () => {
       cancelled = true;
     };
-  }, [boardId, boardTitle, editorReady, layoutStyle, mergeAssets, queueSave]);
+  }, [boardId, boardTitle, editorReady, fitInitialView, layoutStyle, mergeAssets, queueSave]);
 
   // 计划结束时处理执行期间挂起的保存：成功的计划才落盘；
   // 失败/中断时后端已回退画布，由 reloadSignal 载入恢复后的快照，本地状态直接丢弃
@@ -984,36 +1149,42 @@ export function WhiteboardEditor({
     if (!editor) {
       return;
     }
-
-    const asset = await editor.getAssetForExternalContent({ type: "file", file });
-    if (!asset) {
-      setMessage("图片处理失败");
-      return;
-    }
-
-    editor.createAssets([asset]);
-    const id = createShapeId();
-    const base = viewportPlacement(editor, addPlacementRef.current++);
-    editor.createShape({
-      id,
-      type: "image",
-      x: base.x,
-      y: base.y,
-      props: {
-        w: 360,
-        h: 240,
-        playing: false,
-        url: asset.props.src ?? "",
-        assetId: asset.id,
-        crop: null,
-        flipX: false,
-        flipY: false,
-        altText: file.name
+    try {
+      // 先上传到后端，再由 URL 创建 tldraw asset；不要把图片 data URL 塞进快照
+      const uploaded = await api.uploadImage(boardId, file);
+      const url = api.assetContentUrl(boardId, uploaded.id);
+      const asset = await editor.getAssetForExternalContent({ type: "url", url });
+      if (!asset) {
+        setMessage("图片加载失败");
+        return;
       }
-    });
-    editor.select(id);
-    setMessage("已添加图片");
-  }, []);
+      editor.createAssets([asset]);
+      // 用 asset id 作为 tldraw shape id，刷新时 mergeAssets 能识别并去重
+      const id = createShapeId(uploaded.id);
+      const base = viewportPlacement(editor, addPlacementRef.current++);
+      editor.createShape({
+        id,
+        type: "image",
+        x: base.x,
+        y: base.y,
+        props: {
+          w: 360,
+          h: 240,
+          playing: false,
+          url: asset.props.src ?? url,
+          assetId: asset.id,
+          crop: null,
+          flipX: false,
+          flipY: false,
+          altText: file.name
+        }
+      });
+      editor.select(id);
+      setMessage("已添加图片");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "图片上传失败");
+    }
+  }, [boardId]);
 
   const deleteSelected = useCallback(() => {
     const editor = editorRef.current;
@@ -1122,7 +1293,7 @@ export function WhiteboardEditor({
 
   const refresh = useCallback(async () => {
     await onRefresh();
-    setMessage("已刷新资料和任务");
+    setMessage("已刷新画布数据");
   }, [onRefresh]);
 
   const [shapeOpen, setShapeOpen] = useState(false);
@@ -1252,7 +1423,7 @@ export function WhiteboardEditor({
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      {sourceOpen ? (
+      {sourceUploadEnabled && sourceOpen ? (
         <>
           {/* 遮罩：点击面板外任意处关闭 */}
           <div
@@ -1288,23 +1459,27 @@ export function WhiteboardEditor({
           onClick={(event) => event.stopPropagation()}
         >
           {/* 资料与图片 */}
-          <ToolButton
-            active={sourceOpen}
-            onClick={() => {
-              setSourceOpen((value) => !value);
-              setShapeOpen(false);
-              setLayoutOpen(false);
-              setExportOpen(false);
-            }}
-            title="上传/管理资料"
-          >
-            <FolderOpen className="h-4 w-4" />
-            资料
-          </ToolButton>
-          <ToolButton onClick={() => fileInputRef.current?.click()} title="插入图片">
-            <FileImage className="h-4 w-4" />
-            图片
-          </ToolButton>
+          {sourceUploadEnabled ? (
+            <ToolButton
+              active={sourceOpen}
+              onClick={() => {
+                setSourceOpen((value) => !value);
+                setShapeOpen(false);
+                setLayoutOpen(false);
+                setExportOpen(false);
+              }}
+              title="上传/管理资料"
+            >
+              <FolderOpen className="h-4 w-4" />
+              资料
+            </ToolButton>
+          ) : null}
+          {imageUploadEnabled ? (
+            <ToolButton onClick={() => fileInputRef.current?.click()} title="插入图片">
+              <FileImage className="h-4 w-4" />
+              图片
+            </ToolButton>
+          ) : null}
 
           <span className="mx-0.5 h-6 w-px bg-ink/10" />
 
@@ -1450,6 +1625,10 @@ export function WhiteboardEditor({
           <ToolButton className="w-8 px-0" onClick={() => void saveSnapshot()} title="立即保存">
             <Save className="h-4 w-4" />
           </ToolButton>
+          <ToolButton onClick={() => void updateCover(true)} title="生成并更新工作台封面">
+            <FileImage className="h-4 w-4" />
+            封面
+          </ToolButton>
           <div className="relative">
             <ToolButton
               active={exportOpen}
@@ -1549,6 +1728,12 @@ export function WhiteboardEditor({
             shapeUtils={whiteboardShapeUtils}
             bindingUtils={whiteboardBindingUtils}
           />
+          {taskRunning ? (
+            <div
+              className="absolute inset-0 z-10 cursor-wait bg-white/5"
+              title="AI 任务执行中，画布暂不可编辑"
+            />
+          ) : null}
           {/* 逻辑图折叠控件：覆盖在画布上，按节点位置实时定位 */}
           {layoutStyle === "LOGIC" && editorReady ? (
             <MindmapCollapse
@@ -1564,14 +1749,16 @@ export function WhiteboardEditor({
         {editorReady ? <ElementInspector editor={editorRef.current} /> : null}
       </section>
 
-      <TaskPanel
-        boardId={boardId}
-        tasks={tasks}
-        connection={connection}
-        onAssist={assistWithSnapshot}
-        onAbortTask={onAbortTask}
-        selectionCount={selectionCount}
-      />
+      {aiEnabled ? (
+        <TaskPanel
+          boardId={boardId}
+          tasks={tasks}
+          connection={connection}
+          onAssist={assistWithSnapshot}
+          onAbortTask={onAbortTask}
+          selectionCount={selectionCount}
+        />
+      ) : null}
     </div>
   );
 }

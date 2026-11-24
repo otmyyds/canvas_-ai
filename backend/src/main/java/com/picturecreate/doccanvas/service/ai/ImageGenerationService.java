@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import org.springframework.context.annotation.Profile;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -20,6 +22,7 @@ import com.picturecreate.doccanvas.config.AppProperties;
  * 流程：提交异步任务 → 轮询到 SUCCEEDED → 下载图片字节。
  * 与聊天用的 OpenAI 兼容接口不同，这里走 DashScope 原生 /api/v1/services/aigc/text2image。
  */
+@Profile("!lite")
 @Component
 public class ImageGenerationService {
 

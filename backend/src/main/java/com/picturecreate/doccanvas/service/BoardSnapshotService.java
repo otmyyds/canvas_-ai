@@ -19,10 +19,13 @@ public class BoardSnapshotService {
 
     private final BoardService boardService;
     private final BoardSnapshotRepository snapshotRepository;
+    private final BoardEditingGuard editingGuard;
 
-    public BoardSnapshotService(BoardService boardService, BoardSnapshotRepository snapshotRepository) {
+    public BoardSnapshotService(BoardService boardService, BoardSnapshotRepository snapshotRepository,
+            BoardEditingGuard editingGuard) {
         this.boardService = boardService;
         this.snapshotRepository = snapshotRepository;
+        this.editingGuard = editingGuard;
     }
 
     @Transactional(readOnly = true)
@@ -34,6 +37,7 @@ public class BoardSnapshotService {
     @Transactional
     public BoardSnapshot save(UUID boardId, CurrentUser user, String snapshotJson) {
         boardService.getOwned(boardId, user);
+        editingGuard.assertEditable(boardId);
         // 单行快照：已有则覆盖 JSON 并递增版本，只有首次保存才插入新行
         BoardSnapshot snapshot = snapshotRepository.findByBoardId(boardId)
                 .map(existing -> {

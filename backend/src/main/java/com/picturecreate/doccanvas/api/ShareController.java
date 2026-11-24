@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.UUID;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,6 +23,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * - POST /api/boards/{boardId}/share → owner 生成只读分享链接（需登录）
  * - GET  /api/share/{token}          → 凭 token 只读读取分享画布（公开，SecurityConfig 放行）
  */
+@Profile("!lite")
 @RestController
 public class ShareController {
 

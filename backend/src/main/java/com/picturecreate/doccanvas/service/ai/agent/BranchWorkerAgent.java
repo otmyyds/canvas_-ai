@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -33,6 +35,7 @@ import com.picturecreate.doccanvas.service.ai.llm.TaskRuntime;
  * 每个分支独立一条 BRANCH_WORKER 运行记录和独立预算；预算的每次扣减同时计入父计划预算。
  * 解析/校验失败时把错误回填给模型重试一次；模型调用异常由 LlmGateway 自己重试与降级。
  */
+@Profile("!lite")
 @Component
 public class BranchWorkerAgent {
 

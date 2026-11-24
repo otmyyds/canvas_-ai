@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -23,6 +25,7 @@ import com.picturecreate.doccanvas.service.QuotaExceededException;
  * 预检的收尾工具：reply 直接回答，start_plan 制定有序计划并创建后台任务。
  * 预检不写画布；计划由后台执行器逐步执行，每一步结束后检查真实画布状态。
  */
+@Profile("!lite")
 @Component
 public class AgentControlTools {
 

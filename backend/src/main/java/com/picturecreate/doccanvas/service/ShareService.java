@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -27,6 +29,7 @@ import com.picturecreate.doccanvas.repository.ShareLinkRepository;
  * 分享服务：生成只读分享链接 + 凭 token 读取分享画布。
  * 分享内容（标题/图形节点/连线/快照）为只读快照，不暴露写接口。
  */
+@Profile("!lite")
 @Service
 public class ShareService {
 

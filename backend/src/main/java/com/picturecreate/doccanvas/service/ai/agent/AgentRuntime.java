@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import org.springframework.stereotype.Component;
 
 import com.picturecreate.doccanvas.service.ai.SkillDefinition;
@@ -9,6 +11,7 @@ import com.picturecreate.doccanvas.service.ai.SkillDefinition;
  * 运行记录、用量与收尾由 AgentPlanExecutor 负责，这里只负责一次模型生成，
  * 保持生成阶段只产出动作、不写画布。
  */
+@Profile("!lite")
 @Component
 public class AgentRuntime {
 

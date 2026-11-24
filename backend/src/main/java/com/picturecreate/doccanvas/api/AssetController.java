@@ -10,9 +10,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,9 +30,10 @@ import com.picturecreate.doccanvas.storage.ObjectStorageService.StoredObjectCont
 import jakarta.servlet.http.HttpServletRequest;
 
 /**
- * 资产（AI 生成图片）接口。
- * - GET /api/boards/{boardId}/assets                  → 画布下所有资产
- * - GET /api/boards/{boardId}/assets/{assetId}/content → 读取图片本体（供 <img> 直链）
+ * 资产（AI 生成图片 / 用户上传图片）接口。
+ * - GET  /api/boards/{boardId}/assets                  → 画布下所有资产
+ * - POST /api/boards/{boardId}/assets                  → 上传图片（multipart）
+ * - GET  /api/boards/{boardId}/assets/{assetId}/content → 读取图片本体（供 <img> 直链）
  */
 @RestController
 @RequestMapping("/api/boards/{boardId}/assets")
@@ -49,6 +53,16 @@ public class AssetController {
     public Result<List<AssetResponse>> list(@PathVariable UUID boardId, HttpServletRequest request) {
         CurrentUser user = currentUserService.resolve(request);
         return Result.success(assetService.list(boardId, user).stream().map(AssetResponse::from).toList());
+    }
+
+    /** 上传画布图片：服务端重新编码为 PNG 后保存到本地/S3 */
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<AssetResponse> upload(@PathVariable UUID boardId, @RequestParam("file") MultipartFile file,
+            HttpServletRequest request) {
+        CurrentUser user = currentUserService.resolve(request);
+        log.info("上传画布图片：boardId={} filename={} size={}", boardId,
+                file.getOriginalFilename(), file.getSize());
+        return Result.success(AssetResponse.from(assetService.uploadImage(boardId, user, file)));
     }
 
     @GetMapping("/{assetId}/content")

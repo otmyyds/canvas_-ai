@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Share2 } from "lucide-react";
 import { api, authUser } from "@/lib/api";
-import type { BoardLayoutStyle, TaskEvent } from "@/lib/types";
+import type { BoardLayoutStyle, MetaFeatures, TaskEvent } from "@/lib/types";
 import { useBoardStore } from "@/lib/use-board-store";
 import { useTaskStream } from "@/lib/use-task-stream";
 import { WhiteboardEditor } from "@/components/whiteboard/whiteboard-editor";
@@ -13,6 +13,17 @@ import { GhostButton } from "@/components/ui";
 
 type BoardPageProps = {
   params: Promise<{ boardId: string }>;
+};
+
+/** 能力信息加载失败时按最保守的本地画布处理，避免误调已关闭的 AI/上传接口 */
+const DEFAULT_FEATURES: MetaFeatures = {
+  version: "1.0.0",
+  aiEnabled: false,
+  sourceUploadEnabled: false,
+  imageUploadEnabled: true,
+  shareEnabled: false,
+  registrationEnabled: false,
+  setupEnabled: false
 };
 
 /**
@@ -59,9 +70,16 @@ export default function BoardPage({ params }: BoardPageProps) {
 }
 
 function BoardEditor({ boardId }: { boardId: string }) {
+  const router = useRouter();
   const { board, edges, shapes, tasks, files, assets, setBoard, setEdges, setShapes, setTasks, setFiles, setAssets, upsertTask } = useBoardStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [features, setFeatures] = useState<MetaFeatures>(DEFAULT_FEATURES);
+  const [leaving, setLeaving] = useState(false);
+  const flushBeforeLeaveRef = useRef<(() => Promise<void>) | null>(null);
+  const handleFlushReady = useCallback((flush: (() => Promise<void>) | null) => {
+    flushBeforeLeaveRef.current = flush;
+  }, []);
   const [canvasRevision, setCanvasRevision] = useState(0);
   // 清空画布信号：CLEAR_CANVAS 步骤完成时递增，驱动白板清空 tldraw 内容
   const [canvasClear, setCanvasClear] = useState(0);
@@ -81,6 +99,9 @@ function BoardEditor({ boardId }: { boardId: string }) {
   const [shareCopied, setShareCopied] = useState(false);
 
   async function share() {
+    if (!features.shareEnabled) {
+      return;
+    }
     try {
       const { token } = await api.createShareLink(boardId);
       const url = `${window.location.origin}/share/${token}`;
@@ -89,6 +110,19 @@ function BoardEditor({ boardId }: { boardId: string }) {
       setTimeout(() => setShareCopied(false), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成分享链接失败");
+    }
+  }
+
+  /** 返回工作台前先保存快照并刷新封面，避免卡片封面滞后 */
+  async function leaveBoard() {
+    if (leaving) {
+      return;
+    }
+    setLeaving(true);
+    try {
+      await flushBeforeLeaveRef.current?.();
+    } finally {
+      router.push("/app");
     }
   }
 
@@ -103,13 +137,16 @@ function BoardEditor({ boardId }: { boardId: string }) {
 
   const loadAll = useCallback(async () => {
     setError(undefined);
+    // 先拿运行时能力：lite 下不请求已关闭的任务/资料接口
+    const meta = await api.getMeta().catch(() => DEFAULT_FEATURES);
+    setFeatures(meta);
     const [boardResult, edgeResult, shapeResult, taskResult, fileResult, assetResult] = await Promise.all([
       api.getBoard(boardId),
       api.listEdges(boardId),
       api.listShapes(boardId),
-      api.listTasks(boardId),
-      api.listFiles(boardId),
-      api.listAssets(boardId)
+      meta.aiEnabled ? api.listTasks(boardId) : Promise.resolve([]),
+      meta.sourceUploadEnabled ? api.listFiles(boardId) : Promise.resolve([]),
+      meta.imageUploadEnabled ? api.listAssets(boardId) : Promise.resolve([])
     ]);
     setBoard(boardResult);
     setEdges(edgeResult);
@@ -178,7 +215,7 @@ function BoardEditor({ boardId }: { boardId: string }) {
     [boardId, setEdges, setTasks, setAssets]
   );
 
-  const connection = useTaskStream(boardId, onTaskEvent);
+  const connection = useTaskStream(boardId, onTaskEvent, features.aiEnabled);
 
   async function assist(prompt: string) {
     const result = await api.assist(boardId, prompt, selection, sessionIdRef.current);
@@ -227,12 +264,10 @@ function BoardEditor({ boardId }: { boardId: string }) {
     <main className="flex h-screen min-h-0 flex-col bg-mist">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-ink/10 bg-white px-4">
         <div className="flex items-center gap-3">
-          <Link href="/app">
-            <GhostButton>
-              <ArrowLeft className="h-4 w-4" />
-              返回
-            </GhostButton>
-          </Link>
+          <GhostButton onClick={() => void leaveBoard()} disabled={leaving}>
+            <ArrowLeft className="h-4 w-4" />
+            {leaving ? "保存中" : "返回"}
+          </GhostButton>
           <div>
             {editingTitle ? (
               <input
@@ -270,10 +305,12 @@ function BoardEditor({ boardId }: { boardId: string }) {
         </div>
         <div className="flex items-center gap-3">
           <ThemePicker />
-          <GhostButton onClick={() => void share()} title="生成只读分享链接">
-            <Share2 className="h-4 w-4" />
-            {shareCopied ? "已复制" : "分享"}
-          </GhostButton>
+          {features.shareEnabled ? (
+            <GhostButton onClick={() => void share()} title="生成只读分享链接">
+              <Share2 className="h-4 w-4" />
+              {shareCopied ? "已复制" : "分享"}
+            </GhostButton>
+          ) : null}
           <div className="text-xs text-ink/50">{shapes.length} 个节点 · {edges.length} 条连线</div>
         </div>
       </header>
@@ -310,6 +347,10 @@ function BoardEditor({ boardId }: { boardId: string }) {
           layoutStyle={board?.layoutStyle}
           radialMaxNodes={board?.radialMaxNodes}
           onLayoutStyleChange={changeLayoutStyle}
+          aiEnabled={features.aiEnabled}
+          sourceUploadEnabled={features.sourceUploadEnabled}
+          imageUploadEnabled={features.imageUploadEnabled}
+          onFlushReady={handleFlushReady}
         />
       )}
     </main>

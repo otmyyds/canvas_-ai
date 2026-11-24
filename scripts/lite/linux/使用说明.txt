@@ -1,0 +1,53 @@
+Doc Canvas 本地轻量版（Linux）
+
+一、适用系统
+Linux x86_64。解压即用，不需要安装 Java、Node、PostgreSQL 或 Docker。
+
+二、首次使用
+1. 解压：
+   tar -xzf DocCanvas-Lite-Linux.tar.gz
+2. 进入目录：
+   cd DocCanvas-Lite-Linux
+3. 启动：
+   ./start.sh
+4. 浏览器访问 http://127.0.0.1:3000
+5. 首次进入创建本地管理员。
+   默认账号：admin@doccanvas.com
+   默认密码：DocCanvas123
+
+三、日常使用
+- 启动：./start.sh
+- 停止：./stop.sh
+- 数据在 data 目录：SQLite、图片、封面和备份。
+- 不要把 data 目录放在系统临时目录。
+
+四、备份和恢复
+- 先运行 ./stop.sh。
+- 备份：./backup.sh
+- 备份文件在 data/backups。
+- 恢复：./restore.sh，按提示选择文件并输入 RESTORE。
+
+五、功能范围
+- 基础画布、节点、连线、布局、折叠、整理；
+- 图片上传；
+- 画布封面；
+- PNG、Markdown、JSON 导出；
+- 不包含 AI、资料上传和分享。
+
+六、从 PostgreSQL 迁移
+- 先运行 ./stop.sh 关闭程序，并备份现有 data 目录。
+- 执行 ./migrate-pg-to-sqlite.sh。
+- 按提示输入 PostgreSQL JDBC URL、用户名、密码。
+- 目标 SQLite 已有数据时，执行 ./migrate-pg-to-sqlite.sh --force 清空后迁移。
+- 本次迁移用户、画布、节点、连线和快照；图片文件和封面不会迁移。
+
+七、常见问题
+1. 端口被占用
+   关闭占用 8080 或 3000 端口的程序后重试。
+2. 没有图形界面
+   服务器环境可以手动访问 http://127.0.0.1:3000，或通过 SSH 端口转发。
+3. 日志
+   data/logs/backend.log、data/logs/frontend.log。
+
+项目主页和更新下载：
+https://gitee.com/buxiangzuoti/canvas_-ai/releases

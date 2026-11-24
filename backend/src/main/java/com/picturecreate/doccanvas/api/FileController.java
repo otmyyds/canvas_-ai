@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.api;
 
+import org.springframework.context.annotation.Profile;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
@@ -42,6 +44,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * - GET    /{fileId}/content → 读取文件原始内容（供图片 <img> 直链）
  * - DELETE /{fileId}         → 删除资料（连带向量 chunk）
  */
+@Profile("!lite")
 @RestController
 @RequestMapping("/api/boards/{boardId}/files")
 public class FileController {

@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.infrastructure.redis;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.Duration;
 import java.util.Map;
 
@@ -20,6 +22,7 @@ import org.springframework.stereotype.Service;
  * 提供 AI 任务取消标记（字符串键值）与 Stream 消息队列两类能力。
  * 按需精简：仅保留当前项目实际用到的操作，分布式锁/哈希/列表等后续需要时再补。
  */
+@Profile("!lite")
 @Service
 public class RedisService {
 

@@ -2,6 +2,7 @@
 backend/target/
 frontend/.next/
 frontend/node_modules/
+dist/
 
 # IDE
 .idea/
@@ -12,6 +13,10 @@ frontend/node_modules/
 logs/
 tmp/
 *.log
+
+# 本地轻量版数据：SQLite、图片、封面、备份
+data/
+backend/data/
 
 # env secrets
 .env

@@ -28,4 +28,9 @@ public interface BoardEdgeRepository extends JpaRepository<BoardEdge, UUID> {
               and (e.fromShapeId in :ids or e.toShapeId in :ids)
             """)
     int deleteByBoardIdAndEndpointIn(@Param("boardId") UUID boardId, @Param("ids") Collection<UUID> ids);
+
+    /** 清空画布时按 board 批量删除连线 */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from BoardEdge e where e.boardId = :boardId")
+    int deleteByBoardId(@Param("boardId") UUID boardId);
 }

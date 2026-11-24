@@ -3,6 +3,7 @@ package com.picturecreate.doccanvas.api;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -200,6 +201,8 @@ class ApiEnvelopeTest {
     void shapeEndpoints() throws Exception {
         Shape shape = new Shape(boardId, "节点", "ellipse", 0, 0, 0, 120, 48);
         given(shapeEditService.createNode(any(), any(), any(), any())).willReturn(shape);
+        given(shapeEditService.updateFields(any(), any(), any(), any(), anyDouble(), anyDouble(), anyDouble(),
+                anyDouble(), any())).willReturn(shape);
         given(shapeRepository.findByBoardIdOrderByCreatedAtAsc(any())).willReturn(List.of(shape));
         given(shapeRepository.findById(any())).willReturn(Optional.of(shape));
         given(shapeRepository.save(any())).willReturn(shape);

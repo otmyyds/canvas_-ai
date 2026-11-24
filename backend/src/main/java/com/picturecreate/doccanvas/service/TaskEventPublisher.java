@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.UUID;
 
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -10,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import com.picturecreate.doccanvas.api.dto.TaskEvent;
 
+@Profile("!lite")
 @Component
 public class TaskEventPublisher {
 

@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.List;
 import java.util.Map;
 
@@ -15,6 +17,7 @@ import com.picturecreate.doccanvas.config.AppProperties;
  * 供 AI 工具 web_search 使用，回答版本、日期、近期事件等时效性问题。
  * 接口异常不向上抛，统一返回可读的失败信息，避免中断模型调用。
  */
+@Profile("!lite")
 @Component
 public class WebSearchService {
 

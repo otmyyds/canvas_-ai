@@ -2,6 +2,7 @@ package com.picturecreate.doccanvas.service;
 
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,9 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
 
+    @Value("${app.features.registration-enabled:true}")
+    private boolean registrationEnabled;
+
     public AuthService(UserAccountRepository userAccountRepository, PasswordEncoder passwordEncoder,
             JwtService jwtService) {
         this.userAccountRepository = userAccountRepository;
@@ -35,6 +39,22 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
+        if (!registrationEnabled) {
+            throw new IllegalStateException("当前版本不支持注册");
+        }
+        return createUser(request);
+    }
+
+    /** 首次启动创建本地管理员：只在没有任何用户时允许调用，不受注册开关限制 */
+    @Transactional
+    public AuthResponse createInitialAdmin(RegisterRequest request) {
+        if (userAccountRepository.count() > 0) {
+            throw new IllegalStateException("系统已完成初始化");
+        }
+        return createUser(request);
+    }
+
+    private AuthResponse createUser(RegisterRequest request) {
         userAccountRepository.findByEmail(request.email().trim().toLowerCase())
                 .ifPresent(existing -> {
                     throw new IllegalStateException("该邮箱已被注册");
@@ -42,7 +62,7 @@ public class AuthService {
         UserAccount user = new UserAccount(request.email().trim().toLowerCase(), request.displayName().trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         userAccountRepository.save(user);
-        log.info("用户注册成功：userId={} email={}", user.getId(), user.getEmail());
+        log.info("用户创建成功：userId={} email={}", user.getId(), user.getEmail());
         return buildResponse(user);
     }
 

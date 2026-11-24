@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service;
 
+import org.springframework.context.annotation.Profile;
+
 import java.time.LocalDate;
 import java.util.UUID;
 
@@ -22,6 +24,7 @@ import com.picturecreate.doccanvas.service.ai.agent.AgentMetrics;
  * 任务数在创建任务的事务内原子 +1，超限抛异常让整个事务回滚，避免并发创建时超卖；
  * token 用量由 AgentRunRecorder 在运行收尾时写入，写失败只记日志，不影响任务。
  */
+@Profile("!lite")
 @Service
 public class QuotaService {
 

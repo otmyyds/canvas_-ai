@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.async;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -12,6 +14,7 @@ import com.picturecreate.doccanvas.infrastructure.redis.RedisService;
 /**
  * 向量化生产者：把资料文件 id 发到 vectorize:stream，由消费者触发向量化。
  */
+@Profile("!lite")
 @Component
 public class VectorizeStreamProducer extends AbstractStreamProducer<UUID> {
 

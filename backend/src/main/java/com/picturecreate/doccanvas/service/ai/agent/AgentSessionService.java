@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -25,6 +27,7 @@ import com.picturecreate.doccanvas.service.NotFoundException;
  * 上下文只装配两层：最近 N 条用户/助手消息，以及更早消息压缩成的摘要。
  * 工具轨迹在 agent_steps，不进入会话上下文；完整原始消息保留在 agent_messages 供回看。
  */
+@Profile("!lite")
 @Service
 public class AgentSessionService {
 

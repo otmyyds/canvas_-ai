@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.async;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -17,6 +19,7 @@ import com.picturecreate.doccanvas.service.AiTaskService;
  * 只做「薄触发」——状态机（步骤/进度/成功/失败/中断）仍由 AiTaskService.runTask 管线管理，
  * 因此 markProcessing/markCompleted 为空实现。
  */
+@Profile("!lite")
 @Component
 public class AiTaskStreamConsumer extends AbstractStreamConsumer<UUID> {
 

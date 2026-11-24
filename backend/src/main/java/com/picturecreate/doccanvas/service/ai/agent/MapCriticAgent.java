@@ -1,5 +1,7 @@
 package com.picturecreate.doccanvas.service.ai.agent;
 
+import org.springframework.context.annotation.Profile;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -40,6 +42,7 @@ import com.picturecreate.doccanvas.service.ai.llm.TaskRuntime;
  * 只有用户中断继续向上抛出。审查结果由计划执行器决定是否回填给 Supervisor 重新生成，
  * 最多修正一轮，不重复审查。
  */
+@Profile("!lite")
 @Component
 public class MapCriticAgent {
 
